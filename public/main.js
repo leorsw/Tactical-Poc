@@ -105,6 +105,26 @@ let joined = false;
 let solo = false;
 let myTeam = null;
 let isHost = false;
+// One stable id per tab session (survives reloads, NOT shared between
+// tabs): the server uses it to recognise a reconnecting tab and take over
+// its old record instead of duplicating the player.
+let tabSessionId = null;
+try {
+  tabSessionId = sessionStorage.getItem('tacticalSessionId');
+  if (!tabSessionId) {
+    tabSessionId = crypto.randomUUID
+      ? crypto.randomUUID()
+      : `s${Date.now()}${Math.random().toString(36).slice(2)}`;
+    sessionStorage.setItem('tacticalSessionId', tabSessionId);
+  }
+} catch {
+  tabSessionId = `s${Date.now()}${Math.random().toString(36).slice(2)}`;
+}
+// Send a join/solo message, tagged with this tab's session id.
+function sendJoin(join) {
+  if (join.solo) socket.send({ t: 'solo', name: join.name, session: tabSessionId });
+  else socket.send({ t: 'join', name: join.name, team: join.team, session: tabSessionId });
+}
 let meta = new Map(); // playerId -> {name, team, role, commander, host}
 let snapPlayers = new Map(); // playerId -> latest snapshot entry
 let game = {
@@ -994,6 +1014,7 @@ function onCanvasClick() {
 
 let connected = false;
 let savedJoin = null; // { name, team } or { name, solo: true } — for auto-rejoin
+let lastRejoinRetry = 0; // throttle for the state-handler rejoin retry
 socket.onOpen = () => {
   connected = true;
   connectStatus.textContent = 'Connected.';
@@ -1001,10 +1022,7 @@ socket.onOpen = () => {
   connBanner.classList.add('hidden');
   // Reconnect: the server dropped the old player entry when the socket
   // closed, so rejoin with the same callsign/team.
-  if (savedJoin) {
-    if (savedJoin.solo) socket.send({ t: 'solo', name: savedJoin.name });
-    else socket.send({ t: 'join', name: savedJoin.name, team: savedJoin.team });
-  }
+  if (savedJoin) sendJoin(savedJoin);
 };
 socket.onClose = () => {
   connected = false;
@@ -1072,6 +1090,24 @@ socket.on('soloLeft', () => {
 socket.on('error', (msg) => {
   teamHint.textContent = msg.message || 'Error';
   connectStatus.textContent = msg.message || 'Error';
+  // A join error means this connection is NOT in the room (e.g. a rejoin
+  // rejected mid-match because the old record is still active). Don't
+  // stay stuck on the game screen: go back to the lobby. The saved join
+  // is kept, so the state handler retries the rejoin below.
+  if (joined) {
+    joined = false;
+    solo = false;
+    myTeam = null;
+    downUntil = 0;
+    downOverlay.classList.add('hidden');
+    pendingRoundEnd = null;
+    pendingMatchEnd = null;
+    teamsBox.classList.add('hidden');
+    joinBox.classList.remove('hidden');
+    exitSoloBtn.classList.add('hidden');
+    endScreen.classList.add('hidden');
+    showScreen('lobby');
+  }
 });
 
 socket.on('kicked', (msg) => {
@@ -1125,7 +1161,18 @@ socket.on('state', (msg) => {
   joinAEl.disabled = joinBlocked;
   joinBEl.disabled = joinBlocked;
   joinAutoEl.disabled = joinBlocked;
-  if (!joined) return;
+  if (!joined) {
+    // A returning player whose rejoin was rejected (old record still in
+    // the room, grace not open yet) retries on state updates, at most
+    // once per 2 s: the server accepts once the old record goes silent
+    // (ghost takeover) or is swept (grace entry), or the match ends.
+    // Newcomers have no savedJoin, so they never retry.
+    if (savedJoin && connected && Date.now() - lastRejoinRetry > 2000) {
+      lastRejoinRetry = Date.now();
+      sendJoin(savedJoin);
+    }
+    return;
+  }
   if (solo) return; // stay in the solo game view; the room may be in lobby phase
   renderLobby(msg);
   if (msg.phase === 'lobby') {
@@ -1345,7 +1392,7 @@ function join(team) {
   kickNotice.classList.add('hidden');
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
   savedJoin = { name, team };
-  socket.send({ t: 'join', name, team });
+  sendJoin(savedJoin);
 }
 
 $('joinA').addEventListener('click', () => join('A'));
@@ -1356,7 +1403,7 @@ $('soloBtn').addEventListener('click', () => {
   kickNotice.classList.add('hidden');
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
   savedJoin = { name, solo: true };
-  socket.send({ t: 'solo', name });
+  sendJoin(savedJoin);
 });
 exitSoloBtn.addEventListener('click', () => socket.send({ t: 'leaveSolo' }));
 $('switchBtn').addEventListener('click', () => {
