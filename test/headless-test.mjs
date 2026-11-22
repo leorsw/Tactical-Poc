@@ -6,6 +6,10 @@
 //     then a reload cycle — verifying round resets between rounds.
 //   Scenario 2 (1v2): asymmetric teams — starting with 1 player on a side
 //     must succeed (but starting with an empty team must fail).
+//   Scenario 3 (solo): one player explores alone — no team, room stays in
+//     lobby, shooting and reload work, nobody can shoot them or be shot by
+//     them, a match can start alongside, and leaving solo frees them to
+//     join a team.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -252,6 +256,76 @@ async function main() {
     console.log('ok - asymmetric 1v2 match starts fine');
 
     for (const c of [c1, d1, d2]) c.close();
+    await sleep(600); // let the server notice the empty room and reset
+
+    // ------------------------------------------------ scenario 3: solo mode
+    const s = new Client('Solo');
+    await s.ready();
+    s.send({ t: 'solo', name: 'Solo' });
+    const soloJoined = await s.waitFor('soloJoined');
+    assert.ok(soloJoined.spawn, 'soloJoined should carry a spawn point');
+    console.log('ok - solo player enters solo mode with a spawn point');
+    const soloState = await s.waitFor('state', (m) => m.players.some((p) => p.id === s.id && p.solo === true));
+    assert.equal(soloState.phase, 'lobby', 'room stays in lobby while someone plays solo');
+    assert.equal(soloState.players.find((p) => p.id === s.id).team, null);
+    console.log('ok - solo player listed as solo with no team, room stays in lobby');
+
+    // Solo shooting consumes ammo but never hits; reload works.
+    s.send({ t: 'shot', targetId: null });
+    const soloShot = await s.waitFor('shot', (m) => m.shooterId === s.id);
+    assert.equal(soloShot.hit, false);
+    assert.equal(soloShot.inMag, 28);
+    console.log('ok - solo shot fires (28 rounds left) and hits nothing');
+    s.send({ t: 'reload' });
+    await s.waitFor('reloadStart', (m) => m.playerId === s.id);
+    const soloReloaded = await s.waitFor('reloaded', (m) => m.playerId === s.id, 6000);
+    assert.equal(soloReloaded.inMag, 29);
+    assert.equal(soloReloaded.mags, 4);
+    console.log('ok - solo reload works (29 rounds, 4 spares left)');
+
+    // A match can start while someone is solo, and the solo player is
+    // untouched by it: team players cannot hit them, they cannot hit back.
+    const j1 = new Client('J1');
+    const k1 = new Client('K1');
+    await j1.ready();
+    await k1.ready();
+    j1.send({ t: 'join', name: 'J1', team: 'A' });
+    k1.send({ t: 'join', name: 'K1', team: 'B' });
+    await j1.waitFor('state', (m) => m.players.length === 3);
+    j1.send({ t: 'start' });
+    await j1.waitFor('roundStart', (m) => m.round === 1);
+    console.log('ok - match starts with a solo player in the room (solo is never host)');
+    j1.send({ t: 'shot', targetId: s.id });
+    const missOnSolo = await j1.waitFor('shot', (m) => m.shooterId === j1.id && m.targetId === s.id);
+    assert.equal(missOnSolo.hit, false);
+    const shotsBefore = s.inbox.filter((m) => m.t === 'shot' && m.shooterId === s.id).length;
+    s.send({ t: 'shot', targetId: j1.id });
+    const soloMiss = await waitFor(
+      () => s.inbox.filter((m) => m.t === 'shot' && m.shooterId === s.id)[shotsBefore],
+      5000,
+      'solo shot at a team player',
+    );
+    assert.equal(soloMiss.hit, false);
+    assert.equal(soloMiss.targetId, null);
+    console.log('ok - solo player cannot be shot and cannot shoot others');
+    const snap = await s.waitFor('snapshot', (m) => m.players.some((p) => p.id === s.id));
+    const soloSnap = snap.players.find((p) => p.id === s.id);
+    assert.equal(soloSnap.alive, true);
+    assert.equal(soloSnap.health, 100);
+    console.log('ok - solo player survives the round reset untouched');
+
+    // Leave solo and re-join as a team player.
+    s.send({ t: 'leaveSolo' });
+    await s.waitFor('soloLeft');
+    // The room broadcast after removal goes only to players still in the
+    // room, so a remaining player confirms the solo player is gone.
+    await j1.waitFor('state', (m) => !m.players.some((p) => p.id === s.id));
+    console.log('ok - leaving solo removes the player from the room');
+    s.send({ t: 'join', name: 'Solo', team: 'A' });
+    await s.waitFor('joined');
+    console.log('ok - after leaving solo, joining a team works');
+
+    for (const c of [s, j1, k1]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
