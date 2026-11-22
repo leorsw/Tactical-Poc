@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Tactical POC — Team FPS</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "/three/three.module.js" } }
+</script>
+<script>
+  // Startup watchdog (plain script, runs even if the game module fails):
+  // the game sets window.__tacticalBooted when it starts. If it never
+  // starts (e.g. Three.js failed to load), say so instead of hanging on
+  // "Connecting to server..." forever.
+  window.__tacticalBootError = null;
+  window.addEventListener('error', function (ev) {
+    if (!window.__tacticalBooted && ev.message) {
+      window.__tacticalBootError = ev.message;
+    }
+  }, true);
+  setTimeout(function () {
+    if (window.__tacticalBooted) return;
+    var el = document.getElementById('connectStatus');
+    if (!el) return;
+    el.textContent = 'Game code failed to load. Most likely Three.js is missing: in the game folder run "npm install", then "npm start", then reload this page.'
+      + (window.__tacticalBootError ? ' (Error: ' + window.__tacticalBootError + ')' : '');
+    el.style.color = '#ff8080';
+  }, 6000);
+</script>
+</head>
+<body>
+<div id="app">
+
+  <!-- ================= Lobby ================= -->
+  <section id="lobby" class="screen">
+    <h1>TACTICAL POC</h1>
+    <p class="subtitle">Team combat test — no respawn, limited ammo</p>
+
+    <div id="connectStatus" class="status">Connecting to server…</div>
+
+    <div id="joinBox" class="hidden">
+      <input id="nameInput" type="text" maxlength="16" placeholder="Your callsign" autocomplete="off">
+      <div class="joinRow">
+        <button id="joinA">Join Team A</button>
+        <button id="joinB">Join Team B</button>
+        <button id="joinAuto">Auto-assign</button>
+      </div>
+      <p class="hint">Teams need not be symmetric — 6 vs 2 is fine.<br>1–6 players per team.</p>
+    </div>
+
+    <div id="teamsBox" class="hidden">
+      <div class="teams">
+        <div class="teamCol">
+          <h2>Team A <span id="roleA" class="role"></span></h2>
+          <ul id="teamAList"></ul>
+        </div>
+        <div class="teamCol">
+          <h2>Team B <span id="roleB" class="role"></span></h2>
+          <ul id="teamBList"></ul>
+        </div>
+      </div>
+      <p id="teamHint" class="hint"></p>
+      <div class="lobbyActions">
+        <button id="switchBtn" class="secondary">Switch team</button>
+      </div>
+      <div id="hostControls" class="hidden">
+        <p class="hostLabel">You are the host — pick the attacking team:</p>
+        <div class="joinRow">
+          <button id="atkA">Team A attacks</button>
+          <button id="atkB">Team B attacks</button>
+        </div>
+        <button id="startBtn" class="primary">Start match</button>
+        <p id="startHint" class="hint"></p>
+      </div>
+      <p id="waitHost" class="hint hidden">Waiting for the host to start the match…</p>
+    </div>
+  </section>
+
+  <!-- ================= Game ================= -->
+  <section id="game" class="screen hidden">
+    <div id="scene-container"></div>
+
+    <!-- HUD -->
+    <div id="hud">
+      <div id="topBar">
+        <div id="scoreBox">—</div>
+        <div id="timer">5:00</div>
+        <div id="aliveBox">—</div>
+      </div>
+      <canvas id="minimap" width="150" height="150"></canvas>
+      <div id="killfeed"></div>
+      <div id="crosshair">+</div>
+      <div id="hitmarker" class="hidden">✕</div>
+      <div id="damageFlash"></div>
+      <div id="bottomLeft">
+        <div id="healthBar"><div id="healthFill"></div></div>
+        <div id="healthText">100</div>
+      </div>
+      <div id="bottomRight">
+        <div id="ammoText">29 | 5 mags</div>
+        <div id="reloadBar"><div id="reloadFill"></div></div>
+        <div id="reloadText" class="hidden">RELOADING…</div>
+      </div>
+      <div id="banner" class="hidden"></div>
+      <div id="spectateBar" class="hidden"></div>
+      <div id="lockHint" class="hidden">CLICK TO AIM</div>
+      <div id="roundInfo"></div>
+    </div>
+
+    <!-- Match end overlay -->
+    <div id="endScreen" class="hidden">
+      <h2 id="endTitle">Match over</h2>
+      <p id="endScore"></p>
+      <div id="endHostBtns" class="hidden">
+        <button id="rematchBtn" class="primary">Rematch (same roles)</button>
+        <button id="swapBtn">Swap roles &amp; rematch</button>
+      </div>
+      <p id="endWait" class="hint hidden">Waiting for the host…</p>
+    </div>
+
+    <!-- Touch controls (shown only on touch devices) -->
+    <div id="touchUI">
+      <div id="joyZone"></div>
+      <div id="lookZone"></div>
+      <div id="joyBase"><div id="joyKnob"></div></div>
+      <div id="fireBtn">FIRE</div>
+      <div id="reloadBtn">RELOAD</div>
+      <div id="rotateHint">Rotate your device to landscape for the best view</div>
+    </div>
+  </section>
+
+</div>
+<script type="module" src="main.js"></script>
+</body>
+</html>
