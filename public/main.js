@@ -188,7 +188,7 @@ function initThree() {
   // Ground + street.
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(220, 220),
-    new THREE.MeshLambertMaterial({ color: 0x77825f })
+    new THREE.MeshLambertMaterial({ color: 0x8b6f47 })
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.02;
@@ -197,7 +197,7 @@ function initThree() {
 
   const street = new THREE.Mesh(
     new THREE.PlaneGeometry(12.6, 126),
-    new THREE.MeshLambertMaterial({ color: 0x555555 })
+    new THREE.MeshLambertMaterial({ color: 0x1e1e1e })
   );
   street.rotation.x = -Math.PI / 2;
   street.position.y = 0;
@@ -447,11 +447,22 @@ function getPlayerMesh(id) {
     return mesh;
   };
   const V = (x, y, z) => new THREE.Vector3(x, y, z);
-  // Legs + boots.
-  add(0.17, 0.55, 0.2, -0.11, 0.28, 0, black);
-  add(0.17, 0.55, 0.2, 0.11, 0.28, 0, black);
-  add(0.18, 0.1, 0.32, -0.11, 0.05, -0.04, darker);
-  add(0.18, 0.1, 0.32, 0.11, 0.05, -0.04, darker);
+  // Legs + boots, each hanging from a hip pivot so the walk cycle can
+  // swing them. (Pivot at hip height, y 0.55; leg/boot offsets match the
+  // old absolute positions.)
+  const mkLeg = (x) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(x, 0.55, 0);
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.55, 0.2), black);
+    leg.position.set(0, -0.27, 0);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.1, 0.32), darker);
+    boot.position.set(0, -0.5, -0.04);
+    pivot.add(leg, boot);
+    group.add(pivot);
+    return pivot;
+  };
+  const legL = mkLeg(-0.11);
+  const legR = mkLeg(0.11);
   // Torso (hittable) + vest with pouches.
   const torso = add(0.52, 0.62, 0.3, 0, 0.86, 0, black);
   torso.userData.playerId = id;
@@ -502,6 +513,10 @@ function getPlayerMesh(id) {
   group.userData.tag = tag;
   group.userData.tagName = m.name || '?';
   group.userData.tagRole = m.role;
+  group.userData.legL = legL;
+  group.userData.legR = legR;
+  group.userData.walkPhase = 0; // advances with distance travelled
+  group.userData.walkAmp = 0;   // eases in/out so the legs never snap
   scene.add(group);
   playerMeshes.set(id, group);
   shootTargets.push(torso, head);
@@ -1371,6 +1386,24 @@ function loop() {
     while (dyaw > Math.PI) dyaw -= Math.PI * 2;
     while (dyaw < -Math.PI) dyaw += Math.PI * 2;
     g.rotation.y += dyaw * k;
+    // Walk animation: swing the legs from the distance actually travelled
+    // (interpolated, so teleports and snapshot jitter don't flail them).
+    const u = g.userData;
+    if (u.legL && u.legR) {
+      const dx = g.position.x - (u.prevX ?? g.position.x);
+      const dz = g.position.z - (u.prevZ ?? g.position.z);
+      u.prevX = g.position.x;
+      u.prevZ = g.position.z;
+      const dist = Math.min(Math.hypot(dx, dz), 0.25);
+      const speed = dt > 0 ? dist / dt : 0;
+      const moving = speed > 0.4;
+      const targetAmp = moving ? 0.55 : 0;
+      u.walkAmp += (targetAmp - u.walkAmp) * (1 - Math.exp(-dt * 8));
+      if (moving) u.walkPhase += (dist / 1.1) * Math.PI; // one step per ~1.1 m
+      const swing = Math.sin(u.walkPhase) * u.walkAmp;
+      u.legL.rotation.x = swing;
+      u.legR.rotation.x = -swing;
+    }
   }
 
   // Window climb button: visible only while alive in-game near a
