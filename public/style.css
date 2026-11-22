@@ -72,6 +72,12 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   background: rgba(0,0,0,0.75); padding: 16px 28px; border-radius: 10px;
   font-size: 24px; font-weight: 700; text-align: center; white-space: pre-line; }
 #continueBtn { margin-top: 14px; font-size: 18px; padding: 12px 28px; pointer-events: auto; }
+#downOverlay { position: absolute; top: 38%; left: 50%; transform: translateX(-50%);
+  text-align: center; pointer-events: none; z-index: 6; }
+#downTitle { font-size: 52px; font-weight: 800; color: #e53333; letter-spacing: 2px;
+  text-shadow: 0 2px 12px rgba(0,0,0,0.9); white-space: nowrap; }
+#downSub { font-size: 26px; font-weight: 700; color: #ffb340; letter-spacing: 2px;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.9); margin-top: 6px; white-space: nowrap; }
 #spectateBar { position: absolute; bottom: 64px; left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 8px; font-size: 15px; }
 #lockHint { position: absolute; top: 60%; left: 50%; transform: translateX(-50%);
