@@ -5,8 +5,10 @@
 // WebSocket game server on the same port.
 //
 // The server is authoritative for: match/round state, the round timer,
-// health, ammo, score and win conditions. Clients simulate their own
-// movement and send position updates; the server relays snapshots.
+// health, ammo, score and win conditions. Solo mode is a per-player flag:
+// a solo player explores the map alone, outside any match, and can neither
+// shoot nor be shot. Clients simulate their own movement and send position
+// updates; the server relays snapshots.
 // Shooting: the client raycasts locally and sends a shot claim; the server
 // validates it (shooter alive, target alive, different teams, ammo left,
 // round active, fire-rate plausible) and applies damage.
@@ -122,8 +124,9 @@ function publicState() {
       id: p.id,
       name: p.name,
       team: p.team,
-      role: roleOf(p.team),
-      commander: commanderOf(p.team)?.id === p.id,
+      solo: p.solo,
+      role: p.solo ? null : roleOf(p.team),
+      commander: !p.solo && commanderOf(p.team)?.id === p.id,
       host: p.id === hostId,
       alive: p.alive,
       health: p.health,
@@ -199,7 +202,10 @@ function startRound(n) {
   phase = 'playing';
   roundWinner = null;
   roundReason = '';
-  for (const p of players.values()) resetPlayerForRound(p);
+  for (const p of players.values()) {
+    if (p.solo) continue; // solo players keep exploring, untouched by rounds
+    resetPlayerForRound(p);
+  }
   roundEndsAt = Date.now() + ROUND_MS;
   broadcastState();
   broadcast({ t: 'roundStart', round });
@@ -253,7 +259,7 @@ setInterval(() => {
   for (const p of players.values()) {
     if (p.reloadingUntil && now >= p.reloadingUntil) {
       p.reloadingUntil = 0;
-      if (p.alive && phase === 'playing' && p.mags > 0) {
+      if (p.alive && (phase === 'playing' || p.solo) && p.mags > 0) {
         p.mags -= 1;
         p.inMag = MAG_SIZE;
         broadcast({ t: 'reloaded', playerId: p.id, inMag: p.inMag, mags: p.mags });
@@ -296,6 +302,7 @@ function handleJoin(ws, msg) {
     ws,
     name,
     team,
+    solo: false,
     joinedAt: Date.now(),
     alive: phase !== 'playing', // late joiners spectate until the next round
     health: 100,
@@ -319,6 +326,34 @@ function handleJoin(ws, msg) {
   broadcastState();
 }
 
+// Solo mode: a lone player exploring the map. They have no team, are never
+// the host, are never part of a match, cannot be shot and cannot shoot
+// anyone. The room stays in whatever phase it is in.
+function handleSolo(ws, msg) {
+  const name = String(msg.name || '').trim().slice(0, 16) || `Player${ws._pid}`;
+  const spawn = SPAWNS.attackers[0];
+  const p = {
+    id: ws._pid,
+    ws,
+    name,
+    team: null,
+    solo: true,
+    joinedAt: Date.now(),
+    alive: true,
+    health: 100,
+    inMag: MAG_SIZE,
+    mags: MAG_COUNT - 1,
+    reloadingUntil: 0,
+    lastShotAt: 0,
+    pos: { x: spawn.x, y: 0, z: spawn.z },
+    yaw: spawn.yaw,
+    pitch: 0,
+  };
+  players.set(p.id, p);
+  send(ws, { t: 'soloJoined', id: p.id, spawn: { x: spawn.x, y: 0, z: spawn.z, yaw: spawn.yaw } });
+  broadcastState();
+}
+
 function handleMessage(ws, msg) {
   const p = players.get(ws._pid);
   switch (msg.t) {
@@ -327,13 +362,18 @@ function handleMessage(ws, msg) {
       handleJoin(ws, msg);
       return;
     }
+    case 'solo': {
+      if (p) return; // already joined
+      handleSolo(ws, msg);
+      return;
+    }
     default:
       break;
   }
   if (!p) return; // must join first
   switch (msg.t) {
     case 'switchTeam': {
-      if (phase !== 'lobby') return;
+      if (p.solo || phase !== 'lobby') return;
       const target = msg.team === 'A' || msg.team === 'B' ? msg.team : null;
       if (!target || target === p.team) return;
       if (playersOf(target).length >= MAX_PER_TEAM) {
@@ -345,7 +385,7 @@ function handleMessage(ws, msg) {
       break;
     }
     case 'setAttackers': {
-      if (phase !== 'lobby' || p.id !== hostId) return;
+      if (p.solo || phase !== 'lobby' || p.id !== hostId) return;
       if (msg.team === 'A' || msg.team === 'B') {
         attackersTeam = msg.team;
         broadcastState();
@@ -353,7 +393,7 @@ function handleMessage(ws, msg) {
       break;
     }
     case 'start': {
-      if (phase !== 'lobby' || p.id !== hostId) return;
+      if (p.solo || phase !== 'lobby' || p.id !== hostId) return;
       // Asymmetric splits are allowed: at least 1 player per side.
       if (playersOf('A').length < 1 || playersOf('B').length < 1) {
         send(ws, { t: 'error', message: 'Need at least 1 player on each team to start.' });
@@ -374,14 +414,14 @@ function handleMessage(ws, msg) {
       if (Number.isFinite(msg.yaw)) p.yaw = Number(msg.yaw);
       if (Number.isFinite(msg.pitch)) p.pitch = Number(msg.pitch);
       // Objective check: a living attacker inside the zone wins the round.
-      if (phase === 'playing' && p.alive && roleOf(p.team) === 'attackers') {
+      if (phase === 'playing' && p.alive && !p.solo && roleOf(p.team) === 'attackers') {
         if (objectiveContains(p.pos.x, p.pos.z)) endRound(p.team, 'objective');
       }
       break;
     }
     case 'shot': {
       const now = Date.now();
-      if (phase !== 'playing' || !p.alive) return;
+      if ((phase !== 'playing' && !p.solo) || !p.alive) return;
       if (now < p.reloadingUntil) return;
       if (p.inMag <= 0) return; // out of ammo in this mag: must reload
       if (now - p.lastShotAt < FIRE_INTERVAL_MS) return;
@@ -392,9 +432,10 @@ function handleMessage(ws, msg) {
       let targetHealth = null;
       let damage = 0;
       let distance = null;
-      const target = msg.targetId != null ? players.get(Number(msg.targetId)) : null;
+      // Solo shots never hit anyone; solo players can never be hit.
+      const target = p.solo ? null : (msg.targetId != null ? players.get(Number(msg.targetId)) : null);
       // Friendly fire is ON: any living player except yourself can be hit.
-      if (target && target.alive && target.id !== p.id) {
+      if (target && target.alive && target.id !== p.id && !target.solo) {
         hit = true;
         const dx = target.pos.x - p.pos.x;
         const dy = target.pos.y - p.pos.y;
@@ -431,15 +472,21 @@ function handleMessage(ws, msg) {
     }
     case 'reload': {
       const now = Date.now();
-      if (phase !== 'playing' || !p.alive) return;
+      if ((phase !== 'playing' && !p.solo) || !p.alive) return;
       if (now < p.reloadingUntil) return;
       if (p.mags <= 0 || p.inMag >= MAG_SIZE) return;
       p.reloadingUntil = now + RELOAD_MS;
       broadcast({ t: 'reloadStart', playerId: p.id, reloadMs: RELOAD_MS });
       break;
     }
+    case 'leaveSolo': {
+      if (!p.solo) return;
+      removePlayer(p);
+      send(ws, { t: 'soloLeft' });
+      break;
+    }
     case 'rematch': {
-      if (phase !== 'ended' || p.id !== hostId) return;
+      if (p.solo || phase !== 'ended' || p.id !== hostId) return;
       if (msg.swap) attackersTeam = attackersTeam === 'A' ? 'B' : 'A';
       startMatch();
       break;
@@ -449,10 +496,11 @@ function handleMessage(ws, msg) {
   }
 }
 
-function handleDisconnect(ws) {
-  const p = players.get(ws._pid);
-  if (!p) return;
-  players.delete(ws._pid);
+// Shared by disconnects and leaveSolo: drop the player from the room,
+// migrate the host to the earliest-joined remaining team player (solo
+// players are never host), and re-check the round state.
+function removePlayer(p) {
+  players.delete(p.id);
   if (players.size === 0) {
     // Room is empty: reset to a fresh lobby for the next group.
     hostId = null;
@@ -466,11 +514,19 @@ function handleDisconnect(ws) {
     return;
   }
   if (hostId === p.id) {
-    // Host migrates to the earliest-joined remaining player.
-    hostId = [...players.values()].sort((a, b) => a.joinedAt - b.joinedAt)[0].id;
+    const remaining = [...players.values()]
+      .filter((q) => !q.solo)
+      .sort((a, b) => a.joinedAt - b.joinedAt);
+    hostId = remaining.length ? remaining[0].id : null;
   }
   broadcastState();
   checkElimination();
+}
+
+function handleDisconnect(ws) {
+  const p = players.get(ws._pid);
+  if (!p) return;
+  removePlayer(p);
 }
 
 // ---------------------------------------------------------------------------
