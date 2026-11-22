@@ -121,11 +121,18 @@ teleports (e.g. window climbs) don't flail the legs.
    leaves a ghost in the room.
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
    is **5:00**.
-   - **Attackers** win a round by eliminating all defenders **or** by having
-     any living attacker reach the defenders' spawn (the attackers' end
-     point *is* the defenders' start point). The objective is marked with
-     a red **X on the map only** (M) — never as a ground mark in the world —
-     labelled **לכבוש** for attackers and **להגן** for defenders.
+   - **Attackers** win a round by eliminating all defenders **or** by
+     **capturing the objective**: any living attacker must **hold the
+     zone for 30 seconds** (the zone is the defenders' spawn centre; the
+     attackers' end point *is* the defenders' start point). Entering the
+     zone starts the hold — leaving it, or dying in it, resets the timer.
+     A progress bar shows the hold to everyone (attackers see
+     "CAPTURING…", defenders a warning). Reaching the zone used to end
+     the round instantly, so a straight sprint won rounds in ~20 s with
+     no fight — that was the "rounds end for no reason" bug (22/11/2026).
+     The objective is marked with a red **X on the map only** (M) — never
+     as a ground mark in the world, at Lior's request — labelled
+     **לכבוש** for attackers and **להגן** for defenders.
    - **Defenders** win a round by eliminating all attackers **or** by
      surviving until the timer expires.
    - **Spawn sides are drawn fresh every round:** each team independently
@@ -139,7 +146,11 @@ teleports (e.g. window climbs) don't flail the legs.
    living teammate (click/tap to cycle). When no teammate is alive, the
    round is already over.
 5. After the match ends, **any** player can start a **Rematch** (same roles)
-   or **Swap roles & rematch**.
+   or **Swap roles & rematch**. The match-end screen shows a **stats
+   board** for the match: kills, deaths, teamkills, accuracy (hits /
+   shots), damage dealt, and objective captures per player, sorted by
+   kills then damage. Stats reset every match; players who left
+   mid-match are not on the board.
 
 ## Combat rules
 
@@ -200,6 +211,9 @@ npm test
   check, a friendly-fire kill, an empty-team start rejection, an
   asymmetric 1v2 start, and a solo-mode scenario (explore alone,
   shooting/reload alone, a match starting alongside, leave and re-join).
+  Plus: clear-room, no-mid-match-joins, heartbeat ghost sweep, and a
+  capture-hold + match-stats scenario (leaving the zone early resets the
+  capture; a full 1v1 match ends with a verified stats board).
 
 ## Known limits / what is NOT in v1
 
@@ -214,6 +228,7 @@ npm test
   a modified client could lie about hits. Fine for a friendly POC test.
 - **No persistent accounts or stats.** Closing the page removes you from
   the room; if everyone leaves, the room resets to a fresh lobby.
+  Match stats exist only for the match in progress and vanish with it.
 - **One room only.** Everyone who opens the page joins the same lobby.
 - **No mobile Safari pointer lock** (not applicable — touch controls are
   used instead). Desktop Safari/Chrome/Firefox all work.
@@ -257,6 +272,19 @@ test/
 
 ## Changelog (22/11/2026)
 
+- **Objective capture + match stats:** reaching the objective no longer
+  ends the round instantly — an attacker must hold the zone for 30 s
+  (leaving or dying resets the timer), with a progress bar for everyone.
+  Fixes the "rounds end for no reason" bug: a straight sprint used to
+  win rounds in ~20 s, and the zone was invisible in the 3D world. The
+  zone stays map-only (a visible ring + beam was built and removed at
+  Lior's request). Match-end screen now shows a per-player stats board
+  (K / D / TK / accuracy / damage / captures).
+- **YOU'RE DOWN vs end screens:** the down overlay no longer pops over the
+  round-end banner or the match-end stats table. On the final kill the
+  server broadcasts roundEnd/matchEnd synchronously, but the death
+  snapshot goes out on the next tick — so the overlay only shows while
+  the round is still playing. Found by the screenshot run (22/11/2026).
 - **Round 4:** lobby labelled by role (ATTACKERS / DEFENDERS, join buttons
   included); objective shown on the map only, defenders' X only, labelled
   לכבוש / להגן; CONTINUE button ends each intermission (no auto-advance);
