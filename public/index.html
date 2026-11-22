@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#111111">
+<link rel="manifest" href="manifest.json">
 <title>Tactical POC — Team FPS</title>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
@@ -95,6 +100,7 @@
         <div id="timer">5:00</div>
         <div id="aliveBox">—</div>
       </div>
+      <div id="connBanner" class="hidden">Connection lost — reconnecting…</div>
       <button id="exitSoloBtn" class="hidden">EXIT SOLO</button>
       <button id="mapBtn">MAP</button>
       <button id="fsBtn">FULLSCREEN</button>
@@ -119,8 +125,18 @@
     <!-- On-demand map (no player markers) -->
     <div id="mapOverlay" class="hidden">
       <div id="mapPanel">
+        <button id="mapCloseBtn">✕</button>
         <canvas id="mapCanvas" width="420" height="420"></canvas>
-        <p class="hint">M / MAP to close</p>
+        <p class="hint">M / ✕ to close</p>
+      </div>
+    </div>
+
+    <!-- Fullscreen help (iPhone Safari has no Fullscreen API) -->
+    <div id="fsHelp" class="hidden">
+      <div id="fsHelpPanel">
+        <p>This browser can't go fullscreen from a button.</p>
+        <p>On iPhone: tap <b>Share</b> → <b>Add to Home Screen</b>, then open the game from the home screen icon — it will run fullscreen.</p>
+        <button id="fsHelpClose">OK</button>
       </div>
     </div>
 
