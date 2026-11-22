@@ -19,11 +19,13 @@ export const FLOOR2_Y = 3;
 
 export const BOUNDS = { x0: -18, x1: 18, z0: -62, z1: 62 };
 
-// Houses: 3 per side of the street, centred at x = +/-11, z = -36 / 0 / +36.
-// Each house is 10 m wide (x) by 12 m deep (z), 6 m tall (two 3 m floors).
+// Houses: 5 per side of the street, centred at x = +/-11,
+// z = -32 / -16 / 0 / +16 / +32. Each house is 10 m wide (x) by 12 m deep
+// (z), 6 m tall (two 3 m floors), so adjacent houses leave a 4 m alley
+// between them.
 export const HOUSES = [];
 for (const side of [-1, 1]) {
-  for (const cz of [-36, 0, 36]) {
+  for (const cz of [-32, -16, 0, 16, 32]) {
     const cx = side * 11;
     HOUSES.push({
       cx,
