@@ -20,10 +20,19 @@ function check(label, fn) {
   console.log(`ok ${n} - ${label}`);
 }
 
-check('6 houses, 3 per side', () => {
-  assert.equal(HOUSES.length, 6);
-  assert.equal(HOUSES.filter((h) => h.side < 0).length, 3);
-  assert.equal(HOUSES.filter((h) => h.side > 0).length, 3);
+check('10 houses, 5 per side', () => {
+  assert.equal(HOUSES.length, 10);
+  assert.equal(HOUSES.filter((h) => h.side < 0).length, 5);
+  assert.equal(HOUSES.filter((h) => h.side > 0).length, 5);
+});
+
+check('alleys between houses on the same side are 4 m wide', () => {
+  for (const side of [-1, 1]) {
+    const zs = HOUSES.filter((h) => h.side === side).map((h) => h.cz).sort((a, b) => a - b);
+    for (let i = 1; i < zs.length; i++) {
+      assert.equal(zs[i] - zs[i - 1], 16); // 12 m house + 4 m alley
+    }
+  }
 });
 
 check('6 spawn points per role', () => {
@@ -34,10 +43,10 @@ check('6 spawn points per role', () => {
 });
 
 check('colliders and visual geometry exist', () => {
-  // 6 colliders per house x 6 houses + 4 boundary walls = 40.
-  assert.equal(COLLIDERS.length, 40);
+  // 6 colliders per house x 10 houses + 4 boundary walls = 64.
+  assert.equal(COLLIDERS.length, 64);
   assert.ok(visualBoxes().length > 100);
-  assert.equal(stairRamps().length, 6);
+  assert.equal(stairRamps().length, 10);
 });
 
 check('floor height is 0 outside houses', () => {
