@@ -47,6 +47,7 @@
 
     <div id="joinBox" class="hidden">
       <input id="nameInput" type="text" maxlength="16" placeholder="Your callsign" autocomplete="off">
+      <p id="joinBlockedNotice" class="hidden">A match is in progress — you can't join right now. Please wait for it to end.</p>
       <div class="joinRow">
         <button id="joinA">Join Attackers</button>
         <button id="joinB">Join Defenders</button>
@@ -107,8 +108,10 @@
       <div id="connBanner" class="hidden">Connection lost — reconnecting…</div>
       <button id="exitSoloBtn" class="hidden">EXIT SOLO</button>
       <button id="mapBtn">MAP</button>
-      <button id="fsBtn">FULLSCREEN</button>
-      <button id="climbBtn" class="hidden">CLIMB</button>
+      <div id="fsRow">
+        <button id="fsBtn">FULLSCREEN</button>
+        <button id="climbBtn" class="hidden">CLIMB</button>
+      </div>
       <div id="killfeed"></div>
       <div id="hitmarker" class="hidden">✕</div>
       <div id="damageFlash"></div>
