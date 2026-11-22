@@ -23,6 +23,12 @@
 //     they may rejoin within the grace window like a clean disconnect.
 //     (Every scenario runs with a 3 s heartbeat timeout, so clients that
 //     keep pinging prove they are never swept.)
+//   Scenario 7 (capture hold + match stats): entering the objective zone
+//     does NOT end the round instantly — leaving before the hold time
+//     resets the capture; holding for the full time wins the round by
+//     objective. A full 1v1 match to 3-0 ends with a matchEnd carrying
+//     per-player stats (kills, deaths, shots, hits, accuracy, damage,
+//     teamkills, captures), sorted by kills then damage.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -123,7 +129,7 @@ async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000' },
+    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -502,6 +508,73 @@ async function main() {
     console.log('ok - swept player rejoins within the grace window');
 
     for (const c of [g1, g2, g4, g3b]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 7: capture hold + match stats
+    const e1 = new Client('E1');
+    const f1 = new Client('F1');
+    for (const c of [e1, f1]) await c.ready();
+    e1.send({ t: 'join', name: 'E1', team: 'A' });
+    f1.send({ t: 'join', name: 'F1', team: 'B' });
+    await e1.waitFor('state', (m) => m.players.length === 2);
+    e1.send({ t: 'setAttackers', team: 'A' });
+    e1.send({ t: 'start' });
+    const q1 = await e1.waitFor('roundStart', (m) => m.round === 1);
+    await e1.waitFor('state', (m) => m.phase === 'playing');
+    console.log('ok - 1v1 match started for the capture/stats test');
+
+    // Round 1: E1 kills F1 from 5 m (close range, 1 hit). E1 stands 5.8 m
+    // from the objective centre — outside the zone, so no capture starts.
+    e1.send({ t: 'move', x: q1.objective.x - 3, y: 0, z: 40, yaw: 0, pitch: 0 });
+    await sleep(150);
+    e1.send({ t: 'shot', targetId: f1.id });
+    const q1End = await e1.waitFor('roundEnd', (m) => m.reason === 'elimination' && m.score.A === 1);
+    assert.ok(q1End);
+    console.log('ok - round 1 ends by elimination (1-0), no accidental capture');
+
+    // Round 2: entering the zone must NOT end the round instantly.
+    e1.send({ t: 'continue' });
+    const q2 = await e1.waitFor('roundStart', (m) => m.round === 2);
+    const roundEndsBefore = e1.inbox.filter((m) => m.t === 'roundEnd').length;
+    e1.send({ t: 'move', x: q2.objective.x, y: 0, z: q2.objective.z, yaw: 0, pitch: 0 });
+    await sleep(300); // half the 600 ms hold time
+    e1.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0 }); // leave early
+    await sleep(900); // past the hold time — the round must still be live
+    assert.equal(
+      e1.inbox.filter((m) => m.t === 'roundEnd').length, roundEndsBefore,
+      'leaving the zone before the hold completes must not end the round',
+    );
+    console.log('ok - entering the zone and leaving early does not end the round');
+    // Re-enter and hold the full time: the round ends by objective.
+    e1.send({ t: 'move', x: q2.objective.x, y: 0, z: q2.objective.z, yaw: 0, pitch: 0 });
+    const q2End = await e1.waitFor('roundEnd', (m) => m.winner === 'A' && m.reason === 'objective');
+    assert.equal(q2End.score.A, 2);
+    console.log('ok - holding the zone for the full time wins the round by objective (2-0)');
+
+    // Round 3: E1 kills F1 again — match ends 3-0 with a stats board.
+    e1.send({ t: 'continue' });
+    const q3 = await e1.waitFor('roundStart', (m) => m.round === 3);
+    e1.send({ t: 'move', x: q3.objective.x - 3, y: 0, z: 40, yaw: 0, pitch: 0 });
+    await sleep(150);
+    e1.send({ t: 'shot', targetId: f1.id });
+    const matchEnd = await e1.waitFor('matchEnd', (m) => m.winner === 'A' && m.score.A === 3);
+    assert.ok(Array.isArray(matchEnd.stats), 'matchEnd must carry a stats array');
+    assert.equal(matchEnd.stats.length, 2, 'stats cover both match players');
+    const [first, second] = matchEnd.stats;
+    assert.equal(first.name, 'E1', 'stats are sorted by kills, best first');
+    assert.deepEqual(
+      { kills: first.kills, deaths: first.deaths, shots: first.shots, hits: first.hits,
+        accuracy: first.accuracy, damage: first.damage, teamkills: first.teamkills, captures: first.captures },
+      { kills: 2, deaths: 0, shots: 2, hits: 2, accuracy: 100, damage: 200, teamkills: 0, captures: 1 },
+    );
+    assert.deepEqual(
+      { kills: second.kills, deaths: second.deaths, shots: second.shots, hits: second.hits,
+        accuracy: second.accuracy, damage: second.damage, teamkills: second.teamkills, captures: second.captures },
+      { kills: 0, deaths: 2, shots: 0, hits: 0, accuracy: null, damage: 0, teamkills: 0, captures: 0 },
+    );
+    console.log('ok - match ends 3-0 with a correct per-player stats board');
+
+    for (const c of [e1, f1]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
