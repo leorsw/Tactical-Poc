@@ -119,6 +119,17 @@ teleports (e.g. window climbs) don't flail the legs.
    than 90 seconds is removed as if disconnected — mid-match, they get
    the 5-minute rejoin grace — so a crashed tab or dead connection never
    leaves a ghost in the room.
+   **Ghost takeover:** a rejoin never duplicates the player. If the old
+   record is still in the room when the player comes back on a new
+   connection (frozen tab, sweep hasn't run yet), the rejoin takes it
+   over: immediately when the tab session matches (one stable id per
+   tab, sent with every join), or after 15 seconds of silence for a
+   same-callsign+team ghost. An ACTIVE same-name player is never taken
+   over. The ghost's socket is terminated so the frozen client notices
+   and reconnects cleanly. A rejected rejoin drops the client back to
+   the lobby instead of a stuck game screen, and the client retries the
+   rejoin on state updates (at most once per 2 s) until the server
+   accepts.
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
    is **5:00**.
    - **Attackers** win a round by eliminating all defenders **or** by
