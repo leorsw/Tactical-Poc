@@ -398,6 +398,19 @@ function handleMessage(ws, msg) {
       }
       break;
     }
+    case 'clearRoom': {
+      // Host only, lobby only: kick every other player (teams and solo)
+      // so a new game starts clean. Each kicked client gets a 'kicked'
+      // message first (it clears its saved join, so the auto-reconnect
+      // does not rejoin), then the socket is closed. The host stays.
+      if (p.solo || phase !== 'lobby' || p.id !== hostId) return;
+      for (const other of [...players.values()]) {
+        if (other.id === p.id) continue;
+        send(other.ws, { t: 'kicked', reason: 'The host cleared the room. Rejoin to play.' });
+        setTimeout(() => { try { other.ws.close(); } catch { /* already closed */ } }, 150);
+      }
+      break;
+    }
     case 'start': {
       // Any joined player may start (1v1 is enough); only the attackers
       // pick stays host-only.
