@@ -49,13 +49,9 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   display: flex; gap: 18px; align-items: center; background: rgba(0,0,0,0.55);
   padding: 6px 16px; border-radius: 8px; font-weight: 600; font-size: 16px; white-space: nowrap; }
 #timer { font-variant-numeric: tabular-nums; }
-#minimap { position: absolute; top: 10px; right: 10px; width: 150px; height: 150px;
-  border: 1px solid #555; border-radius: 6px; background: rgba(0,0,0,0.55); }
-#killfeed { position: absolute; top: 170px; right: 10px; text-align: right; font-size: 13px;
+#killfeed { position: absolute; top: 10px; right: 10px; text-align: right; font-size: 13px;
   display: flex; flex-direction: column; gap: 3px; }
 #killfeed div { background: rgba(0,0,0,0.55); padding: 3px 8px; border-radius: 4px; }
-#crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  font-size: 26px; color: rgba(255,255,255,0.85); text-shadow: 0 0 4px #000; }
 #hitmarker { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
   font-size: 30px; color: #ff4444; text-shadow: 0 0 6px #000; }
 #hitmarker.kill { color: #ffcc00; }
@@ -78,6 +74,11 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #roundInfo { position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
   font-size: 13px; color: #cfd4da; background: rgba(0,0,0,0.45); padding: 3px 12px; border-radius: 6px; }
 #exitSoloBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; }
+#mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto; }
+#mapOverlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.6); }
+#mapPanel { background: #14171b; border: 1px solid #555; border-radius: 10px; padding: 14px; text-align: center; }
+#mapCanvas { width: min(70vmin, 420px); height: min(70vmin, 420px); border-radius: 6px; }
 #endScreen { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px;
   align-items: center; justify-content: center; background: rgba(0,0,0,0.72); text-align: center; }
 #endScreen h2 { font-size: 30px; }
@@ -101,6 +102,11 @@ body.touch #touchUI { display: block; }
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px;
   touch-action: none; }
 #reloadBtn:active { background: rgba(255,179,64,0.75); }
+#aimBtn { position: absolute; right: 124px; bottom: 140px; width: 64px; height: 64px; border-radius: 50%;
+  background: rgba(80,140,255,0.4); border: 2px solid rgba(255,255,255,0.5);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px;
+  touch-action: none; }
+#aimBtn.active { background: rgba(80,140,255,0.85); }
 #rotateHint { display: none; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,0.7); padding: 6px 12px; border-radius: 6px; font-size: 13px; white-space: nowrap; }
 @media (orientation: portrait) {
