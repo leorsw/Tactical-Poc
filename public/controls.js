@@ -5,10 +5,11 @@
 // means (moving, firing, spectating) based on the game state.
 
 export class Controls {
-  constructor({ onReload, onMap, onFullscreen } = {}) {
+  constructor({ onReload, onMap, onFullscreen, onClimb } = {}) {
     this.onReload = onReload || (() => {});
     this.onMap = onMap || (() => {});
     this.onFullscreen = onFullscreen || (() => {});
+    this.onClimb = onClimb || (() => {});
     // Coarse pointer = a phone or tablet. Touchscreen laptops report touch
     // capability too, but their primary pointer is the mouse: treating them
     // as touch devices covers the screen with touch zones that swallow mouse
@@ -123,6 +124,7 @@ export class Controls {
     if (e.code === 'KeyR' && !e.repeat) this.onReload();
     if (e.code === 'KeyM' && !e.repeat) this.onMap();
     if (e.code === 'KeyF' && !e.repeat) this.onFullscreen();
+    if (e.code === 'KeyE' && !e.repeat) this.onClimb();
     this.keys.add(e.code);
   }
 
