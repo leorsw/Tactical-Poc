@@ -251,9 +251,9 @@ async function main() {
     d1.send({ t: 'join', name: 'D1', team: 'B' });
     d2.send({ t: 'join', name: 'D2', team: 'B' });
     await c1.waitFor('state', (m) => m.players.length === 3);
-    c1.send({ t: 'start' });
+    d1.send({ t: 'start' }); // D1 is not the host; any player may start
     await c1.waitFor('roundStart', (m) => m.round === 1);
-    console.log('ok - asymmetric 1v2 match starts fine');
+    console.log('ok - asymmetric 1v2 match starts fine (non-host start)');
 
     for (const c of [c1, d1, d2]) c.close();
     await sleep(600); // let the server notice the empty room and reset
