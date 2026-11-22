@@ -28,6 +28,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8020);
 // Tunable through env for the headless test; defaults are the game spec.
 const ROUND_MS = Number(process.env.ROUND_MS || 5 * 60 * 1000);
+// Objective capture: an attacker must hold the zone for CAPTURE_MS to win
+// the round. Reaching the zone used to end the round instantly, so a
+// straight sprint (90 m at 5 m/s) won rounds in ~20 s with no fight — and
+// with no visible marker, rounds seemed to end "for no reason". Hold time
+// is 30 s per Lior's call (22/11/2026).
+const CAPTURE_MS = Number(process.env.CAPTURE_MS || 30000);
 // No intermission timer: the next round starts only when a player presses
 // CONTINUE (see the 'continue' message). The intermission lasts until then.
 const RELOAD_MS = 3500;
@@ -85,6 +91,10 @@ let roundEndsAt = 0;
 let roundWinner = null; // 'A' | 'B' | null
 let roundReason = ''; // 'elimination' | 'objective' | 'timeout'
 let matchWinner = null;
+// Objective-capture progress this round: milliseconds accumulated while at
+// least one living attacker stands inside the zone. Resets the moment the
+// zone is empty, on round start, and on round end.
+let captureMs = 0;
 // Current round's spawn layout: each team drew a random side of the street
 // (see spawnLayout in map.js). The objective is the defenders' spawn centre.
 let layout = spawnLayout(-1, 1);
@@ -110,6 +120,33 @@ function commanderOf(team) {
 
 function aliveOf(team) {
   return playersOf(team).filter((p) => p.alive);
+}
+
+function freshStats() {
+  return { shots: 0, hits: 0, kills: 0, deaths: 0, teamkills: 0, damage: 0, captures: 0 };
+}
+
+// End-of-match leaderboard: team players only (solo players never play),
+// sorted by kills, then damage. Players who left mid-match are gone from
+// the room, so their stats are lost with them.
+function matchStats() {
+  return [...players.values()]
+    .filter((p) => !p.solo)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      team: p.team,
+      role: roleOf(p.team),
+      shots: p.stats.shots,
+      hits: p.stats.hits,
+      kills: p.stats.kills,
+      deaths: p.stats.deaths,
+      teamkills: p.stats.teamkills,
+      damage: p.stats.damage,
+      captures: p.stats.captures,
+      accuracy: p.stats.shots > 0 ? Math.round((p.stats.hits / p.stats.shots) * 100) : null,
+    }))
+    .sort((a, b) => b.kills - a.kills || b.damage - a.damage || a.name.localeCompare(b.name));
 }
 
 function send(ws, obj) {
@@ -173,6 +210,7 @@ function snapshot() {
     round,
     score: { ...score },
     timeLeftMs: phase === 'playing' ? Math.max(0, roundEndsAt - now) : 0,
+    captureProgress: phase === 'playing' ? Math.min(1, captureMs / CAPTURE_MS) : 0,
     players: [...players.values()].map((p) => ({
       id: p.id,
       x: p.pos.x,
@@ -225,6 +263,7 @@ function startRound(n) {
   phase = 'playing';
   roundWinner = null;
   roundReason = '';
+  captureMs = 0;
   // Fresh random spawn sides for this round: each team independently draws
   // west (-1) or east (+1) — 4 combinations. The objective moves with the
   // defenders' spawn.
@@ -242,6 +281,7 @@ function startRound(n) {
 function startMatch() {
   score = { A: 0, B: 0 };
   matchWinner = null;
+  for (const p of players.values()) p.stats = freshStats();
   startRound(1);
 }
 
@@ -250,11 +290,12 @@ function endRound(winnerTeam, reason) {
   score[winnerTeam] += 1;
   roundWinner = winnerTeam;
   roundReason = reason;
+  captureMs = 0;
   broadcast({ t: 'roundEnd', winner: winnerTeam, reason, score: { ...score } });
   if (score[winnerTeam] >= WIN_SCORE) {
     phase = 'ended';
     matchWinner = winnerTeam;
-    broadcast({ t: 'matchEnd', winner: winnerTeam, score: { ...score } });
+    broadcast({ t: 'matchEnd', winner: winnerTeam, score: { ...score }, stats: matchStats() });
   } else {
     // Intermission: the next round starts only when a player presses
     // CONTINUE — there is no auto-advance timer.
@@ -293,6 +334,26 @@ setInterval(() => {
         p.inMag = MAG_SIZE;
         broadcast({ t: 'reloaded', playerId: p.id, inMag: p.inMag, mags: p.mags });
       }
+    }
+  }
+
+  // Objective capture: while at least one living attacker stands inside
+  // the zone, the hold timer runs; it resets the moment the zone is
+  // empty (the capturer left, or died). Completing the hold wins the
+  // round — reaching the zone is no longer an instant win.
+  if (phase === 'playing') {
+    const cappers = [...players.values()].filter(
+      (p) => !p.solo && p.alive && roleOf(p.team) === 'attackers'
+        && objectiveContains(p.pos.x, p.pos.z, layout.objective),
+    );
+    if (cappers.length > 0) {
+      captureMs += TICK_MS;
+      if (captureMs >= CAPTURE_MS) {
+        for (const c of cappers) c.stats.captures += 1;
+        endRound(attackersTeam, 'objective');
+      }
+    } else {
+      captureMs = 0;
     }
   }
 
@@ -354,6 +415,7 @@ function handleJoin(ws, msg) {
     mags: MAG_COUNT - 1,
     reloadingUntil: 0,
     lastShotAt: 0,
+    stats: freshStats(),
     pos: { x: 0, y: 0, z: 0 },
     yaw: 0,
     pitch: 0,
@@ -389,6 +451,7 @@ function handleSolo(ws, msg) {
     mags: MAG_COUNT - 1,
     reloadingUntil: 0,
     lastShotAt: 0,
+    stats: freshStats(),
     pos: { x: spawn.x, y: 0, z: spawn.z },
     yaw: spawn.yaw,
     pitch: 0,
@@ -477,11 +540,9 @@ function handleMessage(ws, msg) {
       p.pos.y = Math.max(0, Math.min(3, y));
       if (Number.isFinite(msg.yaw)) p.yaw = Number(msg.yaw);
       if (Number.isFinite(msg.pitch)) p.pitch = Number(msg.pitch);
-      // Objective check: a living attacker inside the zone wins the round.
-      // The zone is the defenders' spawn centre for THIS round.
-      if (phase === 'playing' && p.alive && !p.solo && roleOf(p.team) === 'attackers') {
-        if (objectiveContains(p.pos.x, p.pos.z, layout.objective)) endRound(p.team, 'objective');
-      }
+      // No objective check here: capture is tick-based (see the tick
+      // loop) — entering the zone starts a hold timer instead of
+      // ending the round instantly.
       break;
     }
     case 'shot': {
@@ -492,6 +553,7 @@ function handleMessage(ws, msg) {
       if (now - p.lastShotAt < FIRE_INTERVAL_MS) return;
       p.lastShotAt = now;
       p.inMag -= 1;
+      p.stats.shots += 1;
       let hit = false;
       let killed = false;
       let targetHealth = null;
@@ -507,12 +569,17 @@ function handleMessage(ws, msg) {
         const dz = target.pos.z - p.pos.z;
         distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
         damage = damageForDistance(distance);
+        p.stats.hits += 1;
+        p.stats.damage += damage;
         target.health -= damage;
         if (target.health <= 0) {
           target.health = 0;
           target.alive = false;
           target.reloadingUntil = 0;
           killed = true;
+          p.stats.kills += 1;
+          if (target.team === p.team) p.stats.teamkills += 1;
+          target.stats.deaths += 1;
         }
         targetHealth = target.health;
       }
@@ -584,6 +651,7 @@ function removePlayer(p) {
     roundWinner = null;
     roundReason = '';
     matchWinner = null;
+    captureMs = 0;
     layout = spawnLayout(-1, 1);
     // No match left to rejoin: drop stale grace entries so they cannot
     // admit anyone into a later match.
