@@ -61,6 +61,7 @@ const damageFlashEl = $('damageFlash');
 const bannerEl = $('banner');
 const spectateBar = $('spectateBar');
 const lockHint = $('lockHint');
+const exitSoloBtn = $('exitSoloBtn');
 const endScreen = $('endScreen');
 const endTitle = $('endTitle');
 const endScore = $('endScore');
@@ -78,6 +79,7 @@ const controls = new Controls({ onReload: () => tryReload() });
 
 let myId = null;
 let joined = false;
+let solo = false;
 let myTeam = null;
 let isHost = false;
 let meta = new Map(); // playerId -> {name, team, role, commander, host}
@@ -326,7 +328,14 @@ function refreshMeshColors() {
 
 function renderLobby(state) {
   const byTeam = { A: [], B: [] };
-  for (const p of state.players) byTeam[p.team].push(p);
+  let soloCount = 0;
+  for (const p of state.players) {
+    if (p.solo) {
+      soloCount++;
+      continue;
+    }
+    byTeam[p.team].push(p);
+  }
   const renderList = (el, list) => {
     el.innerHTML = '';
     for (const p of list) {
@@ -368,6 +377,9 @@ function renderLobby(state) {
   } else {
     teamHint.textContent = `${aCount} vs ${bCount} — asymmetric splits are allowed.`;
   }
+  if (soloCount > 0) {
+    teamHint.textContent += ` ${soloCount} player${soloCount > 1 ? 's' : ''} exploring in solo mode.`;
+  }
 
   const me = state.players.find((p) => p.id === myId);
   isHost = !!me && state.hostId === myId;
@@ -403,26 +415,33 @@ function roleLabel(team) {
 
 function updateHUD() {
   // Score + timer + alive counts.
-  scoreBox.textContent = `${roleLabel('A')} ${game.score.A} — ${game.score.B} ${roleLabel('B')}`;
-  if (game.phase === 'playing') {
-    timerEl.textContent = fmtTime(game.timeLeftMs);
-  } else if (game.phase === 'intermission') {
-    timerEl.textContent = `Next round ${Math.ceil(game.intermissionLeftMs / 1000)}s`;
-  } else {
+  if (solo) {
+    scoreBox.textContent = 'SOLO MODE';
     timerEl.textContent = '—';
+    aliveBox.textContent = '—';
+    roundInfo.textContent = 'Explore the map — move, shoot, reload';
+  } else {
+    scoreBox.textContent = `${roleLabel('A')} ${game.score.A} — ${game.score.B} ${roleLabel('B')}`;
+    if (game.phase === 'playing') {
+      timerEl.textContent = fmtTime(game.timeLeftMs);
+    } else if (game.phase === 'intermission') {
+      timerEl.textContent = `Next round ${Math.ceil(game.intermissionLeftMs / 1000)}s`;
+    } else {
+      timerEl.textContent = '—';
+    }
+    let atkAlive = 0;
+    let defAlive = 0;
+    for (const [id, s] of snapPlayers) {
+      const m = meta.get(id);
+      if (!m || !s.alive) continue;
+      if (m.role === 'attackers') atkAlive++;
+      else defAlive++;
+    }
+    aliveBox.textContent = `ATK alive ${atkAlive} · DEF alive ${defAlive}`;
+    roundInfo.textContent = game.phase === 'playing' || game.phase === 'intermission'
+      ? `Round ${game.round} — first to 3`
+      : '';
   }
-  let atkAlive = 0;
-  let defAlive = 0;
-  for (const [id, s] of snapPlayers) {
-    const m = meta.get(id);
-    if (!m || !s.alive) continue;
-    if (m.role === 'attackers') atkAlive++;
-    else defAlive++;
-  }
-  aliveBox.textContent = `ATK alive ${atkAlive} · DEF alive ${defAlive}`;
-  roundInfo.textContent = game.phase === 'playing' || game.phase === 'intermission'
-    ? `Round ${game.round} — first to 3`
-    : '';
 
   // Health + ammo (mine).
   healthFill.style.width = `${myHealth}%`;
@@ -448,10 +467,11 @@ function updateHUD() {
     reloadFill.style.width = '0%';
   }
 
-  // Lock hint (desktop, alive, playing, not locked).
-  const showLockHint = !controls.isTouch && myAlive && game.phase === 'playing' && !controls.locked;
+  // Lock hint (desktop, alive, in game, not locked).
+  const inGame = game.phase === 'playing' || solo;
+  const showLockHint = !controls.isTouch && myAlive && inGame && !controls.locked;
   lockHint.classList.toggle('hidden', !showLockHint);
-  crosshairEl.classList.toggle('hidden', !myAlive || game.phase !== 'playing');
+  crosshairEl.classList.toggle('hidden', !myAlive || !inGame);
 
   // Spectate bar.
   if (!myAlive && game.phase === 'playing') {
@@ -582,7 +602,7 @@ function cycleSpectate() {
 // ---------------------------------------------------------------------------
 
 function tryFire(now) {
-  if (!myAlive || game.phase !== 'playing') return;
+  if (!myAlive || (game.phase !== 'playing' && !solo)) return;
   if (reloading || myInMag <= 0) return;
   if (now - lastFireAt < FIRE_INTERVAL) return;
   lastFireAt = now;
@@ -603,14 +623,14 @@ function tryFire(now) {
 }
 
 function tryReload() {
-  if (!myAlive || game.phase !== 'playing') return;
+  if (!myAlive || (game.phase !== 'playing' && !solo)) return;
   if (reloading || myMags <= 0 || myInMag >= 29) return;
   socket.send({ t: 'reload' });
 }
 
 function onCanvasClick() {
   sfx.ensure();
-  if (game.phase !== 'playing') return;
+  if (game.phase !== 'playing' && !solo) return;
   if (!myAlive) {
     cycleSpectate();
     return;
@@ -643,6 +663,43 @@ socket.on('joined', (msg) => {
   teamsBox.classList.remove('hidden');
 });
 
+socket.on('soloJoined', (msg) => {
+  myId = msg.id;
+  joined = true;
+  solo = true;
+  myTeam = null;
+  if (msg.spawn) {
+    local.x = msg.spawn.x;
+    local.y = msg.spawn.y;
+    local.z = msg.spawn.z;
+    local.yaw = msg.spawn.yaw;
+    local.pitch = 0;
+  }
+  myAlive = true;
+  myHealth = 100;
+  myInMag = 29;
+  myMags = 5;
+  joinBox.classList.add('hidden');
+  teamsBox.classList.add('hidden');
+  exitSoloBtn.classList.remove('hidden');
+  showScreen('game');
+  showBanner('SOLO MODE\nExplore the map — move, shoot, reload', 4000);
+});
+
+socket.on('soloLeft', () => {
+  solo = false;
+  joined = false;
+  myTeam = null;
+  myAlive = true;
+  myHealth = 100;
+  myInMag = 29;
+  myMags = 5;
+  exitSoloBtn.classList.add('hidden');
+  teamsBox.classList.add('hidden');
+  joinBox.classList.remove('hidden');
+  showScreen('lobby');
+});
+
 socket.on('error', (msg) => {
   teamHint.textContent = msg.message || 'Error';
   connectStatus.textContent = msg.message || 'Error';
@@ -662,6 +719,7 @@ socket.on('state', (msg) => {
     if (!meta.has(id)) removePlayerMesh(id);
   }
   if (!joined) return;
+  if (solo) return; // stay in the solo game view; the room may be in lobby phase
   renderLobby(msg);
   if (msg.phase === 'lobby') {
     showScreen('lobby');
@@ -713,6 +771,7 @@ socket.on('snapshot', (msg) => {
 });
 
 socket.on('shot', (msg) => {
+  if (solo) return; // solo shots never hit; match shots stay out of the solo HUD
   if (msg.shooterId === myId && msg.hit) {
     showHitmarker(msg.killed);
     sfx.hit();
@@ -739,11 +798,13 @@ socket.on('reloaded', (msg) => {
 });
 
 socket.on('roundStart', (msg) => {
+  if (solo) return;
   endScreen.classList.add('hidden');
   showBanner(`ROUND ${msg.round}`, 2500);
 });
 
 socket.on('roundEnd', (msg) => {
+  if (solo) return;
   const winnerRole = game.attackersTeam === msg.winner ? 'ATTACKERS' : 'DEFENDERS';
   const teamLetter = msg.winner;
   const reasonText =
@@ -759,6 +820,7 @@ socket.on('roundEnd', (msg) => {
 });
 
 socket.on('matchEnd', (msg) => {
+  if (solo) return;
   const winnerRole = game.attackersTeam === msg.winner ? 'ATTACKERS' : 'DEFENDERS';
   endTitle.textContent = `${winnerRole} (Team ${msg.winner}) WIN THE MATCH`;
   endScore.textContent = `Final score: Team A ${msg.score.A} — ${msg.score.B} Team B`;
@@ -780,6 +842,12 @@ function join(team) {
 $('joinA').addEventListener('click', () => join('A'));
 $('joinB').addEventListener('click', () => join('B'));
 $('joinAuto').addEventListener('click', () => join(null));
+$('soloBtn').addEventListener('click', () => {
+  sfx.ensure();
+  const name = nameInput.value.trim() || `Player${myId ?? ''}`;
+  socket.send({ t: 'solo', name });
+});
+exitSoloBtn.addEventListener('click', () => socket.send({ t: 'leaveSolo' }));
 $('switchBtn').addEventListener('click', () => {
   socket.send({ t: 'switchTeam', team: myTeam === 'A' ? 'B' : 'A' });
 });
@@ -826,7 +894,7 @@ function loop() {
     g.rotation.y += dyaw * k;
   }
 
-  if (game.phase === 'playing' && myAlive) {
+  if ((game.phase === 'playing' || solo) && myAlive) {
     // Look.
     const look = controls.takeLook();
     local.yaw -= look.dx * 0.0023;
