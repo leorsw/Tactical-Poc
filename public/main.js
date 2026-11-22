@@ -7,8 +7,9 @@
 import * as THREE from 'three';
 import {
   HOUSES,
-  OBJECTIVE,
   SPAWNS,
+  SPAWN_MARKS,
+  GROUND_WINDOWS,
   visualBoxes,
   stairRamps,
   floorHeightAt,
@@ -68,6 +69,7 @@ const endHostBtns = $('endHostBtns');
 const endWait = $('endWait');
 const mapBtn = $('mapBtn');
 const fsBtn = $('fsBtn');
+const climbBtn = $('climbBtn');
 const mapOverlay = $('mapOverlay');
 const mapCloseBtn = $('mapCloseBtn');
 const connBanner = $('connBanner');
@@ -85,6 +87,7 @@ const controls = new Controls({
   onReload: () => tryReload(),
   onMap: () => toggleMap(),
   onFullscreen: () => toggleFullscreen(),
+  onClimb: () => tryClimb(),
 });
 
 let myId = null;
@@ -109,6 +112,7 @@ let myInMag = 29;
 let myMags = 5;
 let reloading = false;
 let reloadEndsAt = 0;
+let currentWindow = null; // ground-floor window in climb range, if any
 let lastFireAt = 0;
 let lastMoveSent = 0;
 let aimBlend = 0; // 0 = rifle lowered at the hip, 1 = aimed down the sights
@@ -208,35 +212,21 @@ function initThree() {
     shootTargets.push(mesh);
   }
 
-  // Objective: marked on the road only — a filled disc + ring, no tall
-  // pillar, so it cannot be seen from across the map.
-  const disc = new THREE.Mesh(
-    new THREE.CircleGeometry(OBJECTIVE.r, 40),
-    new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.22, side: THREE.DoubleSide })
-  );
-  disc.rotation.x = -Math.PI / 2;
-  disc.position.set(OBJECTIVE.x, 0.02, OBJECTIVE.z);
-  scene.add(disc);
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(OBJECTIVE.r - 0.4, OBJECTIVE.r + 0.2, 40),
-    new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.set(OBJECTIVE.x, 0.03, OBJECTIVE.z);
-  scene.add(ring);
-
-  // Spawn zone markers.
-  const mkSpawn = (z, color) => {
-    const disc = new THREE.Mesh(
-      new THREE.CircleGeometry(3, 24),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
-    );
-    disc.rotation.x = -Math.PI / 2;
-    disc.position.set(0, 0.02, z);
-    scene.add(disc);
+  // Spawn X marks: a blue X at the attackers' spawn, a red X at the
+  // defenders' spawn. The defenders' X IS the attackers' objective —
+  // reaching it wins the round. Both sit behind the end houses,
+  // hidden from the street.
+  const mkX = (mark, color) => {
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+    for (const rot of [Math.PI / 4, -Math.PI / 4]) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.02, 0.55), mat);
+      bar.position.set(mark.x, 0.03, mark.z);
+      bar.rotation.y = rot;
+      scene.add(bar);
+    }
   };
-  mkSpawn(SPAWNS.attackers[0].z, TEAM_COLORS.attackers);
-  mkSpawn(SPAWNS.defenders[0].z, TEAM_COLORS.defenders);
+  mkX(SPAWN_MARKS.attackers, TEAM_COLORS.attackers);
+  mkX(SPAWN_MARKS.defenders, TEAM_COLORS.defenders);
 
   controls.attach(renderer.domElement, {
     joyZone: $('joyZone'),
@@ -734,8 +724,8 @@ function showBanner(text, ms = 4000) {
 }
 
 // ---------------------------------------------------------------------------
-// On-demand map: street, houses and the objective only. No player markers
-// of any kind, by design — the map shows terrain, not live positions.
+// On-demand map: street, houses and the two spawn X marks only. No player
+// markers of any kind, by design — the map shows terrain, not live positions.
 // The map is static, so it is drawn once when opened.
 // ---------------------------------------------------------------------------
 
@@ -755,17 +745,21 @@ function drawMap() {
   for (const h of HOUSES) {
     mapCtx.fillRect(mx(h.x0), mz(h.z0), mx(h.x1) - mx(h.x0), mz(h.z1) - mz(h.z0));
   }
-  // Objective diamond.
-  mapCtx.fillStyle = '#ffcc00';
-  const ox = mx(OBJECTIVE.x);
-  const oy = mz(OBJECTIVE.z);
-  mapCtx.beginPath();
-  mapCtx.moveTo(ox, oy - 8);
-  mapCtx.lineTo(ox + 7, oy);
-  mapCtx.lineTo(ox, oy + 8);
-  mapCtx.lineTo(ox - 7, oy);
-  mapCtx.closePath();
-  mapCtx.fill();
+  // Spawn X marks (blue = attackers' start, red = defenders' start = objective).
+  const drawX = (wx, wz, color) => {
+    const x = mx(wx);
+    const y = mz(wz);
+    mapCtx.strokeStyle = color;
+    mapCtx.lineWidth = 3;
+    mapCtx.beginPath();
+    mapCtx.moveTo(x - 7, y - 7);
+    mapCtx.lineTo(x + 7, y + 7);
+    mapCtx.moveTo(x + 7, y - 7);
+    mapCtx.lineTo(x - 7, y + 7);
+    mapCtx.stroke();
+  };
+  drawX(SPAWN_MARKS.attackers.x, SPAWN_MARKS.attackers.z, TEAM_CSS.attackers);
+  drawX(SPAWN_MARKS.defenders.x, SPAWN_MARKS.defenders.z, TEAM_CSS.defenders);
   // North (attackers' end) marker.
   mapCtx.fillStyle = '#cfd4da';
   mapCtx.font = `bold ${Math.round(W / 22)}px system-ui, sans-serif`;
@@ -829,6 +823,36 @@ function cycleSpectate() {
 }
 
 // ---------------------------------------------------------------------------
+// Window climbing (ground floor only): vault through a nearby window,
+// either direction — outside in or inside out.
+// ---------------------------------------------------------------------------
+
+// Find a ground-floor window close enough to vault through: within 1.5 m
+// of the wall plane and inside the window opening along the wall.
+function nearbyWindow() {
+  if (local.y > 0.5) return null;
+  for (const w of GROUND_WINDOWS) {
+    if (w.axis === 'x') {
+      if (Math.abs(local.x - w.plane) < 1.5 && Math.abs(local.z - w.center) <= w.half) return w;
+    } else {
+      if (Math.abs(local.z - w.plane) < 1.5 && Math.abs(local.x - w.center) <= w.half) return w;
+    }
+  }
+  return null;
+}
+
+function tryClimb() {
+  const w = currentWindow;
+  if (!w) return;
+  // Vault to 0.75 m past the wall plane, same spot along the wall.
+  if (w.axis === 'x') local.x = w.plane + (local.x < w.plane ? 0.75 : -0.75);
+  else local.z = w.plane + (local.z < w.plane ? 0.75 : -0.75);
+  const fixed = resolveCollision(local.x, local.z, local.y);
+  local.x = fixed.x;
+  local.z = fixed.z;
+  // The next move message (<=66 ms away) tells the server the new position.
+}
+
 // Shooting / reload
 // ---------------------------------------------------------------------------
 
@@ -1124,6 +1148,7 @@ mapBtn.addEventListener('click', () => toggleMap());
 mapOverlay.addEventListener('click', () => toggleMap());
 mapCloseBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleMap(); });
 fsBtn.addEventListener('click', () => toggleFullscreen());
+climbBtn.addEventListener('click', () => tryClimb());
 fsHelpClose.addEventListener('click', () => fsHelp.classList.add('hidden'));
 fsHelp.addEventListener('click', () => fsHelp.classList.add('hidden'));
 nameInput.addEventListener('keydown', (e) => {
@@ -1162,6 +1187,11 @@ function loop() {
     while (dyaw < -Math.PI) dyaw += Math.PI * 2;
     g.rotation.y += dyaw * k;
   }
+
+  // Window climb button: visible only while alive in-game near a
+  // ground-floor window.
+  currentWindow = ((game.phase === 'playing' || solo) && myAlive) ? nearbyWindow() : null;
+  climbBtn.classList.toggle('hidden', !currentWindow);
 
   if ((game.phase === 'playing' || solo) && myAlive) {
     // Look.
