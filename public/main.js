@@ -39,6 +39,8 @@ const teamAHeader = $('teamAHeader');
 const teamBHeader = $('teamBHeader');
 const joinAEl = $('joinA');
 const joinBEl = $('joinB');
+const joinAutoEl = $('joinAuto');
+const joinBlockedNotice = $('joinBlockedNotice');
 const teamHint = $('teamHint');
 const hostControls = $('hostControls');
 const startBtn = $('startBtn');
@@ -971,6 +973,14 @@ socket.onClose = () => {
   connBanner.classList.remove('hidden');
 };
 
+// Heartbeat: tell the server we're alive every 10 seconds, in every
+// state (lobby, playing, spectating, solo) — so a dead connection is
+// noticed and the player is removed (and may rejoin within the grace
+// window) instead of lingering as a ghost.
+setInterval(() => {
+  if (connected) socket.send({ t: 'ping' });
+}, 10000);
+
 socket.on('welcome', (msg) => {
   myId = msg.id;
 });
@@ -1064,6 +1074,18 @@ socket.on('state', (msg) => {
   for (const id of [...playerMeshes.keys()]) {
     if (!meta.has(id)) removePlayerMesh(id);
   }
+  // Join availability for players who have not joined yet: while a
+  // match is in progress (playing, or the intermission between rounds),
+  // newcomers cannot join — the lobby shows the wait message and the
+  // join buttons stay disabled. Joins open again when the match ends
+  // ('ended', for the rematch) or the room returns to the lobby. Solo
+  // mode is unaffected. (Runs before the `!joined` return below — the
+  // server sends state to waiting sockets too.)
+  const joinBlocked = msg.phase === 'playing' || msg.phase === 'intermission';
+  joinBlockedNotice.classList.toggle('hidden', !joinBlocked);
+  joinAEl.disabled = joinBlocked;
+  joinBEl.disabled = joinBlocked;
+  joinAutoEl.disabled = joinBlocked;
   if (!joined) return;
   if (solo) return; // stay in the solo game view; the room may be in lobby phase
   renderLobby(msg);
