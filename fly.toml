@@ -5,8 +5,11 @@ primary_region = "fra"
   internal_port = 8020
   force_https = true
   auto_stop_machines = false
-  auto_start_machines = true
+  auto_start_machines = false
   min_machines_running = 1
+
+[[deploy]]
+  strategy = "immediate" # one machine only: stop, update, start — no split-brain window
 
 [[vm]]
   memory = "256mb"
