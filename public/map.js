@@ -179,6 +179,7 @@ export function objectiveContains(x, z) {
 // them into materials.
 
 const WALL_COLOR = 0x9a9a9a;
+const FLOOR_COLOR = 0x7a7a7a; // grey floor inside each house
 const SLAB_COLOR = 0x8f8f8f;
 const ROOF_COLOR = 0x7d7d7d;
 
@@ -240,6 +241,9 @@ export function visualBoxes() {
         boxes.push({ x0: streetX - T, x1: streetX + T, z0, z1, y0: 5.2, y1: 6, color: WALL_COLOR });
       }
     }
+
+    // Ground-floor floor: a thin grey slab over the green ground plane.
+    boxes.push({ x0: h.ix0, x1: h.ix1, z0: h.iz0, z1: h.iz1, y0: 0, y1: 0.02, color: FLOOR_COLOR });
 
     // Second-floor slab (top surface at y = 3), with the stair opening cut out.
     const s = h.stair;
