@@ -67,6 +67,7 @@ const endScore = $('endScore');
 const endHostBtns = $('endHostBtns');
 const endWait = $('endWait');
 const mapBtn = $('mapBtn');
+const fsBtn = $('fsBtn');
 const mapOverlay = $('mapOverlay');
 const mapCanvas = $('mapCanvas');
 const mapCtx = mapCanvas.getContext('2d');
@@ -76,7 +77,11 @@ const mapCtx = mapCanvas.getContext('2d');
 // ---------------------------------------------------------------------------
 const socket = new GameSocket();
 const sfx = new Sfx();
-const controls = new Controls({ onReload: () => tryReload(), onMap: () => toggleMap() });
+const controls = new Controls({
+  onReload: () => tryReload(),
+  onMap: () => toggleMap(),
+  onFullscreen: () => toggleFullscreen(),
+});
 
 let myId = null;
 let joined = false;
@@ -280,16 +285,51 @@ function buildViewmodel() {
   add(0.06, 0.16, 0.09, 0, -0.12, -0.05, gripMat, 0.15); // magazine
   add(0.06, 0.09, 0.14, 0, -0.01, 0.24); // stock (short: stays in front of the near plane)
   add(0.05, 0.12, 0.07, 0, -0.11, 0.14, gripMat, -0.3); // pistol grip
-  add(0.02, 0.09, 0.02, 0, 0.09, -0.5); // front sight post
-  add(0.015, 0.07, 0.015, -0.035, 0.08, 0.12); // rear sight, left post
-  add(0.015, 0.07, 0.015, 0.035, 0.08, 0.12); // rear sight, right post
+  // Reflex sight: a rounded-square housing with a red dot. The dot sits on
+  // the sight line (local y = 0.13), so it lands on the screen centre when
+  // aiming. The iron sights are gone.
+  add(0.03, 0.035, 0.05, 0, 0.07, -0.08, gunmetal); // riser mount
+  const roundedRect = (w, r) => {
+    const s = new THREE.Path();
+    s.moveTo(-w + r, -w);
+    s.lineTo(w - r, -w);
+    s.absarc(w - r, -w + r, r, -Math.PI / 2, 0, false);
+    s.lineTo(w, w - r);
+    s.absarc(w - r, w - r, r, 0, Math.PI / 2, false);
+    s.lineTo(-w + r, w);
+    s.absarc(-w + r, w - r, r, Math.PI / 2, Math.PI, false);
+    s.lineTo(-w, -w + r);
+    s.absarc(-w + r, -w + r, r, Math.PI, Math.PI * 1.5, false);
+    return s;
+  };
+  const sightShape = new THREE.Shape(roundedRect(0.05, 0.02).getPoints(24));
+  sightShape.holes.push(roundedRect(0.035, 0.012));
+  const housing = new THREE.Mesh(
+    new THREE.ExtrudeGeometry(sightShape, { depth: 0.025, bevelEnabled: false }),
+    gunmetal
+  );
+  housing.position.set(0, 0.13, -0.095);
+  g.add(housing);
+  // Glass pane (subtle) + the red dot at the centre of the window.
+  const glass = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.07, 0.07),
+    new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })
+  );
+  glass.position.set(0, 0.13, -0.082);
+  g.add(glass);
+  const dot = new THREE.Mesh(
+    new THREE.CircleGeometry(0.008, 16),
+    new THREE.MeshBasicMaterial({ color: 0xff2222 })
+  );
+  dot.position.set(0, 0.13, -0.08);
+  g.add(dot);
   // Muzzle flash: two crossed additive planes at the barrel tip.
   const flashMat = new THREE.MeshBasicMaterial({
     color: 0xffc933, transparent: true, opacity: 0.95,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
   flashMesh = new THREE.Group();
-  const f1 = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.22), flashMat);
+  const f1 = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.34), flashMat);
   const f2 = f1.clone();
   f2.rotation.z = Math.PI / 2;
   flashMesh.add(f1, f2);
@@ -383,50 +423,83 @@ function makeNameSprite(name, colorCss) {
 function getPlayerMesh(id) {
   if (playerMeshes.has(id)) return playerMeshes.get(id);
   const m = meta.get(id) || {};
-  const color = TEAM_COLORS[m.role] || 0x888888;
   const group = new THREE.Group();
-  const uniformMat = new THREE.MeshLambertMaterial({ color });
-  const darkMat = new THREE.MeshLambertMaterial({ color: 0x2e2a24 });
-  const oliveMat = new THREE.MeshLambertMaterial({ color: 0x4a5240 });
-  const skinMat = new THREE.MeshLambertMaterial({ color: 0xc79b76 });
+  // The figure is fully black; the team shows only in the floating name tag.
+  const black = new THREE.MeshLambertMaterial({ color: 0x111111 });
+  const darker = new THREE.MeshLambertMaterial({ color: 0x080808 });
+  const gunmetal = new THREE.MeshLambertMaterial({ color: 0x1c1c1e });
   const add = (w, h, d, x, y, z, mat) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     mesh.position.set(x, y, z);
     group.add(mesh);
     return mesh;
   };
-  // Legs.
-  add(0.17, 0.55, 0.2, -0.11, 0.28, 0, darkMat);
-  add(0.17, 0.55, 0.2, 0.11, 0.28, 0, darkMat);
-  // Torso in team color + darker vest plate (hittable).
-  const torso = add(0.52, 0.62, 0.3, 0, 0.86, 0, uniformMat);
+  // A limb segment stretched exactly between two joints.
+  const limb = (from, to, w, d, mat) => {
+    const dir = new THREE.Vector3().subVectors(to, from);
+    const len = dir.length();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, len, d), mat);
+    mesh.position.copy(from).addScaledVector(dir, 0.5);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    group.add(mesh);
+    return mesh;
+  };
+  const V = (x, y, z) => new THREE.Vector3(x, y, z);
+  // Legs + boots.
+  add(0.17, 0.55, 0.2, -0.11, 0.28, 0, black);
+  add(0.17, 0.55, 0.2, 0.11, 0.28, 0, black);
+  add(0.18, 0.1, 0.32, -0.11, 0.05, -0.04, darker);
+  add(0.18, 0.1, 0.32, 0.11, 0.05, -0.04, darker);
+  // Torso (hittable) + vest with pouches.
+  const torso = add(0.52, 0.62, 0.3, 0, 0.86, 0, black);
   torso.userData.playerId = id;
-  add(0.4, 0.45, 0.06, 0, 0.88, -0.17, darkMat);
-  // Arms angled forward, holding the rifle.
-  const armL = add(0.13, 0.5, 0.15, -0.32, 0.95, -0.1, uniformMat);
-  armL.rotation.x = -0.7;
-  const armR = add(0.13, 0.5, 0.15, 0.32, 0.95, -0.1, uniformMat);
-  armR.rotation.x = -0.7;
-  // Head (hittable) + helmet.
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 10, 8), skinMat);
+  add(0.42, 0.45, 0.06, 0, 0.88, -0.17, darker);
+  add(0.12, 0.14, 0.05, -0.12, 0.82, -0.21, darker);
+  add(0.12, 0.14, 0.05, 0.12, 0.82, -0.21, darker);
+  // Arms: two segments each, reaching forward to hold the rifle.
+  // Left hand ends under the forend; right hand ends on the pistol grip.
+  limb(V(-0.3, 1.12, 0), V(-0.12, 0.98, -0.28), 0.13, 0.15, black);
+  limb(V(-0.12, 0.98, -0.28), V(0.06, 0.96, -0.58), 0.11, 0.13, black);
+  limb(V(0.3, 1.12, 0), V(0.28, 0.95, -0.12), 0.13, 0.15, black);
+  limb(V(0.28, 0.95, -0.12), V(0.1, 0.98, -0.3), 0.11, 0.13, black);
+  // Hands gripping the rifle.
+  add(0.09, 0.09, 0.12, 0.06, 0.96, -0.58, darker);
+  add(0.09, 0.09, 0.12, 0.1, 0.98, -0.3, darker);
+  // Head (hittable, black balaclava) + helmet.
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 10, 8), black);
   head.position.y = 1.42;
   head.userData.playerId = id;
   group.add(head);
   const helmet = new THREE.Mesh(
-    new THREE.SphereGeometry(0.26, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), oliveMat);
+    new THREE.SphereGeometry(0.26, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), darker);
   helmet.position.y = 1.46;
   group.add(helmet);
-  // Rifle held forward.
-  const rifleMesh = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 0.85), darkMat);
-  rifleMesh.position.set(0.12, 1.05, -0.35);
-  rifleMesh.rotation.x = 0.08;
+  // Rifle: receiver, barrel, magazine, stock — held forward, stock at the
+  // shoulder, muzzle ahead.
+  const rifleMesh = new THREE.Group();
+  const rAdd = (w, h, d, x, y, z, mat) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    mesh.position.set(x, y, z);
+    rifleMesh.add(mesh);
+    return mesh;
+  };
+  rAdd(0.07, 0.1, 0.45, 0, 0, 0, gunmetal); // receiver
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.3, 8), gunmetal);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.01, -0.36);
+  rifleMesh.add(barrel);
+  rAdd(0.05, 0.16, 0.08, 0, -0.11, -0.02, darker); // magazine
+  rAdd(0.06, 0.09, 0.16, 0, 0, 0.28, darker); // stock
+  rifleMesh.position.set(0.08, 1.04, -0.3);
+  rifleMesh.rotation.x = 0.05;
   group.add(rifleMesh);
   const tag = makeNameSprite(m.name || '?', TEAM_CSS[m.role] || '#ffffff');
   tag.position.y = 2.0;
   group.add(tag);
-  group.userData.bodyMat = uniformMat;
+  group.userData.bodyMat = black;
   group.userData.tag = tag;
   group.userData.tagName = m.name || '?';
+  group.userData.tagRole = m.role;
   scene.add(group);
   playerMeshes.set(id, group);
   shootTargets.push(torso, head);
@@ -446,16 +519,16 @@ function removePlayerMesh(id) {
 function refreshMeshColors() {
   for (const [id, g] of playerMeshes) {
     const m = meta.get(id) || {};
-    const color = TEAM_COLORS[m.role] || 0x888888;
-    g.userData.bodyMat.color.setHex(color);
-    if (g.userData.tagName !== (m.name || '?')) {
-      // Name changed (shouldn't happen) — rebuild the tag.
+    // Bodies stay black; only the name tag follows the team color, so it
+    // is rebuilt when the name or the team changes.
+    if (g.userData.tagName !== (m.name || '?') || g.userData.tagRole !== m.role) {
       g.remove(g.userData.tag);
       const tag = makeNameSprite(m.name || '?', TEAM_CSS[m.role] || '#ffffff');
-      tag.position.y = 2.15;
+      tag.position.y = 2.0;
       g.add(tag);
       g.userData.tag = tag;
       g.userData.tagName = m.name || '?';
+      g.userData.tagRole = m.role;
     }
   }
 }
@@ -511,7 +584,7 @@ function renderLobby(state) {
   const aCount = byTeam.A.length;
   const bCount = byTeam.B.length;
   if (aCount === 1 || bCount === 1) {
-    teamHint.textContent = 'Heads up: 2+ players per team is recommended for a good test, but you can start with 1vX.';
+    teamHint.textContent = '1 player per team is enough to start — 2+ per team is recommended for a good test.';
   } else {
     teamHint.textContent = `${aCount} vs ${bCount} — asymmetric splits are allowed.`;
   }
@@ -522,7 +595,7 @@ function renderLobby(state) {
   const me = state.players.find((p) => p.id === myId);
   isHost = !!me && state.hostId === myId;
   hostControls.classList.toggle('hidden', !isHost);
-  waitHost.classList.toggle('hidden', isHost);
+  waitHost.classList.add('hidden'); // anyone can start now — no waiting
   $('atkA').classList.toggle('activeChoice', state.attackersTeam === 'A');
   $('atkB').classList.toggle('activeChoice', state.attackersTeam === 'B');
   const canStart = aCount >= 1 && bCount >= 1;
@@ -703,6 +776,15 @@ function toggleMap() {
   if (mapOpen) drawMap();
 }
 
+function toggleFullscreen() {
+  const done = (p) => { if (p && p.catch) p.catch(() => {}); };
+  if (document.fullscreenElement) done(document.exitFullscreen());
+  else done(document.documentElement.requestFullscreen());
+}
+document.addEventListener('fullscreenchange', () => {
+  fsBtn.textContent = document.fullscreenElement ? 'EXIT FULLSCREEN' : 'FULLSCREEN';
+});
+
 // ---------------------------------------------------------------------------
 // Spectating
 // ---------------------------------------------------------------------------
@@ -762,11 +844,11 @@ function tryFire(now) {
   sfx.shoot();
   // Firing feedback: the rifle kicks and the muzzle flashes.
   recoil = 1;
-  flashUntil = now + 55;
+  flashUntil = now + 90;
   if (flashMesh) {
     flashMesh.visible = true;
     flashMesh.rotation.z = Math.random() * Math.PI;
-    const s = 0.8 + Math.random() * 0.5;
+    const s = 1.0 + Math.random() * 0.6;
     flashMesh.scale.set(s, s, s);
   }
 }
@@ -973,8 +1055,8 @@ socket.on('matchEnd', (msg) => {
   const winnerRole = game.attackersTeam === msg.winner ? 'ATTACKERS' : 'DEFENDERS';
   endTitle.textContent = `${winnerRole} (Team ${msg.winner}) WIN THE MATCH`;
   endScore.textContent = `Final score: Team A ${msg.score.A} — ${msg.score.B} Team B`;
-  endHostBtns.classList.toggle('hidden', !isHost);
-  endWait.classList.toggle('hidden', isHost);
+  endHostBtns.classList.remove('hidden'); // anyone can rematch now
+  endWait.classList.add('hidden');
   endScreen.classList.remove('hidden');
 });
 
@@ -1007,6 +1089,7 @@ $('rematchBtn').addEventListener('click', () => socket.send({ t: 'rematch', swap
 $('swapBtn').addEventListener('click', () => socket.send({ t: 'rematch', swap: true }));
 mapBtn.addEventListener('click', () => toggleMap());
 mapOverlay.addEventListener('click', () => toggleMap());
+fsBtn.addEventListener('click', () => toggleFullscreen());
 nameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') join(null);
 });
