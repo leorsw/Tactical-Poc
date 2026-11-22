@@ -18,6 +18,7 @@ export class Controls {
     this.keys = new Set();
     this.firing = false; // mouse held (desktop) or FIRE held (mobile)
     this.aiming = false; // right mouse held (desktop) or AIM toggled (mobile)
+    this.crouch = false; // C toggled (desktop) or CROUCH toggled (mobile)
     this.locked = false;
     this.lookDX = 0;
     this.lookDY = 0;
@@ -125,6 +126,7 @@ export class Controls {
     if (e.code === 'KeyM' && !e.repeat) this.onMap();
     if (e.code === 'KeyF' && !e.repeat) this.onFullscreen();
     if (e.code === 'KeyE' && !e.repeat) this.onClimb();
+    if (e.code === 'KeyC' && !e.repeat) this.crouch = !this.crouch;
     this.keys.add(e.code);
   }
 
@@ -133,7 +135,7 @@ export class Controls {
   }
 
   _attachTouch() {
-    const { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn, aimBtn } = this.els;
+    const { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn, aimBtn, crouchBtn } = this.els;
     const RADIUS = 48; // joystick travel in px
 
     const setKnob = (dx, dy) => {
@@ -224,6 +226,14 @@ export class Controls {
         e.stopPropagation();
         this.aiming = !this.aiming;
         aimBtn.classList.toggle('active', this.aiming);
+      }, { passive: false });
+    }
+    if (crouchBtn) {
+      crouchBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.crouch = !this.crouch;
+        crouchBtn.classList.toggle('active', this.crouch);
       }, { passive: false });
     }
   }
