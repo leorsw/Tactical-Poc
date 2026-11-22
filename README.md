@@ -60,7 +60,7 @@ Then open <http://localhost:8020> in a desktop browser.
 | Hold right mouse | Aim down the sights (tighter spread, slight zoom, slower move) |
 | R | Reload (3.5 s) |
 | M | Toggle map (terrain only, no player markers) |
-| F | Toggle fullscreen |
+| F | Toggle fullscreen (on iPhone Safari the button shows Add-to-Home-Screen instructions — no Fullscreen API there) |
 | Click (while eliminated) | Cycle spectate target |
 
 ### Mobile (touch)
@@ -182,6 +182,16 @@ npm test
   Actions (workflow: `.github/workflows/fly-deploy.yml`). Multi-file pushes
   batch into a single deploy run: all commits but the last carry
   `[skip ci]` (parallel `fly deploy` runs race and fail — 22/11/2026).
+- **Exactly one machine, always:** the room lives in server memory, so a
+  second machine would split players into two invisible rooms that can't
+  see each other. `fly.toml` sets `auto_start_machines = false` and deploy
+  strategy `immediate` (stop, update, start — no old+new overlap window).
+  Never scale this app above 1 machine.
+- **Auto-reconnect:** if the connection drops (deploy restart, mobile
+  network blip), the client reconnects with backoff (1s, 2s, 4s, 8s cap)
+  and rejoins with the same callsign/team; a red "Connection lost —
+  reconnecting…" banner shows in-game while disconnected. Rejoining
+  mid-match spectates until the next round (same as any late joiner).
 
 ## Files
 
