@@ -225,3 +225,10 @@ test/
   map-test.mjs          map unit tests
   headless-test.mjs     scripted 2v2 + 1v2 server test
 ```
+
+## Changelog (22/11/2026)
+
+- **Round 4:** lobby labelled by role (ATTACKERS / DEFENDERS, join buttons
+  included); objective shown on the map only, defenders' X only, labelled
+  לכבוש / להגן; CONTINUE button ends each intermission (no auto-advance);
+  spawn sides drawn randomly every round (4 combinations).
