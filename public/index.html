@@ -46,7 +46,7 @@
         <button id="joinB">Join Team B</button>
         <button id="joinAuto">Auto-assign</button>
       </div>
-      <p class="hint">Teams need not be symmetric — 6 vs 2 is fine.<br>1–6 players per team.</p>
+      <p class="hint">Teams need not be symmetric — 6 vs 2 is fine.<br>1–6 players per team · 1 per team is enough to start.</p>
       <div class="joinRow">
         <button id="soloBtn" class="secondary">Solo mode — explore alone</button>
       </div>
@@ -74,11 +74,14 @@
           <button id="atkA">Team A attacks</button>
           <button id="atkB">Team B attacks</button>
         </div>
+      </div>
+      <div class="lobbyActions">
         <button id="startBtn" class="primary">Start match</button>
         <p id="startHint" class="hint"></p>
       </div>
       <p id="waitHost" class="hint hidden">Waiting for the host to start the match…</p>
     </div>
+    <p class="hint">WASD Move · Mouse Look · Click Shoot · Right Mouse Aim · R Reload · M Map · F Fullscreen</p>
   </section>
 
   <!-- ================= Game ================= -->
@@ -94,6 +97,7 @@
       </div>
       <button id="exitSoloBtn" class="hidden">EXIT SOLO</button>
       <button id="mapBtn">MAP</button>
+      <button id="fsBtn">FULLSCREEN</button>
       <div id="killfeed"></div>
       <div id="hitmarker" class="hidden">✕</div>
       <div id="damageFlash"></div>
