@@ -21,14 +21,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { SPAWNS, objectiveContains } from './public/map.js';
+import { SPAWNS, spawnLayout, objectiveContains } from './public/map.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.PORT || 8020);
 // Tunable through env for the headless test; defaults are the game spec.
 const ROUND_MS = Number(process.env.ROUND_MS || 5 * 60 * 1000);
-const INTERMISSION_MS = Number(process.env.INTERMISSION_MS || 10 * 1000);
+// No intermission timer: the next round starts only when a player presses
+// CONTINUE (see the 'continue' message). The intermission lasts until then.
 const RELOAD_MS = 3500;
 const WIN_SCORE = 3;
 const MAX_PER_TEAM = 6;
@@ -66,10 +67,12 @@ let phase = 'lobby'; // 'lobby' | 'playing' | 'intermission' | 'ended'
 let round = 0;
 let score = { A: 0, B: 0 };
 let roundEndsAt = 0;
-let intermissionEndsAt = 0;
 let roundWinner = null; // 'A' | 'B' | null
 let roundReason = ''; // 'elimination' | 'objective' | 'timeout'
 let matchWinner = null;
+// Current round's spawn layout: each team drew a random side of the street
+// (see spawnLayout in map.js). The objective is the defenders' spawn centre.
+let layout = spawnLayout(-1, 1);
 
 function teamOf(p) {
   return p.team;
@@ -115,7 +118,7 @@ function publicState() {
     score: { ...score },
     attackersTeam,
     roundEndsAt,
-    intermissionEndsAt,
+    objective: { ...layout.objective },
     roundWinner,
     roundReason,
     matchWinner,
@@ -149,7 +152,6 @@ function snapshot() {
     round,
     score: { ...score },
     timeLeftMs: phase === 'playing' ? Math.max(0, roundEndsAt - now) : 0,
-    intermissionLeftMs: phase === 'intermission' ? Math.max(0, intermissionEndsAt - now) : 0,
     players: [...players.values()].map((p) => ({
       id: p.id,
       x: p.pos.x,
@@ -174,7 +176,7 @@ function resetPlayerForRound(p) {
   const role = roleOf(p.team);
   const mates = playersOf(p.team);
   const index = mates.findIndex((m) => m.id === p.id);
-  const spawn = SPAWNS[role][Math.min(index, SPAWNS[role].length - 1)];
+  const spawn = layout[role][Math.min(index, layout[role].length - 1)];
   p.alive = true;
   p.health = 100;
   p.inMag = MAG_SIZE;
@@ -202,13 +204,18 @@ function startRound(n) {
   phase = 'playing';
   roundWinner = null;
   roundReason = '';
+  // Fresh random spawn sides for this round: each team independently draws
+  // west (-1) or east (+1) — 4 combinations. The objective moves with the
+  // defenders' spawn.
+  const side = () => (Math.random() < 0.5 ? -1 : 1);
+  layout = spawnLayout(side(), side());
   for (const p of players.values()) {
     if (p.solo) continue; // solo players keep exploring, untouched by rounds
     resetPlayerForRound(p);
   }
   roundEndsAt = Date.now() + ROUND_MS;
   broadcastState();
-  broadcast({ t: 'roundStart', round });
+  broadcast({ t: 'roundStart', round, objective: { ...layout.objective } });
 }
 
 function startMatch() {
@@ -228,8 +235,9 @@ function endRound(winnerTeam, reason) {
     matchWinner = winnerTeam;
     broadcast({ t: 'matchEnd', winner: winnerTeam, score: { ...score } });
   } else {
+    // Intermission: the next round starts only when a player presses
+    // CONTINUE — there is no auto-advance timer.
     phase = 'intermission';
-    intermissionEndsAt = Date.now() + INTERMISSION_MS;
   }
   broadcastState();
 }
@@ -249,7 +257,7 @@ function checkElimination() {
 }
 
 // ---------------------------------------------------------------------------
-// Tick: snapshot broadcast, reload completion, timer, intermission
+// Tick: snapshot broadcast, reload completion, round timer.
 // ---------------------------------------------------------------------------
 
 setInterval(() => {
@@ -271,8 +279,6 @@ setInterval(() => {
     // Time expired: the defenders survived.
     const defendersTeam = attackersTeam === 'A' ? 'B' : 'A';
     endRound(defendersTeam, 'timeout');
-  } else if (phase === 'intermission' && now >= intermissionEndsAt) {
-    startRound(round + 1);
   }
 
   if (players.size > 0) broadcast(snapshot());
@@ -416,8 +422,9 @@ function handleMessage(ws, msg) {
       if (Number.isFinite(msg.yaw)) p.yaw = Number(msg.yaw);
       if (Number.isFinite(msg.pitch)) p.pitch = Number(msg.pitch);
       // Objective check: a living attacker inside the zone wins the round.
+      // The zone is the defenders' spawn centre for THIS round.
       if (phase === 'playing' && p.alive && !p.solo && roleOf(p.team) === 'attackers') {
-        if (objectiveContains(p.pos.x, p.pos.z)) endRound(p.team, 'objective');
+        if (objectiveContains(p.pos.x, p.pos.z, layout.objective)) endRound(p.team, 'objective');
       }
       break;
     }
@@ -487,6 +494,14 @@ function handleMessage(ws, msg) {
       send(ws, { t: 'soloLeft' });
       break;
     }
+    case 'continue': {
+      // Any joined player may press CONTINUE during an intermission;
+      // the first press starts the next round. (Solo players are not
+      // part of the match, so they cannot.)
+      if (p.solo || phase !== 'intermission') return;
+      startRound(round + 1);
+      break;
+    }
     case 'rematch': {
       if (p.solo || phase !== 'ended') return;
       if (msg.swap) attackersTeam = attackersTeam === 'A' ? 'B' : 'A';
@@ -513,6 +528,7 @@ function removePlayer(p) {
     roundWinner = null;
     roundReason = '';
     matchWinner = null;
+    layout = spawnLayout(-1, 1);
     return;
   }
   if (hostId === p.id) {
