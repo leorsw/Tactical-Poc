@@ -89,6 +89,16 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 8px; font-size: 15px; }
 #roundInfo { position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
   font-size: 13px; color: #cfd4da; background: rgba(0,0,0,0.45); padding: 3px 12px; border-radius: 6px; }
+/* Objective capture progress (under the top bar): green while we capture,
+   red when the enemy does. */
+#captureBar { position: absolute; top: 86px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.6); padding: 6px 14px; border-radius: 8px; text-align: center; }
+#captureLabel { font-size: 14px; font-weight: 700; color: #7dff9a; white-space: nowrap; }
+#captureBar.danger #captureLabel { color: #ff8080; }
+.capture-track { width: 220px; height: 8px; background: #333; border-radius: 4px;
+  margin-top: 5px; overflow: hidden; }
+#captureFill { height: 100%; width: 0%; background: #4caf50; }
+#captureBar.danger #captureFill { background: #e53333; }
 #exitSoloBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; }
 #mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto; }
 #fsRow { position: absolute; top: 98px; left: 10px; display: flex; gap: 10px; align-items: center; }
@@ -109,6 +119,16 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   align-items: center; justify-content: center; background: rgba(0,0,0,0.72); text-align: center; }
 #endScreen h2 { font-size: 30px; }
 #endHostBtns { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+/* Match stats table (end of match). Compact: readable on a phone. */
+#endStats table { border-collapse: collapse; font-size: 14px; background: rgba(20,22,26,0.9);
+  border-radius: 8px; overflow: hidden; }
+#endStats th, #endStats td { padding: 6px 10px; text-align: center; border-bottom: 1px solid #2c3038;
+  font-variant-numeric: tabular-nums; }
+#endStats th { color: #9aa3ad; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+#endStats td:first-child { text-align: left; font-weight: 600; max-width: 140px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#endStats td.atk { color: #6ea8ff; }
+#endStats td.def { color: #ff8080; }
 
 /* ---------- Touch controls (body.touch only) ---------- */
 #touchUI { display: none; }
