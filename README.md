@@ -59,6 +59,7 @@ Then open <http://localhost:8020> in a desktop browser.
 | Hold left mouse | Fire |
 | Hold right mouse | Aim down the sights (tighter spread, slight zoom, slower move) |
 | R | Reload (3.5 s) |
+| C | Crouch (toggle — kneel when still, crouch-walk when moving; slower, lower eye level, smaller target) |
 | M | Toggle map (terrain only, no player markers) |
 | F | Toggle fullscreen (on iPhone Safari the button shows Add-to-Home-Screen instructions — no Fullscreen API there) |
 | E | Climb through a nearby ground-floor window (a CLIMB button also appears) |
@@ -71,6 +72,7 @@ Then open <http://localhost:8020> in a desktop browser.
 | Drag right side of screen | Look |
 | Hold FIRE | Fire |
 | AIM button | Toggle aim down the sights |
+| CROUCH button | Toggle crouch (kneel when still, crouch-walk when moving) |
 | RELOAD button | Reload (3.5 s) |
 | MAP button | Show map (terrain only, no player markers) |
 | Tap look area (while eliminated) | Cycle spectate target |
@@ -83,13 +85,45 @@ no timer and no win condition. Nobody can shoot you and you cannot shoot
 anyone; a match can start alongside you while you explore. **EXIT SOLO**
 (top-left) returns you to the lobby, where you can join a team normally.
 
+While you are solo (and the room is in the lobby), a defender dummy
+called **Dummy** stands at the defenders' end (centre of the street, 40 m
+up). Walk within 30 m of it and it turns to face you and fires 3-round
+bursts — so you can see a muzzle flash from the outside and hear another
+player's shots. Its shots never hit or damage you, you cannot shoot it,
+and it never appears in the lobby list or the counts; it vanishes when
+the last solo player leaves or a match starts.
+
 ## Player animation
+
+The soldier is a small joint hierarchy — hips, knees, waist, shoulders,
+elbows, neck — with an oval torso (a sphere squashed front-to-back) and
+capsule limbs, so the whole body reads round with no sharp corners
+anywhere; the boots, vest and rifle stay boxy as equipment. Four
+tactical poses are defined as joint angles, and each mesh lerps toward its
+target pose (~0.2 s) so transitions are smooth:
+
+- **Ready** (default): rifle low across the chest, muzzle down, slight
+  bend in the knees.
+- **Aim** (aiming down the sights): rifle shouldered and level, elbows
+  tucked, lean in, left foot forward.
+- **Kneel** (crouched and still): a deep one-knee kneel, left foot forward,
+  right knee on the ground, rifle up.
+- **Crouch-walk** (crouched and moving): knees bent, feet slightly apart
+  in a small straddle, rifle up — upright enough to read as walking, not
+  a squat.
+
+Crouch and aiming are relayed as two booleans in the move message and
+appear in the 15 Hz snapshot, so every player sees the others' poses.
+Crouching also lowers your own eye level (0.35 m) and slows movement to
+45% — and since shots hit the torso/head meshes, a crouched player is
+genuinely a smaller target.
 
 Other players' soldiers walk: each leg hangs from a hip pivot and swings
 with the distance actually travelled (one step per ~1.1 m), easing in when
-a player starts moving and back to neutral when they stop. The arms stay
-on the rifle. The cycle is driven by the interpolated position, so
-teleports (e.g. window climbs) don't flail the legs.
+a player starts moving and back to neutral when they stop. The knee bends
+while its leg swings forward and straightens as the foot plants. The cycle
+is driven by the interpolated position, so teleports (e.g. window climbs)
+don't flail the legs.
 
 ## Match flow
 
@@ -187,6 +221,9 @@ teleports (e.g. window climbs) don't flail the legs.
   design: the rifle hangs lowered while moving, and aiming raises it so the
   reflex sight (rounded square, red dot) sits on the centre of the screen. Each shot kicks the rifle
   and flashes the muzzle; hits on walls show a brief impact marker.
+  **Other players' shots are visible and audible too**: a muzzle flash
+  shows on the shooter's rifle for 90 ms and a bang plays, quieter with
+  distance (full volume up close, fading to a floor past ~50 m).
 - Friendly fire is **ON**: a hit from anyone on anyone kills, including teammates (shown as TEAMKILL in the kill feed). No extra penalty beyond losing the teammate.
 - The server is authoritative for health, ammo, score, timer and win
   conditions. Clients simulate their own movement and send shot claims;
@@ -222,9 +259,12 @@ npm test
   check, a friendly-fire kill, an empty-team start rejection, an
   asymmetric 1v2 start, and a solo-mode scenario (explore alone,
   shooting/reload alone, a match starting alongside, leave and re-join).
-  Plus: clear-room, no-mid-match-joins, heartbeat ghost sweep, and a
+  Plus: clear-room, no-mid-match-joins, heartbeat ghost sweep, a
   capture-hold + match-stats scenario (leaving the zone early resets the
-  capture; a full 1v1 match ends with a verified stats board).
+  capture; a full 1v1 match ends with a verified stats board), a
+  ghost/session-takeover scenario, a stance-flags relay scenario, and a
+  solo-NPC scenario (the dummy appears, fires bursts in range, holds
+  fire out of range, and vanishes when the last solo player leaves).
 
 ## Known limits / what is NOT in v1
 
