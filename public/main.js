@@ -55,7 +55,6 @@ const reloadBar = $('reloadBar');
 const reloadFill = $('reloadFill');
 const reloadText = $('reloadText');
 const killfeedEl = $('killfeed');
-const crosshairEl = $('crosshair');
 const hitmarkerEl = $('hitmarker');
 const damageFlashEl = $('damageFlash');
 const bannerEl = $('banner');
@@ -67,15 +66,17 @@ const endTitle = $('endTitle');
 const endScore = $('endScore');
 const endHostBtns = $('endHostBtns');
 const endWait = $('endWait');
-const minimapCanvas = $('minimap');
-const mmCtx = minimapCanvas.getContext('2d');
+const mapBtn = $('mapBtn');
+const mapOverlay = $('mapOverlay');
+const mapCanvas = $('mapCanvas');
+const mapCtx = mapCanvas.getContext('2d');
 
 // ---------------------------------------------------------------------------
 // Client state
 // ---------------------------------------------------------------------------
 const socket = new GameSocket();
 const sfx = new Sfx();
-const controls = new Controls({ onReload: () => tryReload() });
+const controls = new Controls({ onReload: () => tryReload(), onMap: () => toggleMap() });
 
 let myId = null;
 let joined = false;
@@ -101,6 +102,10 @@ let reloading = false;
 let reloadEndsAt = 0;
 let lastFireAt = 0;
 let lastMoveSent = 0;
+let aimBlend = 0; // 0 = rifle lowered at the hip, 1 = aimed down the sights
+let recoil = 0; // 0..1, decays after each shot
+let flashUntil = 0; // performance.now() timestamp: muzzle flash visible until
+let mapOpen = false;
 
 // Local player transform (authoritative copy lives on the server; the client
 // simulates movement and the server relays it to everyone else).
@@ -119,6 +124,10 @@ let raycaster = null;
 const shootTargets = []; // meshes bullets can hit (walls, ground, players)
 const playerMeshes = new Map(); // playerId -> THREE.Group
 let threeReady = false;
+// First-person rifle viewmodel (a child of the camera) + muzzle flash.
+let rifle = null;
+let flashMesh = null;
+let impactMarker = null;
 
 function initThree() {
   if (threeReady) return;
@@ -137,6 +146,8 @@ function initThree() {
   camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 300);
   camera.rotation.order = 'YXZ';
   raycaster = new THREE.Raycaster();
+  scene.add(camera); // the first-person rifle is a child of the camera
+  buildViewmodel();
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.1));
   const sun = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -188,16 +199,15 @@ function initThree() {
     shootTargets.push(mesh);
   }
 
-  // Objective: pillar of light + floor ring at the defenders' end.
-  const pillar = new THREE.Mesh(
-    new THREE.CylinderGeometry(OBJECTIVE.r, OBJECTIVE.r, 30, 24, 1, true),
-    new THREE.MeshBasicMaterial({
-      color: 0xffcc00, transparent: true, opacity: 0.14,
-      side: THREE.DoubleSide, depthWrite: false,
-    })
+  // Objective: marked on the road only — a filled disc + ring, no tall
+  // pillar, so it cannot be seen from across the map.
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(OBJECTIVE.r, 40),
+    new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.22, side: THREE.DoubleSide })
   );
-  pillar.position.set(OBJECTIVE.x, 15, OBJECTIVE.z);
-  scene.add(pillar);
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.set(OBJECTIVE.x, 0.02, OBJECTIVE.z);
+  scene.add(disc);
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(OBJECTIVE.r - 0.4, OBJECTIVE.r + 0.2, 40),
     new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
@@ -226,6 +236,7 @@ function initThree() {
     lookZone: $('lookZone'),
     fireBtn: $('fireBtn'),
     reloadBtn: $('reloadBtn'),
+    aimBtn: $('aimBtn'),
   });
   if (controls.isTouch) document.body.classList.add('touch');
   $('lookZone').addEventListener('click', () => {
@@ -244,6 +255,110 @@ function initThree() {
   });
 
   requestAnimationFrame(loop);
+}
+
+// First-person rifle: abstract boxes, readable as a rifle. The barrel axis
+// is the group's local -Z; the sight line sits ~0.13 above it, so the
+// aimed pose puts the sights on the camera axis.
+function buildViewmodel() {
+  const gunmetal = new THREE.MeshLambertMaterial({ color: 0x1c1c1e });
+  const gripMat = new THREE.MeshLambertMaterial({ color: 0x3a332a });
+  const g = new THREE.Group();
+  const add = (w, h, d, x, y, z, mat, rx = 0) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat || gunmetal);
+    m.position.set(x, y, z);
+    if (rx) m.rotation.x = rx;
+    g.add(m);
+    return m;
+  };
+  add(0.07, 0.11, 0.42, 0, 0, 0); // receiver
+  add(0.05, 0.05, 0.34, 0, 0.01, -0.36); // handguard
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.22, 8), gunmetal);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.01, -0.6);
+  g.add(barrel);
+  add(0.06, 0.16, 0.09, 0, -0.12, -0.05, gripMat, 0.15); // magazine
+  add(0.06, 0.09, 0.14, 0, -0.01, 0.24); // stock (short: stays in front of the near plane)
+  add(0.05, 0.12, 0.07, 0, -0.11, 0.14, gripMat, -0.3); // pistol grip
+  add(0.02, 0.09, 0.02, 0, 0.09, -0.5); // front sight post
+  add(0.015, 0.07, 0.015, -0.035, 0.08, 0.12); // rear sight, left post
+  add(0.015, 0.07, 0.015, 0.035, 0.08, 0.12); // rear sight, right post
+  // Muzzle flash: two crossed additive planes at the barrel tip.
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xffc933, transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  flashMesh = new THREE.Group();
+  const f1 = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.22), flashMat);
+  const f2 = f1.clone();
+  f2.rotation.z = Math.PI / 2;
+  flashMesh.add(f1, f2);
+  flashMesh.position.set(0, 0.01, -0.74);
+  flashMesh.visible = false;
+  g.add(flashMesh);
+  // Hip pose (lowered): bottom-right of the view, muzzle down.
+  g.position.set(0.3, -0.28, -0.5);
+  g.rotation.set(-0.3, -0.12, 0);
+  camera.add(g);
+  rifle = g;
+
+  // Impact marker: a small bright sphere shown briefly where a shot lands.
+  impactMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.07, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0xffe27a, transparent: true, opacity: 0.95 })
+  );
+  impactMarker.visible = false;
+  scene.add(impactMarker);
+}
+
+// Rifle poses. Hip = lowered at the hip, muzzle down. ADS = raised so the
+// sight line sits on the camera axis. The stock stays in front of the
+// camera near plane in both poses.
+const HIP_POS = { x: 0.3, y: -0.28, z: -0.5 };
+const HIP_ROT = { x: -0.3, y: -0.12, z: 0 };
+const ADS_POS = { x: 0, y: -0.13, z: -0.5 };
+const ADS_ROT = { x: 0, y: 0, z: 0 };
+
+function updateViewmodel(dt, now) {
+  if (!rifle) return;
+  const inGame = (game.phase === 'playing' || solo) && myAlive;
+  rifle.visible = inGame;
+  if (!inGame) {
+    aimBlend = 0;
+    if (Math.abs(camera.fov - 75) > 0.05) {
+      camera.fov = 75;
+      camera.updateProjectionMatrix();
+    }
+    return;
+  }
+  const wantAim = controls.aiming && !reloading ? 1 : 0;
+  aimBlend += (wantAim - aimBlend) * (1 - Math.exp(-dt * 10));
+  recoil *= Math.exp(-dt * 9);
+  rifle.position.set(
+    HIP_POS.x + (ADS_POS.x - HIP_POS.x) * aimBlend,
+    HIP_POS.y + (ADS_POS.y - HIP_POS.y) * aimBlend,
+    HIP_POS.z + (ADS_POS.z - HIP_POS.z) * aimBlend + recoil * 0.07
+  );
+  rifle.rotation.set(
+    HIP_ROT.x + (ADS_ROT.x - HIP_ROT.x) * aimBlend + recoil * 0.09,
+    HIP_ROT.y + (ADS_ROT.y - HIP_ROT.y) * aimBlend,
+    HIP_ROT.z + (ADS_ROT.z - HIP_ROT.z) * aimBlend
+  );
+  // Aiming narrows the field of view slightly.
+  const targetFov = 75 - aimBlend * 20;
+  if (Math.abs(camera.fov - targetFov) > 0.05) {
+    camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-dt * 10));
+    camera.updateProjectionMatrix();
+  }
+  if (flashMesh && flashMesh.visible && now > flashUntil) flashMesh.visible = false;
+  if (impactMarker && impactMarker.visible) {
+    const age = now - (impactMarker.userData.bornAt || 0);
+    if (age > 180) {
+      impactMarker.visible = false;
+    } else {
+      impactMarker.material.opacity = 0.95 * (1 - age / 180);
+    }
+  }
 }
 
 function makeNameSprite(name, colorCss) {
@@ -270,28 +385,51 @@ function getPlayerMesh(id) {
   const m = meta.get(id) || {};
   const color = TEAM_COLORS[m.role] || 0x888888;
   const group = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({ color });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 0.85, 4, 10), bodyMat);
-  body.position.y = 0.85;
-  body.userData.playerId = id;
-  group.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), bodyMat);
-  head.position.y = 1.62;
+  const uniformMat = new THREE.MeshLambertMaterial({ color });
+  const darkMat = new THREE.MeshLambertMaterial({ color: 0x2e2a24 });
+  const oliveMat = new THREE.MeshLambertMaterial({ color: 0x4a5240 });
+  const skinMat = new THREE.MeshLambertMaterial({ color: 0xc79b76 });
+  const add = (w, h, d, x, y, z, mat) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    mesh.position.set(x, y, z);
+    group.add(mesh);
+    return mesh;
+  };
+  // Legs.
+  add(0.17, 0.55, 0.2, -0.11, 0.28, 0, darkMat);
+  add(0.17, 0.55, 0.2, 0.11, 0.28, 0, darkMat);
+  // Torso in team color + darker vest plate (hittable).
+  const torso = add(0.52, 0.62, 0.3, 0, 0.86, 0, uniformMat);
+  torso.userData.playerId = id;
+  add(0.4, 0.45, 0.06, 0, 0.88, -0.17, darkMat);
+  // Arms angled forward, holding the rifle.
+  const armL = add(0.13, 0.5, 0.15, -0.32, 0.95, -0.1, uniformMat);
+  armL.rotation.x = -0.7;
+  const armR = add(0.13, 0.5, 0.15, 0.32, 0.95, -0.1, uniformMat);
+  armR.rotation.x = -0.7;
+  // Head (hittable) + helmet.
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 10, 8), skinMat);
+  head.position.y = 1.42;
   head.userData.playerId = id;
   group.add(head);
-  // Simple gun box so the facing direction reads at a glance.
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.12, 0.7), new THREE.MeshLambertMaterial({ color: 0x222222 }));
-  gun.position.set(0.25, 1.25, -0.45);
-  group.add(gun);
+  const helmet = new THREE.Mesh(
+    new THREE.SphereGeometry(0.26, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), oliveMat);
+  helmet.position.y = 1.46;
+  group.add(helmet);
+  // Rifle held forward.
+  const rifleMesh = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 0.85), darkMat);
+  rifleMesh.position.set(0.12, 1.05, -0.35);
+  rifleMesh.rotation.x = 0.08;
+  group.add(rifleMesh);
   const tag = makeNameSprite(m.name || '?', TEAM_CSS[m.role] || '#ffffff');
-  tag.position.y = 2.15;
+  tag.position.y = 2.0;
   group.add(tag);
-  group.userData.bodyMat = bodyMat;
+  group.userData.bodyMat = uniformMat;
   group.userData.tag = tag;
   group.userData.tagName = m.name || '?';
   scene.add(group);
   playerMeshes.set(id, group);
-  shootTargets.push(body, head);
+  shootTargets.push(torso, head);
   return group;
 }
 
@@ -398,6 +536,10 @@ function showScreen(name) {
   lobbyEl.classList.toggle('hidden', name !== 'lobby');
   gameEl.classList.toggle('hidden', name !== 'game');
   if (name === 'game') initThree();
+  if (name === 'lobby' && mapOpen) {
+    mapOpen = false;
+    mapOverlay.classList.add('hidden');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +613,6 @@ function updateHUD() {
   const inGame = game.phase === 'playing' || solo;
   const showLockHint = !controls.isTouch && myAlive && inGame && !controls.locked;
   lockHint.classList.toggle('hidden', !showLockHint);
-  crosshairEl.classList.toggle('hidden', !myAlive || !inGame);
 
   // Spectate bar.
   if (!myAlive && game.phase === 'playing') {
@@ -516,61 +657,50 @@ function showBanner(text, ms = 4000) {
 }
 
 // ---------------------------------------------------------------------------
-// Minimap
+// On-demand map: street, houses and the objective only. No player markers
+// of any kind, by design — the map shows terrain, not live positions.
+// The map is static, so it is drawn once when opened.
 // ---------------------------------------------------------------------------
 
-function drawMinimap() {
-  const W = 150;
-  const H = 150;
-  mmCtx.clearRect(0, 0, W, H);
-  mmCtx.fillStyle = 'rgba(15,17,20,0.9)';
-  mmCtx.fillRect(0, 0, W, H);
+function drawMap() {
+  const W = mapCanvas.width;
+  const H = mapCanvas.height;
+  mapCtx.clearRect(0, 0, W, H);
+  mapCtx.fillStyle = '#101216';
+  mapCtx.fillRect(0, 0, W, H);
   const mx = (x) => ((x + 18) / 36) * W;
   const mz = (z) => ((z + 62) / 124) * H;
   // Street.
-  mmCtx.fillStyle = '#3a3a3a';
-  mmCtx.fillRect(mx(-6), 0, mx(6) - mx(-6), H);
+  mapCtx.fillStyle = '#3a3a3a';
+  mapCtx.fillRect(mx(-6), 0, mx(6) - mx(-6), H);
   // Houses.
-  mmCtx.fillStyle = '#777';
+  mapCtx.fillStyle = '#777';
   for (const h of HOUSES) {
-    mmCtx.fillRect(mx(h.x0), mz(h.z0), mx(h.x1) - mx(h.x0), mz(h.z1) - mz(h.z0));
+    mapCtx.fillRect(mx(h.x0), mz(h.z0), mx(h.x1) - mx(h.x0), mz(h.z1) - mz(h.z0));
   }
   // Objective diamond.
-  mmCtx.fillStyle = '#ffcc00';
+  mapCtx.fillStyle = '#ffcc00';
   const ox = mx(OBJECTIVE.x);
   const oy = mz(OBJECTIVE.z);
-  mmCtx.beginPath();
-  mmCtx.moveTo(ox, oy - 6);
-  mmCtx.lineTo(ox + 5, oy);
-  mmCtx.lineTo(ox, oy + 6);
-  mmCtx.lineTo(ox - 5, oy);
-  mmCtx.closePath();
-  mmCtx.fill();
-  // Teammates (alive only) + self arrow.
-  for (const [id, s] of snapPlayers) {
-    if (!s.alive) continue;
-    const m = meta.get(id);
-    if (!m || m.team !== myTeam) continue;
-    const px = mx(s.x);
-    const py = mz(s.z);
-    if (id === myId) {
-      const fx = -Math.sin(s.yaw);
-      const fz = -Math.cos(s.yaw);
-      const ang = Math.atan2(fz, fx);
-      mmCtx.fillStyle = '#ffffff';
-      mmCtx.beginPath();
-      mmCtx.moveTo(px + Math.cos(ang) * 7, py + Math.sin(ang) * 7);
-      mmCtx.lineTo(px + Math.cos(ang + 2.5) * 5, py + Math.sin(ang + 2.5) * 5);
-      mmCtx.lineTo(px + Math.cos(ang - 2.5) * 5, py + Math.sin(ang - 2.5) * 5);
-      mmCtx.closePath();
-      mmCtx.fill();
-    } else {
-      mmCtx.fillStyle = TEAM_CSS[m.role];
-      mmCtx.beginPath();
-      mmCtx.arc(px, py, 3.5, 0, Math.PI * 2);
-      mmCtx.fill();
-    }
-  }
+  mapCtx.beginPath();
+  mapCtx.moveTo(ox, oy - 8);
+  mapCtx.lineTo(ox + 7, oy);
+  mapCtx.lineTo(ox, oy + 8);
+  mapCtx.lineTo(ox - 7, oy);
+  mapCtx.closePath();
+  mapCtx.fill();
+  // North (attackers' end) marker.
+  mapCtx.fillStyle = '#cfd4da';
+  mapCtx.font = `bold ${Math.round(W / 22)}px system-ui, sans-serif`;
+  mapCtx.textAlign = 'center';
+  mapCtx.fillText('N ↑', W / 2, W / 18);
+}
+
+function toggleMap() {
+  if (gameEl.classList.contains('hidden')) return; // lobby: no map
+  mapOpen = !mapOpen;
+  mapOverlay.classList.toggle('hidden', !mapOpen);
+  if (mapOpen) drawMap();
 }
 
 // ---------------------------------------------------------------------------
@@ -603,23 +733,42 @@ function cycleSpectate() {
 
 function tryFire(now) {
   if (!myAlive || (game.phase !== 'playing' && !solo)) return;
-  if (reloading || myInMag <= 0) return;
+  if (mapOpen || reloading || myInMag <= 0) return;
   if (now - lastFireAt < FIRE_INTERVAL) return;
   lastFireAt = now;
 
-  // Hitscan from the camera centre with a small random spread.
+  // Hitscan from the camera centre. Spread is wide from the hip and tight
+  // when aiming down the sights.
+  const spread = aimBlend > 0.5 ? 0.003 : 0.02;
   raycaster.setFromCamera(
-    { x: (Math.random() - 0.5) * 0.02, y: (Math.random() - 0.5) * 0.02 },
+    { x: (Math.random() - 0.5) * spread, y: (Math.random() - 0.5) * spread },
     camera
   );
   const hits = raycaster.intersectObjects(shootTargets, false);
   let targetId = null;
   if (hits.length > 0) {
     const first = hits[0].object;
-    if (first.userData.playerId != null) targetId = first.userData.playerId;
+    if (first.userData.playerId != null) {
+      targetId = first.userData.playerId;
+    } else {
+      // Visible impact where the bullet lands.
+      impactMarker.position.copy(hits[0].point);
+      impactMarker.visible = true;
+      impactMarker.material.opacity = 0.95;
+      impactMarker.userData.bornAt = now;
+    }
   }
   socket.send({ t: 'shot', targetId });
   sfx.shoot();
+  // Firing feedback: the rifle kicks and the muzzle flashes.
+  recoil = 1;
+  flashUntil = now + 55;
+  if (flashMesh) {
+    flashMesh.visible = true;
+    flashMesh.rotation.z = Math.random() * Math.PI;
+    const s = 0.8 + Math.random() * 0.5;
+    flashMesh.scale.set(s, s, s);
+  }
 }
 
 function tryReload() {
@@ -856,6 +1005,8 @@ $('atkB').addEventListener('click', () => socket.send({ t: 'setAttackers', team:
 $('startBtn').addEventListener('click', () => socket.send({ t: 'start' }));
 $('rematchBtn').addEventListener('click', () => socket.send({ t: 'rematch', swap: false }));
 $('swapBtn').addEventListener('click', () => socket.send({ t: 'rematch', swap: true }));
+mapBtn.addEventListener('click', () => toggleMap());
+mapOverlay.addEventListener('click', () => toggleMap());
 nameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') join(null);
 });
@@ -865,7 +1016,6 @@ nameInput.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 
 const clock = new THREE.Clock();
-let lastMinimapDraw = 0;
 
 function loop() {
   requestAnimationFrame(loop);
@@ -913,8 +1063,10 @@ function loop() {
     let vz = fz * move.z + rz * move.x;
     const len = Math.hypot(vx, vz);
     if (len > 0) {
-      vx = (vx / len) * SPEED * Math.min(1, len);
-      vz = (vz / len) * SPEED * Math.min(1, len);
+      // Aiming down the sights slows movement.
+      const speed = SPEED * (1 - aimBlend * 0.35) * Math.min(1, len);
+      vx = (vx / len) * speed;
+      vz = (vz / len) * speed;
     }
     let nx = local.x + vx * dt;
     let nz = local.z + vz * dt;
@@ -954,12 +1106,8 @@ function loop() {
     camera.lookAt(0, 0, 10);
   }
 
-  // HUD + minimap at ~10 Hz (cheap enough to run every frame for the HUD).
   updateHUD();
-  if (now - lastMinimapDraw > 100) {
-    lastMinimapDraw = now;
-    drawMinimap();
-  }
+  updateViewmodel(dt, now);
 
   renderer.render(scene, camera);
 }
