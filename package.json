@@ -1,0 +1,1 @@
+{"dependencies":{"three":"*","ws":"*"},"description":"Browser-based multiplayer tactical FPS proof of concept. Two teams, one street, no respawn. NOT production code.","name":"tactical-poc","scripts":{"start":"node server.mjs","test":"node test/map-test.mjs && node test/headless-test.mjs"},"type":"module","version":"0.1.0"}
