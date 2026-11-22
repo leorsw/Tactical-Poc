@@ -47,6 +47,10 @@
         <button id="joinAuto">Auto-assign</button>
       </div>
       <p class="hint">Teams need not be symmetric — 6 vs 2 is fine.<br>1–6 players per team.</p>
+      <div class="joinRow">
+        <button id="soloBtn" class="secondary">Solo mode — explore alone</button>
+      </div>
+      <p class="hint">Solo: walk the map and test movement and shooting.<br>No teams, no timer, nobody can shoot you.</p>
     </div>
 
     <div id="teamsBox" class="hidden">
@@ -88,6 +92,7 @@
         <div id="timer">5:00</div>
         <div id="aliveBox">—</div>
       </div>
+      <button id="exitSoloBtn" class="hidden">EXIT SOLO</button>
       <canvas id="minimap" width="150" height="150"></canvas>
       <div id="killfeed"></div>
       <div id="crosshair">+</div>
