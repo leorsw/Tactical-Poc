@@ -60,6 +60,7 @@ Then open <http://localhost:8020> in a desktop browser.
 | Hold right mouse | Aim down the sights (tighter spread, slight zoom, slower move) |
 | R | Reload (3.5 s) |
 | M | Toggle map (terrain only, no player markers) |
+| F | Toggle fullscreen |
 | Click (while eliminated) | Cycle spectate target |
 
 ### Mobile (touch)
@@ -88,7 +89,8 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
    1–6 players per team; a match can start with as few as 1 player per side
    (2+ per team is recommended and the lobby says so).
 2. The **first player to join is the host**. The host picks which team
-   attacks and starts the match when both teams have at least 1 player.
+   attacks. **Any** joined player can press **Start match** once both teams
+   have at least 1 player (1v1 is enough).
    The first player to join **each team** is marked that team's
    **commander** (label only in v1 — no special powers).
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
@@ -103,8 +105,8 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 4. **No respawn.** An eliminated player spectates: the camera follows a
    living teammate (click/tap to cycle). When no teammate is alive, the
    round is already over.
-5. After the match ends, the host can start a **Rematch** (same roles) or
-   **Swap roles & rematch**.
+5. After the match ends, **any** player can start a **Rematch** (same roles)
+   or **Swap roles & rematch**.
 
 ## Combat rules
 
@@ -122,7 +124,7 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 - Hitscan rifle, hold to fire at ~10 rounds/sec. Spread is wide from the
   hip and tight when aiming down the sights. There is **no crosshair** by
   design: the rifle hangs lowered while moving, and aiming raises it so the
-  iron sights sit on the centre of the screen. Each shot kicks the rifle
+  reflex sight (rounded square, red dot) sits on the centre of the screen. Each shot kicks the rifle
   and flashes the muzzle; hits on walls show a brief impact marker.
 - Friendly fire is **ON**: a hit from anyone on anyone kills, including teammates (shown as TEAMKILL in the kill feed). No extra penalty beyond losing the teammate.
 - The server is authoritative for health, ammo, score, timer and win
@@ -134,8 +136,9 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 
 One street (~120 m) along the Z axis with **10 grey-box houses**, 5 per
 side, with **4 m alleys** between adjacent houses. Each house has an
-enterable ground floor (door gap in the street-facing wall), windows on the
-ground and second floors, and interior stairs to the second floor. Each team
+enterable ground floor (door gap in the street-facing wall), windows on three
+faces (street + both alley sides) on the ground and second floors, and
+interior stairs to the second floor. Each team
 spawns behind the houses at opposite far ends of the street. The objective
 zone is marked on the road at the defenders' end.
 
@@ -146,7 +149,7 @@ npm test
 ```
 
 - `test/map-test.mjs` — unit tests for collision, floor height, stairs,
-  doors, alleys and the objective zone (12 checks).
+  doors, alleys and the objective zone (13 checks).
 - `test/headless-test.mjs` — spawns the real server and plays through it
   with fake WebSocket clients: damage falloff at close/medium/long range, a
   2v2 elimination win, an objective win, a reload cycle, a no-auto-reload
