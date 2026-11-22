@@ -393,7 +393,9 @@ function handleMessage(ws, msg) {
       break;
     }
     case 'start': {
-      if (p.solo || phase !== 'lobby' || p.id !== hostId) return;
+      // Any joined player may start (1v1 is enough); only the attackers
+      // pick stays host-only.
+      if (p.solo || phase !== 'lobby') return;
       // Asymmetric splits are allowed: at least 1 player per side.
       if (playersOf('A').length < 1 || playersOf('B').length < 1) {
         send(ws, { t: 'error', message: 'Need at least 1 player on each team to start.' });
@@ -486,7 +488,7 @@ function handleMessage(ws, msg) {
       break;
     }
     case 'rematch': {
-      if (p.solo || phase !== 'ended' || p.id !== hostId) return;
+      if (p.solo || phase !== 'ended') return;
       if (msg.swap) attackersTeam = attackersTeam === 'A' ? 'B' : 'A';
       startMatch();
       break;
