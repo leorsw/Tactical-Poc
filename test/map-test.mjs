@@ -107,6 +107,16 @@ check('windows on the alley-facing walls (north/south)', () => {
   assert.equal(covered(-16, 1.6, 0), true, 'back wall stays solid');
 });
 
+check('grey floor inside each house', () => {
+  const boxes = visualBoxes();
+  const covered = (x, y, z) => boxes.some(
+    (b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1 && z >= b.z0 && z <= b.z1);
+  // Inside the west house at cz=0: the floor covers the footprint.
+  assert.equal(covered(-11, 0.01, 0), true, 'house interior has a floor');
+  // The street has no floor box (green ground plane only).
+  assert.equal(covered(0, 0.01, 0), false, 'street has no floor box');
+});
+
 check('objective zone detection', () => {
   assert.equal(objectiveContains(0, 52), true);
   assert.equal(objectiveContains(2, 53), true);
