@@ -206,6 +206,47 @@ function broadcastState() {
   }
 }
 
+function snapshotPlayerList(now) {
+  const list = [...players.values()].map((p) => ({
+    id: p.id,
+    x: p.pos.x,
+    y: p.pos.y,
+    z: p.pos.z,
+    yaw: p.yaw,
+    pitch: p.pitch,
+    alive: p.alive,
+    health: p.health,
+    inMag: p.inMag,
+    mags: p.mags,
+    reloading: now < p.reloadingUntil,
+    crouch: !!p.crouch,
+    aiming: !!p.aiming,
+  }));
+  // The NPC rides the snapshot (never the state): clients render it like
+  // any other player, but it never appears in the lobby or the counts.
+  if (npc) {
+    list.push({
+      id: NPC_ID,
+      x: NPC_POS.x,
+      y: 0,
+      z: NPC_POS.z,
+      yaw: npc.yaw,
+      pitch: 0,
+      alive: true,
+      health: 100,
+      inMag: MAG_SIZE,
+      mags: MAG_COUNT - 1,
+      reloading: false,
+      crouch: false,
+      aiming: npc.aiming,
+      npc: true,
+      name: NPC_NAME,
+      team: 'B',
+    });
+  }
+  return list;
+}
+
 function snapshot() {
   const now = Date.now();
   return {
@@ -215,19 +256,7 @@ function snapshot() {
     score: { ...score },
     timeLeftMs: phase === 'playing' ? Math.max(0, roundEndsAt - now) : 0,
     captureProgress: phase === 'playing' ? Math.min(1, captureMs / CAPTURE_MS) : 0,
-    players: [...players.values()].map((p) => ({
-      id: p.id,
-      x: p.pos.x,
-      y: p.pos.y,
-      z: p.pos.z,
-      yaw: p.yaw,
-      pitch: p.pitch,
-      alive: p.alive,
-      health: p.health,
-      inMag: p.inMag,
-      mags: p.mags,
-      reloading: now < p.reloadingUntil,
-    })),
+    players: snapshotPlayerList(now),
   };
 }
 
@@ -323,6 +352,72 @@ function checkElimination() {
 }
 
 // ---------------------------------------------------------------------------
+// Solo defender NPC: a target dummy that shoots at solo players so they can
+// see a muzzle flash from the outside and hear remote shots. It is NOT a
+// player: it lives outside the players map, never joins a match, cannot be
+// hit, and its shots never damage anyone. It exists only while the room is
+// in the lobby phase and at least one solo player is present. Position is
+// overridable via NPC_X / NPC_Z (screenshot runs put it in front of the
+// solo spawn).
+// ---------------------------------------------------------------------------
+const NPC_ID = -1; // player ids start at 1 (nextId), so -1 can never collide
+const NPC_NAME = 'Dummy';
+const NPC_POS = {
+  x: Number(process.env.NPC_X ?? 0),
+  z: Number(process.env.NPC_Z ?? 40),
+};
+const NPC_RANGE = 30; // opens fire within 30 m
+const NPC_BURST = 3; // shots per burst
+const NPC_BURST_INTERVAL_MS = 120; // inside a burst
+const NPC_BURST_PAUSE_MS = 1200; // between bursts
+let npc = null; // { yaw, aiming, burstLeft, nextShotAt } or null
+
+function updateNpc(now) {
+  const solos = [...players.values()].filter((p) => p.solo && p.alive);
+  if (phase !== 'lobby' || solos.length === 0) {
+    npc = null;
+    return;
+  }
+  if (!npc) npc = { yaw: 0, aiming: false, burstLeft: 0, nextShotAt: 0 };
+  let target = null;
+  let best = Infinity;
+  for (const p of solos) {
+    const d = Math.hypot(p.pos.x - NPC_POS.x, p.pos.z - NPC_POS.z);
+    if (d < best) { best = d; target = p; }
+  }
+  if (!target || best > NPC_RANGE) {
+    npc.aiming = false;
+    npc.burstLeft = 0;
+    return;
+  }
+  npc.aiming = true;
+  npc.yaw = Math.atan2(-(target.pos.x - NPC_POS.x), -(target.pos.z - NPC_POS.z));
+  if (npc.burstLeft > 0 && now >= npc.nextShotAt) {
+    npc.burstLeft -= 1;
+    npc.nextShotAt = now + NPC_BURST_INTERVAL_MS;
+    // Same 'shot' event a real player produces, so the NPC's fire goes
+    // through the exact same client path (flash + sound). It never hits.
+    broadcast({
+      t: 'shot',
+      shooterId: NPC_ID,
+      targetId: null,
+      hit: false,
+      friendlyFire: false,
+      damage: 0,
+      distance: Math.round(best * 10) / 10,
+      targetHealth: null,
+      killed: false,
+      inMag: MAG_SIZE,
+      mags: MAG_COUNT - 1,
+    });
+    if (npc.burstLeft === 0) npc.nextShotAt = now + NPC_BURST_PAUSE_MS;
+  } else if (npc.burstLeft === 0 && now >= npc.nextShotAt) {
+    npc.burstLeft = NPC_BURST;
+    npc.nextShotAt = now;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tick: snapshot broadcast, reload completion, round timer.
 // ---------------------------------------------------------------------------
 
@@ -367,6 +462,7 @@ setInterval(() => {
     endRound(defendersTeam, 'timeout');
   }
 
+  updateNpc(now);
   if (players.size > 0) broadcast(snapshot());
 }, TICK_MS);
 
@@ -482,6 +578,8 @@ function handleJoin(ws, msg) {
     pos: { x: 0, y: 0, z: 0 },
     yaw: 0,
     pitch: 0,
+    crouch: false, // stance flags, relayed to snapshots so other
+    aiming: false, // players see the pose (kneel / aim)
   };
   // Give a lobby position so the player has a sane default if the match
   // starts while they are idle; startRound overwrites it anyway.
@@ -521,6 +619,8 @@ function handleSolo(ws, msg) {
     pos: { x: spawn.x, y: 0, z: spawn.z },
     yaw: spawn.yaw,
     pitch: 0,
+    crouch: false,
+    aiming: false,
   };
   players.set(p.id, p);
   send(ws, { t: 'soloJoined', id: p.id, spawn: { x: spawn.x, y: 0, z: spawn.z, yaw: spawn.yaw } });
@@ -606,6 +706,9 @@ function handleMessage(ws, msg) {
       p.pos.y = Math.max(0, Math.min(3, y));
       if (Number.isFinite(msg.yaw)) p.yaw = Number(msg.yaw);
       if (Number.isFinite(msg.pitch)) p.pitch = Number(msg.pitch);
+      // Stance flags (pose relay): only accept real booleans.
+      if (typeof msg.crouch === 'boolean') p.crouch = msg.crouch;
+      if (typeof msg.aiming === 'boolean') p.aiming = msg.aiming;
       // No objective check here: capture is tick-based (see the tick
       // loop) — entering the zone starts a hold timer instead of
       // ending the round instantly.
