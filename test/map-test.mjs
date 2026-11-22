@@ -92,6 +92,21 @@ check('door gap is blocked on the second floor (header)', () => {
   assert.ok(Math.abs(out.x - -6) >= 0.4, `header should block at y=3, got ${JSON.stringify(out)}`);
 });
 
+check('windows on the alley-facing walls (north/south)', () => {
+  const boxes = visualBoxes();
+  const covered = (x, y, z) => boxes.some(
+    (b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1 && z >= b.z0 && z <= b.z1);
+  // West house at cz=0: north wall at z=-6. Window band x -15.3..-13.7.
+  assert.equal(covered(-14.5, 1.6, -6), false, 'ground-floor north window should be a gap');
+  assert.equal(covered(-14.5, 4.6, -6), false, 'upper north window should be a gap');
+  assert.equal(covered(-11, 1.6, -6), true, 'wall between windows stays solid');
+  assert.equal(covered(-14.5, 0.5, -6), true, 'wall below the window stays solid');
+  // South wall mirrors it (z=+6).
+  assert.equal(covered(-14.5, 1.6, 6), false, 'ground-floor south window should be a gap');
+  // Back wall (x=-16) has no windows.
+  assert.equal(covered(-16, 1.6, 0), true, 'back wall stays solid');
+});
+
 check('objective zone detection', () => {
   assert.equal(objectiveContains(0, 52), true);
   assert.equal(objectiveContains(2, 53), true);
