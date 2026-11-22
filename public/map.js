@@ -187,9 +187,28 @@ export function visualBoxes() {
   const T = 0.15;
 
   for (const h of HOUSES) {
-    // North / south / back walls: solid, full height.
-    boxes.push({ x0: h.x0, x1: h.x1, z0: h.z0 - T, z1: h.z0 + T, y0: 0, y1: 6, color: WALL_COLOR });
-    boxes.push({ x0: h.x0, x1: h.x1, z0: h.z1 - T, z1: h.z1 + T, y0: 0, y1: 6, color: WALL_COLOR });
+    // North / south walls (facing the neighbouring houses / alleys): two
+    // windows per floor, like the street wall. The back wall stays solid.
+    for (const wz of [h.z0, h.z1]) {
+      const bands = [
+        [h.x0, h.cx - 4.3, 'full'],
+        [h.cx - 4.3, h.cx - 2.7, 'window'],
+        [h.cx - 2.7, h.cx + 2.7, 'full'],
+        [h.cx + 2.7, h.cx + 4.3, 'window'],
+        [h.cx + 4.3, h.x1, 'full'],
+      ];
+      for (const [x0, x1, kind] of bands) {
+        if (kind === 'full') {
+          boxes.push({ x0, x1, z0: wz - T, z1: wz + T, y0: 0, y1: 6, color: WALL_COLOR });
+        } else {
+          // Window band: solid below the ground window, between the
+          // windows, and above the upper window (y 1.0..2.2, 4.0..5.2).
+          boxes.push({ x0, x1, z0: wz - T, z1: wz + T, y0: 0, y1: 1.0, color: WALL_COLOR });
+          boxes.push({ x0, x1, z0: wz - T, z1: wz + T, y0: 2.2, y1: 4.0, color: WALL_COLOR });
+          boxes.push({ x0, x1, z0: wz - T, z1: wz + T, y0: 5.2, y1: 6, color: WALL_COLOR });
+        }
+      }
+    }
     const backX = h.side * 16;
     boxes.push({ x0: backX - T, x1: backX + T, z0: h.z0, z1: h.z1, y0: 0, y1: 6, color: WALL_COLOR });
 
