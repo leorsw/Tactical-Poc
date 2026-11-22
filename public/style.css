@@ -76,6 +76,7 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #exitSoloBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; }
 #mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto; }
 #fsBtn { position: absolute; top: 98px; left: 10px; pointer-events: auto; }
+#climbBtn { position: absolute; bottom: 120px; left: 50%; transform: translateX(-50%); pointer-events: auto; background: #2b6cff; font-weight: 700; padding: 10px 22px; font-size: 16px; z-index: 25; }
 #connBanner { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); background: rgba(180, 30, 30, 0.92); color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 14px; font-weight: bold; pointer-events: none; z-index: 30; white-space: nowrap; }
 #mapPanel { position: relative; }
 #mapCloseBtn { position: absolute; top: 2px; right: 4px; background: none; border: none; color: #fff; font-size: 22px; line-height: 1; cursor: pointer; padding: 6px 10px; z-index: 2; }
