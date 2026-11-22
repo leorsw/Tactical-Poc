@@ -5,11 +5,17 @@
 // means (moving, firing, spectating) based on the game state.
 
 export class Controls {
-  constructor({ onReload } = {}) {
+  constructor({ onReload, onMap } = {}) {
     this.onReload = onReload || (() => {});
-    this.isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    this.onMap = onMap || (() => {});
+    // Coarse pointer = a phone or tablet. Touchscreen laptops report touch
+    // capability too, but their primary pointer is the mouse: treating them
+    // as touch devices covers the screen with touch zones that swallow mouse
+    // clicks, which breaks pointer lock and firing entirely.
+    this.isTouch = window.matchMedia('(pointer: coarse)').matches;
     this.keys = new Set();
-    this.firing = false; // mouse held (desktop, locked) or FIRE held (mobile)
+    this.firing = false; // mouse held (desktop) or FIRE held (mobile)
+    this.aiming = false; // right mouse held (desktop) or AIM toggled (mobile)
     this.locked = false;
     this.lookDX = 0;
     this.lookDY = 0;
@@ -35,7 +41,7 @@ export class Controls {
 
   attach(canvas, els) {
     this.canvas = canvas;
-    this.els = els; // { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn }
+    this.els = els; // { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn, aimBtn }
     document.addEventListener('mousemove', this._onMouseMove);
     document.addEventListener('mousedown', this._onMouseDown);
     document.addEventListener('mouseup', this._onMouseUp);
@@ -47,7 +53,8 @@ export class Controls {
 
   requestLock() {
     if (!this.isTouch && this.canvas && document.pointerLockElement !== this.canvas) {
-      this.canvas.requestPointerLock();
+      const r = this.canvas.requestPointerLock();
+      if (r && r.catch) r.catch(() => { /* lock failed (e.g. ESC cooldown); next click retries */ });
     }
   }
 
@@ -95,11 +102,16 @@ export class Controls {
   }
 
   _onMouseDown(e) {
-    if (e.button === 0 && this.locked) this.firing = true;
+    // Fire when locked, or on a canvas click while unlocked (the click also
+    // locks the pointer, so the first click both aims and fires). Clicks on
+    // HUD buttons do not fire.
+    if (e.button === 0 && (this.locked || e.target === this.canvas)) this.firing = true;
+    if (e.button === 2) this.aiming = true;
   }
 
   _onMouseUp(e) {
     if (e.button === 0) this.firing = false;
+    if (e.button === 2) this.aiming = false;
   }
 
   _onKeyDown(e) {
@@ -108,6 +120,7 @@ export class Controls {
       e.preventDefault();
     }
     if (e.code === 'KeyR' && !e.repeat) this.onReload();
+    if (e.code === 'KeyM' && !e.repeat) this.onMap();
     this.keys.add(e.code);
   }
 
@@ -116,7 +129,7 @@ export class Controls {
   }
 
   _attachTouch() {
-    const { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn } = this.els;
+    const { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn, aimBtn } = this.els;
     const RADIUS = 48; // joystick travel in px
 
     const setKnob = (dx, dy) => {
@@ -201,5 +214,13 @@ export class Controls {
     };
     bindHold(fireBtn, () => { this.firing = true; }, () => { this.firing = false; });
     bindHold(reloadBtn, () => this.onReload(), () => {});
+    if (aimBtn) {
+      aimBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.aiming = !this.aiming;
+        aimBtn.classList.toggle('active', this.aiming);
+      }, { passive: false });
+    }
   }
 }
