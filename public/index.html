@@ -93,9 +93,8 @@
         <div id="aliveBox">—</div>
       </div>
       <button id="exitSoloBtn" class="hidden">EXIT SOLO</button>
-      <canvas id="minimap" width="150" height="150"></canvas>
+      <button id="mapBtn">MAP</button>
       <div id="killfeed"></div>
-      <div id="crosshair">+</div>
       <div id="hitmarker" class="hidden">✕</div>
       <div id="damageFlash"></div>
       <div id="bottomLeft">
@@ -111,6 +110,14 @@
       <div id="spectateBar" class="hidden"></div>
       <div id="lockHint" class="hidden">CLICK TO AIM</div>
       <div id="roundInfo"></div>
+    </div>
+
+    <!-- On-demand map (no player markers) -->
+    <div id="mapOverlay" class="hidden">
+      <div id="mapPanel">
+        <canvas id="mapCanvas" width="420" height="420"></canvas>
+        <p class="hint">M / MAP to close</p>
+      </div>
     </div>
 
     <!-- Match end overlay -->
@@ -131,6 +138,7 @@
       <div id="joyBase"><div id="joyKnob"></div></div>
       <div id="fireBtn">FIRE</div>
       <div id="reloadBtn">RELOAD</div>
+      <div id="aimBtn">AIM</div>
       <div id="rotateHint">Rotate your device to landscape for the best view</div>
     </div>
   </section>
