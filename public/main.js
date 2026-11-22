@@ -59,6 +59,8 @@ const hitmarkerEl = $('hitmarker');
 const damageFlashEl = $('damageFlash');
 const bannerEl = $('banner');
 const continueBtn = $('continueBtn');
+const downOverlay = $('downOverlay');
+const downSub = $('downSub');
 const spectateBar = $('spectateBar');
 const lockHint = $('lockHint');
 const exitSoloBtn = $('exitSoloBtn');
@@ -115,6 +117,18 @@ let reloadEndsAt = 0;
 let currentWindow = null; // ground-floor window in climb range, if any
 let lastFireAt = 0;
 let lastMoveSent = 0;
+// YOU'RE DOWN: on elimination the player sees a 3-second overlay before
+// switching to spectate (or to the round/match-end UI, if the round ended).
+// downUntil is a performance.now() timestamp (0 = not down). Round/match-end
+// events arriving during those 3 seconds are held and shown when it ends.
+let downUntil = 0;
+let pendingRoundEnd = null;
+let pendingMatchEnd = null;
+// True when the shot message says my death was a teamkill. The shot and
+// the snapshot can arrive in either order, so the flag is set by the shot
+// handler and consumed by the death branch (or applied at once if the
+// overlay is already up).
+let killedByFriendlyFire = false;
 let aimBlend = 0; // 0 = rifle lowered at the hip, 1 = aimed down the sights
 let recoil = 0; // 0..1, decays after each shot
 let flashUntil = 0; // performance.now() timestamp: muzzle flash visible until
@@ -637,7 +651,7 @@ function updateHUD() {
     let defAlive = 0;
     for (const [id, s] of snapPlayers) {
       const m = meta.get(id);
-      if (!m || !s.alive) continue;
+      if (!m || !s.alive || m.solo) continue; // solo players are not on a team
       if (m.role === 'attackers') atkAlive++;
       else defAlive++;
     }
@@ -676,8 +690,8 @@ function updateHUD() {
   const showLockHint = !controls.isTouch && myAlive && inGame && !controls.locked;
   lockHint.classList.toggle('hidden', !showLockHint);
 
-  // Spectate bar.
-  if (!myAlive && game.phase === 'playing') {
+  // Spectate bar (only once the 3-second YOU'RE DOWN is over).
+  if (!myAlive && game.phase === 'playing' && !downUntil) {
     const target = spectateTarget != null ? meta.get(spectateTarget) : null;
     spectateBar.textContent = target
       ? `ELIMINATED — spectating ${target.name} (click / tap to cycle)`
@@ -1034,8 +1048,9 @@ socket.on('state', (msg) => {
   if (msg.phase === 'intermission') {
     // Reconnecting (or joining late) during an intermission: restore the
     // round result + CONTINUE button the roundEnd event already showed
-    // to everyone else.
-    if (msg.roundWinner) {
+    // to everyone else. Not during the 3-second YOU'RE DOWN — the held
+    // roundEnd event shows it when the 3 seconds are over.
+    if (msg.roundWinner && !downUntil) {
       showBanner(roundResultText(msg.roundWinner, msg.roundReason, msg.score), null);
       continueBtn.classList.remove('hidden');
     }
@@ -1070,12 +1085,26 @@ socket.on('snapshot', (msg) => {
       controls.exitLock();
     }
     if (wasAlive && !myAlive) {
-      // Just eliminated: pick a teammate to spectate.
-      spectateTarget = livingTeammates()[0] ?? null;
+      // Just eliminated: show YOU'RE DOWN for 3 seconds before switching
+      // to spectate (or to the round-end UI, if the round ended). A
+      // teamkill adds the FRIENDLY FIRE line under it.
+      downUntil = performance.now() + 3000;
+      downOverlay.classList.remove('hidden');
+      downSub.classList.toggle('hidden', !killedByFriendlyFire);
+      killedByFriendlyFire = false;
       controls.exitLock();
       controls.firing = false;
     }
-    if (!wasAlive && myAlive) spectateTarget = null;
+    if (!wasAlive && myAlive) {
+      // Revived by a round reset: clear any pending down state.
+      spectateTarget = null;
+      downUntil = 0;
+      downOverlay.classList.add('hidden');
+      downSub.classList.add('hidden');
+      killedByFriendlyFire = false;
+      pendingRoundEnd = null;
+      pendingMatchEnd = null;
+    }
   }
   // Validate the spectate target is still alive.
   if (spectateTarget != null) {
@@ -1086,6 +1115,12 @@ socket.on('snapshot', (msg) => {
 
 socket.on('shot', (msg) => {
   if (solo) return; // solo shots never hit; match shots stay out of the solo HUD
+  if (msg.targetId === myId && msg.killed && msg.friendlyFire) {
+    // I was teamkilled: remember it for the YOU'RE DOWN overlay. If the
+    // snapshot already showed my death (overlay up), add the line now.
+    killedByFriendlyFire = true;
+    if (downUntil) downSub.classList.remove('hidden');
+  }
   if (msg.shooterId === myId && msg.hit) {
     showHitmarker(msg.killed);
     sfx.hit();
@@ -1121,13 +1156,40 @@ function roundResultText(winner, reason, score) {
       : reason === 'objective'
         ? 'reached the objective'
         : 'survived the round';
-  return `${winnerRole} (Team ${winner}) WIN THE ROUND\n${reasonText}\nScore: ${score.A} — ${score.B}`;
+  return `${winnerRole} WIN THE ROUND\n${reasonText}\nScore: ${score.A} — ${score.B}`;
+}
+
+// Shared by the roundEnd event and the YOU'RE DOWN expiry, so a player
+// eliminated at the end of a round sees the same UI, just 3 seconds later.
+function showRoundEndUI(msg) {
+  // Sticky banner: it stays up until CONTINUE starts the next round.
+  showBanner(roundResultText(msg.winner, msg.reason, msg.score), null);
+  // No CONTINUE at match end — the matchEnd screen follows with rematch.
+  if (msg.score[msg.winner] < 3) continueBtn.classList.remove('hidden');
+}
+
+function showMatchEndUI(msg) {
+  continueBtn.classList.add('hidden');
+  const winnerRole = game.attackersTeam === msg.winner ? 'ATTACKERS' : 'DEFENDERS';
+  endTitle.textContent = `${winnerRole} WIN THE MATCH`;
+  endScore.textContent = `Final score: ${roleLabel('A')} ${msg.score.A} — ${msg.score.B} ${roleLabel('B')}`;
+  endHostBtns.classList.remove('hidden'); // anyone can rematch now
+  endWait.classList.add('hidden');
+  endScreen.classList.remove('hidden');
 }
 
 socket.on('roundStart', (msg) => {
   if (solo) return;
   if (msg.objective) currentObjective = msg.objective;
   continueBtn.classList.add('hidden');
+  // A new round clears any pending down state (e.g. someone pressed
+  // CONTINUE during another player's 3-second YOU'RE DOWN).
+  downUntil = 0;
+  downOverlay.classList.add('hidden');
+  downSub.classList.add('hidden');
+  killedByFriendlyFire = false;
+  pendingRoundEnd = null;
+  pendingMatchEnd = null;
   endScreen.classList.add('hidden');
   showBanner(`ROUND ${msg.round}`, 2500);
   if (mapOpen) drawMap(); // the objective moves with each round's draw
@@ -1135,21 +1197,22 @@ socket.on('roundStart', (msg) => {
 
 socket.on('roundEnd', (msg) => {
   if (solo) return;
-  // Sticky banner: it stays up until CONTINUE starts the next round.
-  showBanner(roundResultText(msg.winner, msg.reason, msg.score), null);
-  // No CONTINUE at match end — the matchEnd screen follows with rematch.
-  if (msg.score[msg.winner] < 3) continueBtn.classList.remove('hidden');
+  // During my 3-second YOU'RE DOWN, hold the result and show it when the
+  // 3 seconds are over instead of cutting the overlay short.
+  if (downUntil) {
+    pendingRoundEnd = msg;
+    return;
+  }
+  showRoundEndUI(msg);
 });
 
 socket.on('matchEnd', (msg) => {
   if (solo) return;
-  continueBtn.classList.add('hidden');
-  const winnerRole = game.attackersTeam === msg.winner ? 'ATTACKERS' : 'DEFENDERS';
-  endTitle.textContent = `${winnerRole} (Team ${msg.winner}) WIN THE MATCH`;
-  endScore.textContent = `Final score: Team A ${msg.score.A} — ${msg.score.B} Team B`;
-  endHostBtns.classList.remove('hidden'); // anyone can rematch now
-  endWait.classList.add('hidden');
-  endScreen.classList.remove('hidden');
+  if (downUntil) {
+    pendingMatchEnd = msg;
+    return;
+  }
+  showMatchEndUI(msg);
 });
 
 // ---------------------------------------------------------------------------
@@ -1236,6 +1299,26 @@ function loop() {
   currentWindow = ((game.phase === 'playing' || solo) && myAlive) ? nearbyWindow() : null;
   climbBtn.classList.toggle('hidden', !currentWindow);
 
+  // YOU'RE DOWN expiry: after 3 seconds, switch to spectate (round still
+  // going) or show the held round/match-end UI (round ended during the 3s).
+  if (downUntil && now >= downUntil) {
+    downUntil = 0;
+    downOverlay.classList.add('hidden');
+    if (pendingRoundEnd) {
+      const msg = pendingRoundEnd;
+      pendingRoundEnd = null;
+      showRoundEndUI(msg);
+    }
+    if (pendingMatchEnd) {
+      const msg = pendingMatchEnd;
+      pendingMatchEnd = null;
+      showMatchEndUI(msg);
+    }
+    if (game.phase === 'playing' && !myAlive) {
+      spectateTarget = livingTeammates()[0] ?? null;
+    }
+  }
+
   if ((game.phase === 'playing' || solo) && myAlive) {
     // Look.
     const look = controls.takeLook();
@@ -1280,6 +1363,11 @@ function loop() {
       lastMoveSent = now;
       socket.send({ t: 'move', x: local.x, y: local.y, z: local.z, yaw: local.yaw, pitch: local.pitch });
     }
+  } else if (!myAlive && downUntil) {
+    // YOU'RE DOWN: frozen first-person view at the death spot, no input.
+    // Takes precedence over the spectate and elevated views.
+    camera.position.set(local.x, local.y + EYE_HEIGHT, local.z);
+    camera.rotation.set(local.pitch, local.yaw, 0);
   } else if (game.phase === 'playing' && !myAlive) {
     // Spectate: chase camera behind a living teammate.
     const target = spectateTarget != null ? snapPlayers.get(spectateTarget) : null;
