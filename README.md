@@ -136,9 +136,9 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 
 One street (~120 m) along the Z axis with **10 grey-box houses**, 5 per
 side, with **4 m alleys** between adjacent houses. Each house has an
-enterable ground floor (door gap in the street-facing wall), windows on three
-faces (street + both alley sides) on the ground and second floors, and
-interior stairs to the second floor. Each team
+enterable ground floor (door gap in the street-facing wall, grey floor),
+windows on three faces (street + both alley sides) on the ground and
+second floors, and interior stairs to the second floor. Each team
 spawns behind the houses at opposite far ends of the street. The objective
 zone is marked on the road at the defenders' end.
 
@@ -149,7 +149,7 @@ npm test
 ```
 
 - `test/map-test.mjs` — unit tests for collision, floor height, stairs,
-  doors, alleys and the objective zone (13 checks).
+  doors, alleys and the objective zone (14 checks).
 - `test/headless-test.mjs` — spawns the real server and plays through it
   with fake WebSocket clients: damage falloff at close/medium/long range, a
   2v2 elimination win, an objective win, a reload cycle, a no-auto-reload
