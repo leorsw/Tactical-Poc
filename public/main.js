@@ -42,6 +42,8 @@ const joinBEl = $('joinB');
 const teamHint = $('teamHint');
 const hostControls = $('hostControls');
 const startBtn = $('startBtn');
+const clearRoomBtn = $('clearRoomBtn');
+const kickNotice = $('kickNotice');
 const startHint = $('startHint');
 const waitHost = $('waitHost');
 const scoreBox = $('scoreBox');
@@ -409,7 +411,10 @@ function makeNameSprite(name, colorCss) {
   ctx.fillStyle = colorCss;
   ctx.fillText(name.slice(0, 16), 128, 30);
   const tex = new THREE.CanvasTexture(canvas);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
+  // depthTest stays on (default): a tag behind a wall is hidden by the
+  // wall, like everything else. (depthTest:false made tags visible
+  // through walls.)
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex }));
   sprite.scale.set(2.4, 0.53, 1);
   sprite.renderOrder = 10;
   return sprite;
@@ -1020,6 +1025,29 @@ socket.on('error', (msg) => {
   connectStatus.textContent = msg.message || 'Error';
 });
 
+socket.on('kicked', (msg) => {
+  // The host cleared the room: forget the saved join so the auto-reconnect
+  // (the server closes this socket a moment later) does not rejoin, and
+  // go back to the join screen with an explanation. The notice stays up
+  // until the next join attempt; the connection status line is left alone
+  // because the reconnect flow overwrites it.
+  savedJoin = null;
+  joined = false;
+  solo = false;
+  myTeam = null;
+  downUntil = 0;
+  downOverlay.classList.add('hidden');
+  pendingRoundEnd = null;
+  pendingMatchEnd = null;
+  teamsBox.classList.add('hidden');
+  joinBox.classList.remove('hidden');
+  exitSoloBtn.classList.add('hidden');
+  endScreen.classList.add('hidden');
+  kickNotice.textContent = msg.reason || 'The host cleared the room. Rejoin to play.';
+  kickNotice.classList.remove('hidden');
+  showScreen('lobby');
+});
+
 socket.on('state', (msg) => {
   game.phase = msg.phase;
   game.round = msg.round;
@@ -1221,6 +1249,7 @@ socket.on('matchEnd', (msg) => {
 
 function join(team) {
   sfx.ensure();
+  kickNotice.classList.add('hidden');
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
   savedJoin = { name, team };
   socket.send({ t: 'join', name, team });
@@ -1231,6 +1260,7 @@ $('joinB').addEventListener('click', () => join('B'));
 $('joinAuto').addEventListener('click', () => join(null));
 $('soloBtn').addEventListener('click', () => {
   sfx.ensure();
+  kickNotice.classList.add('hidden');
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
   savedJoin = { name, solo: true };
   socket.send({ t: 'solo', name });
@@ -1242,6 +1272,28 @@ $('switchBtn').addEventListener('click', () => {
 $('atkA').addEventListener('click', () => socket.send({ t: 'setAttackers', team: 'A' }));
 $('atkB').addEventListener('click', () => socket.send({ t: 'setAttackers', team: 'B' }));
 $('startBtn').addEventListener('click', () => socket.send({ t: 'start' }));
+// Clear room needs two clicks: the first arms it (4s window), the second
+// sends. Kicking everyone is destructive; a stray tap must not do it.
+let clearArmed = false;
+let clearArmTimer = null;
+function disarmClear() {
+  clearArmed = false;
+  clearTimeout(clearArmTimer);
+  clearRoomBtn.textContent = 'Clear room — kick everyone else';
+  clearRoomBtn.classList.remove('armed');
+}
+clearRoomBtn.addEventListener('click', () => {
+  if (!clearArmed) {
+    clearArmed = true;
+    clearRoomBtn.textContent = 'Click again to kick everyone';
+    clearRoomBtn.classList.add('armed');
+    clearTimeout(clearArmTimer);
+    clearArmTimer = setTimeout(disarmClear, 4000);
+    return;
+  }
+  disarmClear();
+  socket.send({ t: 'clearRoom' });
+});
 continueBtn.addEventListener('click', () => {
   socket.send({ t: 'continue' });
   // The round starts right after; the state handler re-shows the button
@@ -1283,6 +1335,11 @@ function loop() {
     }
     const g = getPlayerMesh(id);
     g.visible = true;
+    // Name tags are teammates-only: the enemy team sees no tag at all.
+    // (Solo players have no team, so they neither show nor see tags.)
+    const m = meta.get(id);
+    const isTeammate = !solo && myTeam != null && !!m && !m.solo && m.team === myTeam;
+    if (g.userData.tag) g.userData.tag.visible = isTeammate;
     const k = 1 - Math.exp(-dt * 12);
     g.position.x += (s.x - g.position.x) * k;
     g.position.y += (s.y - g.position.y) * k;
