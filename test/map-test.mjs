@@ -5,6 +5,9 @@ import assert from 'node:assert/strict';
 import {
   HOUSES,
   SPAWNS,
+  SPAWN_MARKS,
+  OBJECTIVE,
+  GROUND_WINDOWS,
   COLLIDERS,
   floorHeightAt,
   resolveCollision,
@@ -35,11 +38,35 @@ check('alleys between houses on the same side are 4 m wide', () => {
   }
 });
 
-check('6 spawn points per role', () => {
+check('6 spawn points per role, behind the end houses', () => {
   assert.equal(SPAWNS.attackers.length, 6);
   assert.equal(SPAWNS.defenders.length, 6);
-  assert.ok(SPAWNS.attackers.every((s) => s.z === -55));
-  assert.ok(SPAWNS.defenders.every((s) => s.z === 55));
+  assert.ok(SPAWNS.attackers.every((s) => s.z === -45));
+  assert.ok(SPAWNS.defenders.every((s) => s.z === 45));
+  // Attackers behind the west end house (x -14..-8), defenders behind the
+  // east end house (x 8..14) — off the street axis, hidden by the houses.
+  assert.ok(SPAWNS.attackers.every((s) => s.x >= -14 && s.x <= -8));
+  assert.ok(SPAWNS.defenders.every((s) => s.x >= 8 && s.x <= 14));
+});
+
+check('spawn points are clear of colliders and on open ground', () => {
+  for (const role of ['attackers', 'defenders']) {
+    for (const s of SPAWNS[role]) {
+      const out = resolveCollision(s.x, s.z, 0);
+      assert.equal(out.x, s.x);
+      assert.equal(out.z, s.z);
+      assert.equal(floorHeightAt(s.x, s.z, 0), 0);
+    }
+  }
+});
+
+check('objective is the defenders spawn X', () => {
+  assert.equal(OBJECTIVE.x, SPAWN_MARKS.defenders.x);
+  assert.equal(OBJECTIVE.z, SPAWN_MARKS.defenders.z);
+  // Every defender spawn point sits inside the objective zone.
+  for (const s of SPAWNS.defenders) assert.equal(objectiveContains(s.x, s.z), true);
+  // No attacker spawn point is inside it.
+  for (const s of SPAWNS.attackers) assert.equal(objectiveContains(s.x, s.z), false);
 });
 
 check('colliders and visual geometry exist', () => {
@@ -118,10 +145,26 @@ check('grey floor inside each house', () => {
 });
 
 check('objective zone detection', () => {
-  assert.equal(objectiveContains(0, 52), true);
-  assert.equal(objectiveContains(2, 53), true);
-  assert.equal(objectiveContains(0, 40), false);
+  assert.equal(objectiveContains(11, 45), true);
+  assert.equal(objectiveContains(12, 46), true);
+  assert.equal(objectiveContains(6, 45), false, 'zone must not reach the street');
+  assert.equal(objectiveContains(0, 52), false, 'old road objective is gone');
   assert.equal(objectiveContains(0, -52), false);
+});
+
+check('ground-floor windows: 60, vault landings clear', () => {
+  assert.equal(GROUND_WINDOWS.length, 60);
+  // Every window's vault landing (0.75 m past the plane, both sides) must
+  // be free of colliders, or the climb would push the player back.
+  for (const w of GROUND_WINDOWS) {
+    for (const side of [-1, 1]) {
+      const px = w.axis === 'x' ? w.plane + side * 0.75 : w.center;
+      const pz = w.axis === 'x' ? w.center : w.plane + side * 0.75;
+      const out = resolveCollision(px, pz, 0);
+      assert.equal(out.x, px, `window ${JSON.stringify(w)} side ${side}: x pushed`);
+      assert.equal(out.z, pz, `window ${JSON.stringify(w)} side ${side}: z pushed`);
+    }
+  }
 });
 
 console.log(`map tests passed (${n} checks)`);
