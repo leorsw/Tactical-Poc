@@ -85,7 +85,9 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 
 ## Match flow
 
-1. **Lobby:** enter a callsign, join Team A or Team B (or auto-assign).
+1. **Lobby:** enter a callsign, join the Attackers or the Defenders
+   (or auto-assign). The columns and join buttons are labelled by role —
+   the host picks which team attacks, and the labels follow the pick.
    Teams need **not** be symmetric — 6 attackers vs 2 defenders is allowed.
    1–6 players per team; a match can start with as few as 1 player per side
    (2+ per team is recommended and the lobby says so).
@@ -97,13 +99,19 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
    is **5:00**.
    - **Attackers** win a round by eliminating all defenders **or** by having
-     any living attacker reach the defenders' spawn **X** (red, behind the
-     east house at the defenders' end) — the attackers' end point *is* the
-     defenders' start point.
+     any living attacker reach the defenders' spawn (the attackers' end
+     point *is* the defenders' start point). The objective is marked with
+     a red **X on the map only** (M) — never as a ground mark in the world —
+     labelled **לכבוש** for attackers and **להגן** for defenders.
    - **Defenders** win a round by eliminating all attackers **or** by
      surviving until the timer expires.
-   - **10-second intermission** between rounds, then positions, health and
-     ammo reset. Roles stay the same for the whole match.
+   - **Spawn sides are drawn fresh every round:** each team independently
+     starts on the west or east side of the street (4 combinations), so
+     the objective moves with the defenders' spawn.
+   - **Intermission:** when a round ends, the result stays on screen with
+     a **CONTINUE** button — the next round starts only when a player
+     presses it. Positions, health and ammo reset. Roles stay the same
+     for the whole match.
 4. **No respawn.** An eliminated player spectates: the camera follows a
    living teammate (click/tap to cycle). When no teammate is alive, the
    round is already over.
