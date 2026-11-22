@@ -10,6 +10,9 @@
 //     lobby, shooting and reload work, nobody can shoot them or be shot by
 //     them, a match can start alongside, and leaving solo frees them to
 //     join a team.
+//   Scenario 4 (clear room): a non-host clearRoom is ignored; the host's
+//     clearRoom sends 'kicked' to every other player (teams and solo),
+//     closes their sockets, and leaves the host alone in the lobby.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -344,6 +347,46 @@ async function main() {
     console.log('ok - after leaving solo, joining a team works');
 
     for (const c of [s, j1, k1]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 4: clear room
+    const h1 = new Client('H1');
+    const h2 = new Client('H2');
+    const o1 = new Client('O1');
+    const s4 = new Client('S4');
+    for (const c of [h1, h2, o1, s4]) await c.ready();
+    h1.send({ t: 'join', name: 'H1', team: 'A' });
+    h2.send({ t: 'join', name: 'H2', team: 'A' });
+    o1.send({ t: 'join', name: 'O1', team: 'B' });
+    s4.send({ t: 'solo', name: 'S4' });
+    await h1.waitFor('state', (m) => m.players.length === 4);
+    console.log('ok - 4 clients joined for the clear-room test (host + teammate + opponent + solo)');
+    // Non-host clearRoom is ignored.
+    o1.send({ t: 'clearRoom' });
+    await sleep(500);
+    assert.equal(h1.findLast('state').players.length, 4, 'non-host clearRoom must be ignored');
+    console.log('ok - non-host clearRoom is ignored');
+    // Host clears: everyone else gets 'kicked' and their socket closes.
+    h1.send({ t: 'clearRoom' });
+    await h2.waitFor('kicked');
+    await o1.waitFor('kicked');
+    await s4.waitFor('kicked');
+    await waitFor(() => h2.ws.readyState === WebSocket.CLOSED, 5000, 'H2 socket closed');
+    await waitFor(() => o1.ws.readyState === WebSocket.CLOSED, 5000, 'O1 socket closed');
+    await waitFor(() => s4.ws.readyState === WebSocket.CLOSED, 5000, 'S4 socket closed');
+    const cleared = await waitFor(
+      () => {
+        const last = h1.findLast('state');
+        return last && last.players.length === 1 ? last : null;
+      },
+      5000,
+      'room cleared down to the host',
+    );
+    assert.equal(cleared.players[0].name, 'H1');
+    assert.equal(cleared.phase, 'lobby');
+    console.log('ok - host clearRoom kicks everyone else; host stays alone in the lobby');
+
+    h1.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
