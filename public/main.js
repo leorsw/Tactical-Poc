@@ -51,6 +51,9 @@ const waitHost = $('waitHost');
 const scoreBox = $('scoreBox');
 const timerEl = $('timer');
 const aliveBox = $('aliveBox');
+const captureBar = $('captureBar');
+const captureLabel = $('captureLabel');
+const captureFill = $('captureFill');
 const roundInfo = $('roundInfo');
 const healthFill = $('healthFill');
 const healthText = $('healthText');
@@ -71,6 +74,7 @@ const exitSoloBtn = $('exitSoloBtn');
 const endScreen = $('endScreen');
 const endTitle = $('endTitle');
 const endScore = $('endScore');
+const endStats = $('endStats');
 const endHostBtns = $('endHostBtns');
 const endWait = $('endWait');
 const mapBtn = $('mapBtn');
@@ -109,6 +113,7 @@ let game = {
   score: { A: 0, B: 0 },
   attackersTeam: 'A',
   timeLeftMs: 0,
+  captureProgress: 0, // 0..1 while an attacker holds the objective zone
 };
 let currentObjective = null; // {x, z, r} — the defenders' spawn centre this round
 let lastRoundSeen = 0;
@@ -231,7 +236,10 @@ function initThree() {
   }
 
   // No ground markings in the 3D world: the objective (the defenders'
-  // spawn X) is shown on the map only — see drawMap.
+  // spawn X) is shown on the map only — see drawMap. A visible ring +
+  // beam was built and removed at Lior's request (22/11/2026): the zone
+  // stays hidden in the world; the 30 s capture hold is what makes the
+  // round ending legible instead.
 
   controls.attach(renderer.domElement, {
     joyZone: $('joyZone'),
@@ -722,6 +730,22 @@ function updateHUD() {
   } else {
     spectateBar.classList.add('hidden');
   }
+
+  // Objective capture progress bar. The bar is visible while an
+  // attacker holds the zone; attackers see it as their own capture,
+  // defenders as a warning.
+  const cp = game.captureProgress || 0;
+  if (!solo && game.phase === 'playing' && cp > 0) {
+    const iAmAttacker = myTeam != null && myTeam === game.attackersTeam;
+    captureLabel.textContent = iAmAttacker
+      ? 'CAPTURING THE OBJECTIVE…'
+      : '⚠ ENEMY CAPTURING THE OBJECTIVE';
+    captureBar.classList.toggle('danger', !iAmAttacker);
+    captureFill.style.width = `${Math.round(cp * 100)}%`;
+    captureBar.classList.remove('hidden');
+  } else {
+    captureBar.classList.add('hidden');
+  }
 }
 
 function addKillfeed(text) {
@@ -1129,6 +1153,7 @@ socket.on('snapshot', (msg) => {
   game.round = msg.round;
   game.score = msg.score;
   game.timeLeftMs = msg.timeLeftMs;
+  game.captureProgress = msg.captureProgress || 0;
   snapPlayers = new Map(msg.players.map((p) => [p.id, p]));
 
   const me = snapPlayers.get(myId);
@@ -1150,15 +1175,22 @@ socket.on('snapshot', (msg) => {
       controls.exitLock();
     }
     if (wasAlive && !myAlive) {
-      // Just eliminated: show YOU'RE DOWN for 3 seconds before switching
-      // to spectate (or to the round-end UI, if the round ended). A
-      // teamkill adds the FRIENDLY FIRE line under it.
-      downUntil = performance.now() + 3000;
-      downOverlay.classList.remove('hidden');
-      downSub.classList.toggle('hidden', !killedByFriendlyFire);
-      killedByFriendlyFire = false;
+      // Just eliminated. The pointer lock is released either way; the
+      // YOU'RE DOWN overlay shows only while the round is still going.
+      // On the final kill the server broadcasts roundEnd/matchEnd
+      // synchronously, but the death snapshot goes out on the next tick —
+      // so the round/match-end UI may already own the screen when this
+      // snapshot arrives, and showing the overlay then would cover the
+      // banner (or the stats table) for 3 seconds. Found by the
+      // screenshot run (22/11/2026).
       controls.exitLock();
       controls.firing = false;
+      if (msg.phase === 'playing') {
+        downUntil = performance.now() + 3000;
+        downOverlay.classList.remove('hidden');
+        downSub.classList.toggle('hidden', !killedByFriendlyFire);
+      }
+      killedByFriendlyFire = false;
     }
     if (!wasAlive && myAlive) {
       // Revived by a round reset: clear any pending down state.
@@ -1219,7 +1251,7 @@ function roundResultText(winner, reason, score) {
     reason === 'elimination'
       ? 'eliminated the enemy team'
       : reason === 'objective'
-        ? 'reached the objective'
+        ? 'captured the objective'
         : 'survived the round';
   return `${winnerRole} WIN THE ROUND\n${reasonText}\nScore: ${score.A} — ${score.B}`;
 }
@@ -1235,12 +1267,36 @@ function showRoundEndUI(msg) {
 
 function showMatchEndUI(msg) {
   continueBtn.classList.add('hidden');
+  // The round-end banner is sticky — hide it, or it overlaps the
+  // match-end screen (and the stats table) underneath it.
+  bannerEl.classList.add('hidden');
   const winnerRole = game.attackersTeam === msg.winner ? 'ATTACKERS' : 'DEFENDERS';
   endTitle.textContent = `${winnerRole} WIN THE MATCH`;
   endScore.textContent = `Final score: ${roleLabel('A')} ${msg.score.A} — ${msg.score.B} ${roleLabel('B')}`;
+  // Match stats table (server-sorted by kills, then damage). Names are
+  // user input, so they are escaped before going into innerHTML.
+  const stats = Array.isArray(msg.stats) ? msg.stats : [];
+  if (stats.length > 0) {
+    const rows = stats.map((s) => {
+      const acc = s.accuracy == null ? '—' : `${s.accuracy}%`;
+      const cls = s.role === 'attackers' ? 'atk' : 'def';
+      return `<tr><td class="${cls}">${escapeHtml(s.name)}</td><td>${s.kills}</td><td>${s.deaths}</td><td>${s.teamkills}</td><td>${acc}</td><td>${s.damage}</td><td>${s.captures}</td></tr>`;
+    }).join('');
+    endStats.innerHTML = `<table><thead><tr><th>Player</th><th>K</th><th>D</th><th>TK</th><th>Acc</th><th>Dmg</th><th>Cap</th></tr></thead><tbody>${rows}</tbody></table>`;
+    endStats.classList.remove('hidden');
+  } else {
+    endStats.innerHTML = '';
+    endStats.classList.add('hidden');
+  }
   endHostBtns.classList.remove('hidden'); // anyone can rematch now
   endWait.classList.add('hidden');
   endScreen.classList.remove('hidden');
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 }
 
 socket.on('roundStart', (msg) => {
