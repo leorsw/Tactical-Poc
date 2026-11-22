@@ -20,7 +20,8 @@ export class Sfx {
     if (this.ctx.state === 'suspended') this.ctx.resume();
   }
 
-  shoot() {
+  // volume: 1 for my own shots, lower for distant ones (0.12 floor).
+  shoot(volume = 1) {
     if (!this.ctx) return;
     // Short burst of filtered noise: a rough "bang".
     const dur = 0.08;
@@ -35,7 +36,7 @@ export class Sfx {
     filter.type = 'lowpass';
     filter.frequency.value = 1800;
     const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(0.9, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.9 * volume, this.ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + dur);
     src.connect(filter).connect(gain).connect(this.master);
     src.start();
