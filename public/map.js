@@ -53,25 +53,36 @@ for (const side of [-1, 1]) {
   }
 }
 
-// Objective zone: the Defenders' spawn X (south end, +z). The attackers'
-// end point IS the defenders' start point — reaching it wins the round.
-// r = 3.5 keeps the zone behind the house: the nearest street point
-// (x = 6) is 5 m from the centre, so attackers must leave the street.
-export const OBJECTIVE = { x: 11, z: 45, r: 3.5 };
-
-// Spawn points: one zone per role, hidden behind the end houses — north /
-// south of the first building at each end, invisible from the street.
-// Attackers spawn north (z = -45) facing +z (yaw = PI); defenders spawn
-// south (z = +45) facing -z (yaw = 0). Yaw follows the Three.js convention:
-// forward = (-sin(yaw), 0, -cos(yaw)).
+// Spawn layout: each round, each team independently draws a random side of
+// the street (west x = -11 or east x = +11) — 4 combinations. The ends stay
+// fixed: attackers north (z = -45, facing +z, yaw = PI), defenders south
+// (z = +45, facing -z, yaw = 0). Spawn points sit behind the end houses,
+// hidden from the street. The objective is always the defenders' spawn
+// centre (r = 3.5 keeps the zone behind the house: the nearest street point
+// (x = 6) is 5 m from the centre, so attackers must leave the street).
+// Yaw follows the Three.js convention: forward = (-sin(yaw), 0, -cos(yaw)).
+export const OBJECTIVE_R = 3.5;
+const SPAWN_X = 11;
+const SPAWN_Z = { attackers: -45, defenders: 45 };
 const SPAWN_DX = [-3, -1.8, -0.6, 0.6, 1.8, 3];
-export const SPAWNS = {
-  attackers: SPAWN_DX.map((dx) => ({ x: -11 + dx, z: -45, yaw: Math.PI })),
-  defenders: SPAWN_DX.map((dx) => ({ x: 11 + dx, z: 45, yaw: 0 })),
-};
 
-// Spawn X centers (the painted ground marks; the defenders' X is the objective).
-export const SPAWN_MARKS = { attackers: { x: -11, z: -45 }, defenders: { x: 11, z: 45 } };
+export function spawnLayout(atkSide, defSide) {
+  const mk = (role, side) => SPAWN_DX.map((dx) => ({
+    x: side * SPAWN_X + dx,
+    z: SPAWN_Z[role],
+    yaw: role === 'attackers' ? Math.PI : 0,
+  }));
+  return {
+    attackers: mk('attackers', atkSide),
+    defenders: mk('defenders', defSide),
+    objective: { x: defSide * SPAWN_X, z: SPAWN_Z.defenders, r: OBJECTIVE_R },
+  };
+}
+
+// Canonical layout (attackers west, defenders east) — used for solo mode
+// and as the pre-match default.
+export const SPAWNS = spawnLayout(-1, 1);
+export const OBJECTIVE = SPAWNS.objective;
 
 // Ground-floor windows, for the climb-through feature (client only).
 // Each window: the wall plane (axis + coordinate) and the center/half-width
@@ -188,11 +199,12 @@ export function floorHeightAt(x, z, currentY) {
   return 0;
 }
 
-// True when a point is inside the objective zone.
-export function objectiveContains(x, z) {
-  const dx = x - OBJECTIVE.x;
-  const dz = z - OBJECTIVE.z;
-  return dx * dx + dz * dz <= OBJECTIVE.r * OBJECTIVE.r;
+// True when a point is inside the objective zone (defaults to the
+// canonical zone; the server passes the current round's zone).
+export function objectiveContains(x, z, zone = OBJECTIVE) {
+  const dx = x - zone.x;
+  const dz = z - zone.z;
+  return dx * dx + dz * dz <= zone.r * zone.r;
 }
 
 // ---------------------------------------------------------------------------
