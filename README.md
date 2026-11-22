@@ -61,6 +61,7 @@ Then open <http://localhost:8020> in a desktop browser.
 | R | Reload (3.5 s) |
 | M | Toggle map (terrain only, no player markers) |
 | F | Toggle fullscreen (on iPhone Safari the button shows Add-to-Home-Screen instructions — no Fullscreen API there) |
+| E | Climb through a nearby ground-floor window (a CLIMB button also appears) |
 | Click (while eliminated) | Cycle spectate target |
 
 ### Mobile (touch)
@@ -96,8 +97,9 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
    is **5:00**.
    - **Attackers** win a round by eliminating all defenders **or** by having
-     any living attacker enter the objective zone (yellow marking painted
-     on the road at the defenders' end of the street).
+     any living attacker reach the defenders' spawn **X** (red, behind the
+     east house at the defenders' end) — the attackers' end point *is* the
+     defenders' start point.
    - **Defenders** win a round by eliminating all attackers **or** by
      surviving until the timer expires.
    - **10-second intermission** between rounds, then positions, health and
@@ -138,9 +140,13 @@ One street (~120 m) along the Z axis with **10 grey-box houses**, 5 per
 side, with **4 m alleys** between adjacent houses. Each house has an
 enterable ground floor (door gap in the street-facing wall, grey floor),
 windows on three faces (street + both alley sides) on the ground and
-second floors, and interior stairs to the second floor. Each team
-spawns behind the houses at opposite far ends of the street. The objective
-zone is marked on the road at the defenders' end.
+second floors, and interior stairs to the second floor. Each team spawns
+behind the end houses at opposite far ends of the street, marked by a
+painted **X** in the team's color (blue = attackers, red = defenders) —
+hidden from the street, north/south of the first building at each end.
+The red X is the attackers' objective. Ground-floor windows can be
+climbed through in either direction: get close and a **CLIMB** button
+appears (or press **E**).
 
 ## Tests
 
@@ -149,7 +155,8 @@ npm test
 ```
 
 - `test/map-test.mjs` — unit tests for collision, floor height, stairs,
-  doors, alleys and the objective zone (14 checks).
+  doors, alleys, the objective zone and the window-climb landings
+  (17 checks).
 - `test/headless-test.mjs` — spawns the real server and plays through it
   with fake WebSocket clients: damage falloff at close/medium/long range, a
   2v2 elimination win, an objective win, a reload cycle, a no-auto-reload
