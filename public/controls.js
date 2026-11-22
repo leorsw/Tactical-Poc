@@ -1,0 +1,205 @@
+// controls.js — input for desktop (WASD + pointer-lock mouse) and mobile
+// (left virtual joystick, right-side drag to look, FIRE / RELOAD buttons).
+//
+// The module owns raw input state only; main.js decides what the input
+// means (moving, firing, spectating) based on the game state.
+
+export class Controls {
+  constructor({ onReload } = {}) {
+    this.onReload = onReload || (() => {});
+    this.isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    this.keys = new Set();
+    this.firing = false; // mouse held (desktop, locked) or FIRE held (mobile)
+    this.locked = false;
+    this.lookDX = 0;
+    this.lookDY = 0;
+    // Joystick state (mobile).
+    this.joyActive = false;
+    this.joyId = null;
+    this.joyBaseX = 0;
+    this.joyBaseY = 0;
+    this.joyX = 0; // -1..1 strafe (right positive)
+    this.joyY = 0; // -1..1 forward (up positive)
+    // Look-drag state (mobile).
+    this.lookId = null;
+    this.lookLastX = 0;
+    this.lookLastY = 0;
+    this.canvas = null;
+    this._onMouseMove = this._onMouseMove.bind(this);
+    this._onMouseDown = this._onMouseDown.bind(this);
+    this._onMouseUp = this._onMouseUp.bind(this);
+    this._onKeyDown = this._onKeyDown.bind(this);
+    this._onKeyUp = this._onKeyUp.bind(this);
+    this._onLockChange = this._onLockChange.bind(this);
+  }
+
+  attach(canvas, els) {
+    this.canvas = canvas;
+    this.els = els; // { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn }
+    document.addEventListener('mousemove', this._onMouseMove);
+    document.addEventListener('mousedown', this._onMouseDown);
+    document.addEventListener('mouseup', this._onMouseUp);
+    document.addEventListener('keydown', this._onKeyDown);
+    document.addEventListener('keyup', this._onKeyUp);
+    document.addEventListener('pointerlockchange', this._onLockChange);
+    if (this.isTouch) this._attachTouch();
+  }
+
+  requestLock() {
+    if (!this.isTouch && this.canvas && document.pointerLockElement !== this.canvas) {
+      this.canvas.requestPointerLock();
+    }
+  }
+
+  exitLock() {
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+
+  // Movement intent: { x: strafe right +, z: forward + }, each -1..1.
+  getMove() {
+    let x = 0;
+    let z = 0;
+    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) z += 1;
+    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) z -= 1;
+    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) x += 1;
+    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) x -= 1;
+    if (this.joyActive) {
+      x += this.joyX;
+      z += this.joyY;
+    }
+    const len = Math.hypot(x, z);
+    if (len > 1) {
+      x /= len;
+      z /= len;
+    }
+    return { x, z };
+  }
+
+  // Consume accumulated look deltas (pixels) since the last frame.
+  takeLook() {
+    const out = { dx: this.lookDX, dy: this.lookDY };
+    this.lookDX = 0;
+    this.lookDY = 0;
+    return out;
+  }
+
+  _onLockChange() {
+    this.locked = document.pointerLockElement === this.canvas;
+    if (!this.locked) this.firing = false;
+  }
+
+  _onMouseMove(e) {
+    if (!this.locked) return;
+    this.lookDX += e.movementX || 0;
+    this.lookDY += e.movementY || 0;
+  }
+
+  _onMouseDown(e) {
+    if (e.button === 0 && this.locked) this.firing = true;
+  }
+
+  _onMouseUp(e) {
+    if (e.button === 0) this.firing = false;
+  }
+
+  _onKeyDown(e) {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+      e.preventDefault();
+    }
+    if (e.code === 'KeyR' && !e.repeat) this.onReload();
+    this.keys.add(e.code);
+  }
+
+  _onKeyUp(e) {
+    this.keys.delete(e.code);
+  }
+
+  _attachTouch() {
+    const { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn } = this.els;
+    const RADIUS = 48; // joystick travel in px
+
+    const setKnob = (dx, dy) => {
+      joyKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+    };
+
+    joyZone.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      this.joyActive = true;
+      this.joyId = t.identifier;
+      this.joyBaseX = t.clientX;
+      this.joyBaseY = t.clientY;
+      joyBase.style.display = 'block';
+      joyBase.style.left = `${t.clientX - 60}px`;
+      joyBase.style.top = `${t.clientY - 60}px`;
+      setKnob(0, 0);
+    }, { passive: false });
+
+    joyZone.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        if (t.identifier !== this.joyId) continue;
+        let dx = t.clientX - this.joyBaseX;
+        let dy = t.clientY - this.joyBaseY;
+        const len = Math.hypot(dx, dy);
+        if (len > RADIUS) {
+          dx = (dx / len) * RADIUS;
+          dy = (dy / len) * RADIUS;
+        }
+        this.joyX = dx / RADIUS;
+        this.joyY = -dy / RADIUS; // pushing up moves forward
+        setKnob(dx, dy);
+      }
+    }, { passive: false });
+
+    const endJoy = (e) => {
+      for (const t of e.changedTouches) {
+        if (t.identifier === this.joyId) {
+          this.joyActive = false;
+          this.joyId = null;
+          this.joyX = 0;
+          this.joyY = 0;
+          joyBase.style.display = 'none';
+        }
+      }
+    };
+    joyZone.addEventListener('touchend', endJoy);
+    joyZone.addEventListener('touchcancel', endJoy);
+
+    lookZone.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      this.lookId = t.identifier;
+      this.lookLastX = t.clientX;
+      this.lookLastY = t.clientY;
+    }, { passive: false });
+
+    lookZone.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        if (t.identifier !== this.lookId) continue;
+        this.lookDX += (t.clientX - this.lookLastX) * 2.2;
+        this.lookDY += (t.clientY - this.lookLastY) * 2.2;
+        this.lookLastX = t.clientX;
+        this.lookLastY = t.clientY;
+      }
+    }, { passive: false });
+
+    const endLook = (e) => {
+      for (const t of e.changedTouches) {
+        if (t.identifier === this.lookId) this.lookId = null;
+      }
+    };
+    lookZone.addEventListener('touchend', endLook);
+    lookZone.addEventListener('touchcancel', endLook);
+
+    const bindHold = (el, on, off) => {
+      el.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); on(); }, { passive: false });
+      el.addEventListener('touchend', (e) => { e.preventDefault(); off(); }, { passive: false });
+      el.addEventListener('touchcancel', off);
+    };
+    bindHold(fireBtn, () => { this.firing = true; }, () => { this.firing = false; });
+    bindHold(reloadBtn, () => this.onReload(), () => {});
+  }
+}
