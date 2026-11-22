@@ -1,4 +1,7 @@
-// net.js — thin WebSocket wrapper for the game client.
+// net.js — thin WebSocket wrapper for the game client, with auto-reconnect.
+// A deploy restart or a mobile network blip must not leave a player on a
+// frozen screen: on close, reconnect with backoff (1s, 2s, 4s, 8s cap).
+// main.js rejoins with the saved callsign/team on the new connection.
 
 export class GameSocket {
   constructor() {
@@ -6,13 +9,27 @@ export class GameSocket {
     this.handlers = new Map(); // message type -> [callbacks]
     this.onOpen = null;
     this.onClose = null;
+    this.wantConnection = false; // false after an explicit disconnect()
+    this.reconnectDelay = 1000;
+    this.reconnectTimer = null;
   }
 
   connect() {
+    this.wantConnection = true;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.ws = new WebSocket(`${proto}//${location.host}`);
-    this.ws.onopen = () => this.onOpen && this.onOpen();
-    this.ws.onclose = () => this.onClose && this.onClose();
+    this.ws.onopen = () => {
+      this.reconnectDelay = 1000;
+      this.onOpen && this.onOpen();
+    };
+    this.ws.onclose = () => {
+      this.onClose && this.onClose();
+      if (this.wantConnection) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelay);
+        this.reconnectDelay = Math.min(this.reconnectDelay * 2, 8000);
+      }
+    };
     this.ws.onerror = () => {
       /* onclose will fire too; nothing special to do here */
     };
@@ -26,6 +43,12 @@ export class GameSocket {
       const list = this.handlers.get(msg.t);
       if (list) for (const cb of list) cb(msg);
     };
+  }
+
+  disconnect() {
+    this.wantConnection = false;
+    clearTimeout(this.reconnectTimer);
+    if (this.ws) this.ws.close();
   }
 
   on(type, cb) {
