@@ -69,6 +69,10 @@ const endWait = $('endWait');
 const mapBtn = $('mapBtn');
 const fsBtn = $('fsBtn');
 const mapOverlay = $('mapOverlay');
+const mapCloseBtn = $('mapCloseBtn');
+const connBanner = $('connBanner');
+const fsHelp = $('fsHelp');
+const fsHelpClose = $('fsHelpClose');
 const mapCanvas = $('mapCanvas');
 const mapCtx = mapCanvas.getContext('2d');
 
@@ -777,13 +781,28 @@ function toggleMap() {
 }
 
 function toggleFullscreen() {
-  const done = (p) => { if (p && p.catch) p.catch(() => {}); };
-  if (document.fullscreenElement) done(document.exitFullscreen());
-  else done(document.documentElement.requestFullscreen());
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  const exit = document.exitFullscreen || document.webkitExitFullscreen;
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    const p = exit && exit.call(document);
+    if (p && p.catch) p.catch(() => {});
+    return;
+  }
+  if (req) {
+    const p = req.call(el);
+    if (p && p.catch) p.catch(() => { fsHelp.classList.remove('hidden'); });
+  } else {
+    // No Fullscreen API (iPhone Safari): only Add to Home Screen works.
+    fsHelp.classList.remove('hidden');
+  }
 }
-document.addEventListener('fullscreenchange', () => {
-  fsBtn.textContent = document.fullscreenElement ? 'EXIT FULLSCREEN' : 'FULLSCREEN';
-});
+const onFsChange = () => {
+  const fs = document.fullscreenElement || document.webkitFullscreenElement;
+  fsBtn.textContent = fs ? 'EXIT FULLSCREEN' : 'FULLSCREEN';
+};
+document.addEventListener('fullscreenchange', onFsChange);
+document.addEventListener('webkitfullscreenchange', onFsChange);
 
 // ---------------------------------------------------------------------------
 // Spectating
@@ -874,13 +893,23 @@ function onCanvasClick() {
 // ---------------------------------------------------------------------------
 
 let connected = false;
+let savedJoin = null; // { name, team } or { name, solo: true } — for auto-rejoin
 socket.onOpen = () => {
   connected = true;
   connectStatus.textContent = 'Connected.';
   joinBox.classList.remove('hidden');
+  connBanner.classList.add('hidden');
+  // Reconnect: the server dropped the old player entry when the socket
+  // closed, so rejoin with the same callsign/team.
+  if (savedJoin) {
+    if (savedJoin.solo) socket.send({ t: 'solo', name: savedJoin.name });
+    else socket.send({ t: 'join', name: savedJoin.name, team: savedJoin.team });
+  }
 };
 socket.onClose = () => {
-  connectStatus.textContent = 'Disconnected from the server. Reload the page to reconnect.';
+  connected = false;
+  connectStatus.textContent = 'Disconnected from the server. Reconnecting…';
+  connBanner.classList.remove('hidden');
 };
 
 socket.on('welcome', (msg) => {
@@ -920,6 +949,7 @@ socket.on('soloJoined', (msg) => {
 socket.on('soloLeft', () => {
   solo = false;
   joined = false;
+  savedJoin = null;
   myTeam = null;
   myAlive = true;
   myHealth = 100;
@@ -944,6 +974,7 @@ socket.on('state', (msg) => {
   meta = new Map(msg.players.map((p) => [p.id, p]));
   const me = meta.get(myId);
   if (me) myTeam = me.team;
+  if (me && savedJoin && !savedJoin.solo) savedJoin.team = me.team;
   refreshMeshColors();
   // Drop meshes for players who left.
   for (const id of [...playerMeshes.keys()]) {
@@ -1067,6 +1098,7 @@ socket.on('matchEnd', (msg) => {
 function join(team) {
   sfx.ensure();
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
+  savedJoin = { name, team };
   socket.send({ t: 'join', name, team });
 }
 
@@ -1076,6 +1108,7 @@ $('joinAuto').addEventListener('click', () => join(null));
 $('soloBtn').addEventListener('click', () => {
   sfx.ensure();
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
+  savedJoin = { name, solo: true };
   socket.send({ t: 'solo', name });
 });
 exitSoloBtn.addEventListener('click', () => socket.send({ t: 'leaveSolo' }));
@@ -1089,7 +1122,10 @@ $('rematchBtn').addEventListener('click', () => socket.send({ t: 'rematch', swap
 $('swapBtn').addEventListener('click', () => socket.send({ t: 'rematch', swap: true }));
 mapBtn.addEventListener('click', () => toggleMap());
 mapOverlay.addEventListener('click', () => toggleMap());
+mapCloseBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleMap(); });
 fsBtn.addEventListener('click', () => toggleFullscreen());
+fsHelpClose.addEventListener('click', () => fsHelp.classList.add('hidden'));
+fsHelp.addEventListener('click', () => fsHelp.classList.add('hidden'));
 nameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') join(null);
 });
