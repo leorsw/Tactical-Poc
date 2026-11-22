@@ -43,6 +43,7 @@
     <p class="subtitle">Team combat test — no respawn, limited ammo</p>
 
     <div id="connectStatus" class="status">Connecting to server…</div>
+    <p id="kickNotice" class="hidden"></p>
 
     <div id="joinBox" class="hidden">
       <input id="nameInput" type="text" maxlength="16" placeholder="Your callsign" autocomplete="off">
@@ -78,6 +79,9 @@
         <div class="joinRow">
           <button id="atkA">Team A attacks</button>
           <button id="atkB">Team B attacks</button>
+        </div>
+        <div class="joinRow">
+          <button id="clearRoomBtn" class="danger">Clear room — kick everyone else</button>
         </div>
       </div>
       <div class="lobbyActions">
