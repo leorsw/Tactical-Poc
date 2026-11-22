@@ -126,6 +126,10 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
   - **Long (over 50 m): 34 damage** — three hits eliminate.
 - A non-lethal hit flashes the victim's screen red for ~3 seconds.
   No health regen, no healing.
+- When a player is eliminated, they see **YOU'RE DOWN** for 3 seconds
+  (frozen first-person view) before switching to spectate — or to the
+  round/match-end screen, if the round ended. A teamkill adds a
+  **FRIENDLY FIRE** line under it (the killfeed also flags teamkills).
 - **6 magazines × 29 rounds.** Reloading takes **3.5 s** and you cannot fire
   while reloading. No pistol, no other weapon. A player out of ammo can
   still move and observe but cannot fire. There is **no auto-reload**: when
