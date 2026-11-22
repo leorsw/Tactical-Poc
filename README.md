@@ -1,0 +1,178 @@
+# Tactical POC — browser-based team FPS
+
+A proof of concept for testing **team combat behavior under fire**: two teams
+fight on one street, no respawn, limited ammo, and an objective the attackers
+must reach. Built to answer one question — *is the teamwork experience worth
+developing further?* — not to be a finished game.
+
+**Stack:** Node.js + `ws` server, vanilla Three.js client (ES modules).
+No build step, no TypeScript, no framework, no CDN at runtime (Three.js is
+served from local `node_modules`, so the game works on a LAN without
+internet).
+
+## How to run locally
+
+```bash
+cd tactical-poc
+npm install
+npm start
+```
+
+Then open <http://localhost:8020> in a desktop browser.
+
+## How to test from phones on the same WiFi
+
+1. Make sure the phones are on the **same WiFi network** as the laptop.
+2. Find the laptop's LAN IP:
+   - **macOS:** `ipconfig getifaddr en0`
+   - **Linux:** `ip -4 addr show` (look for `inet 192.168.x.x`)
+   - **Windows:** `ipconfig` (look for "IPv4 Address")
+3. On each phone, open `http://<LAN-IP>:8020` (for example
+   `http://192.168.1.42:8020`). No install needed — it runs in the browser.
+4. Hold the phone in **landscape**. Use the left virtual joystick to move,
+   drag the right side of the screen to look, hold **FIRE** to shoot and tap
+   **RELOAD** to reload.
+5. If a phone cannot reach the page, check the laptop firewall: port 8020
+   must be reachable on the LAN (the server listens on `0.0.0.0`).
+
+## Troubleshooting
+
+- **Stuck on "Connecting to server..."** — the page loaded but the game code
+  did not start. Most likely Three.js is missing: in the game folder run
+  `npm install` again and check that `node_modules/three/build/three.module.js`
+  exists, then `npm start` and reload. Quick check: open
+  `http://localhost:8020/three/three.module.js` — it should download a large JS
+  file, not "Not found".
+- **"Cannot reach the game server"** — the `npm start` window was closed or
+  the server crashed. Start it again (`npm start` in the game folder) and
+  reload the page.
+- **Phones cannot reach the page** — the phone must be on the same WiFi as
+  the laptop, and the laptop firewall must allow port 8020 on the LAN.
+
+## Controls
+
+### Desktop
+| Input | Action |
+|---|---|
+| WASD / arrows | Move |
+| Mouse | Look (click the game to capture the mouse) |
+| Hold left mouse | Fire |
+| R | Reload (3.5 s) |
+| Click (while eliminated) | Cycle spectate target |
+
+### Mobile (touch)
+| Input | Action |
+|---|---|
+| Left virtual joystick | Move |
+| Drag right side of screen | Look |
+| Hold FIRE | Fire |
+| RELOAD button | Reload (3.5 s) |
+| Tap look area (while eliminated) | Cycle spectate target |
+
+## Match flow
+
+1. **Lobby:** enter a callsign, join Team A or Team B (or auto-assign).
+   Teams need **not** be symmetric — 6 attackers vs 2 defenders is allowed.
+   1–6 players per team; a match can start with as few as 1 player per side
+   (2+ per team is recommended and the lobby says so).
+2. The **first player to join is the host**. The host picks which team
+   attacks and starts the match when both teams have at least 1 player.
+   The first player to join **each team** is marked that team's
+   **commander** (label only in v1 — no special powers).
+3. **Rounds:** first team to **3 round wins** takes the match. Round timer
+   is **5:00**.
+   - **Attackers** win a round by eliminating all defenders **or** by having
+     any living attacker enter the objective zone (yellow pillar of light
+     at the defenders' end of the street).
+   - **Defenders** win a round by eliminating all attackers **or** by
+     surviving until the timer expires.
+   - **10-second intermission** between rounds, then positions, health and
+     ammo reset. Roles stay the same for the whole match.
+4. **No respawn.** An eliminated player spectates: the camera follows a
+   living teammate (click/tap to cycle). When no teammate is alive, the
+   round is already over.
+5. After the match ends, the host can start a **Rematch** (same roles) or
+   **Swap roles & rematch**.
+
+## Combat rules
+
+- Health **100**. Damage falls off with distance (shooter to target):
+  - **Close (up to 15 m): 100 damage** — one hit eliminates.
+  - **Medium (15–50 m): 50 damage** — two hits eliminate.
+  - **Long (over 50 m): 34 damage** — three hits eliminate.
+- A non-lethal hit flashes the victim's screen red for ~3 seconds.
+  No health regen, no healing.
+- **6 magazines × 29 rounds.** Reloading takes **3.5 s** and you cannot fire
+  while reloading. No pistol, no other weapon. A player out of ammo can
+  still move and observe but cannot fire. There is **no auto-reload**: when
+  a magazine runs out, nothing happens until you press R (desktop) or the
+  RELOAD button (mobile).
+- Hitscan rifle, hold to fire at ~10 rounds/sec with slight spread.
+- Friendly fire is **ON**: a hit from anyone on anyone kills, including teammates (shown as TEAMKILL in the kill feed). No extra penalty beyond losing the teammate.
+- The server is authoritative for health, ammo, score, timer and win
+  conditions. Clients simulate their own movement and send shot claims;
+  the server validates them (shooter/target alive, ammo left, fire-rate
+  plausible) before applying damage.
+
+## The map
+
+One street (~120 m) along the Z axis with **6 grey-box houses**, 3 per side.
+Each house has an enterable ground floor (door gap in the street-facing
+wall), windows on the ground and second floors, and interior stairs to the
+second floor. Each team spawns behind the houses at opposite far ends of the
+street. The objective zone is at the defenders' end.
+
+## Tests
+
+```bash
+npm test
+```
+
+- `test/map-test.mjs` — unit tests for collision, floor height, stairs,
+  doors and the objective zone (11 checks).
+- `test/headless-test.mjs` — spawns the real server and plays through it
+  with fake WebSocket clients: damage falloff at close/medium/long range, a
+  2v2 elimination win, an objective win, a reload cycle, a no-auto-reload
+  check, a friendly-fire kill, an empty-team start rejection, and an
+  asymmetric 1v2 start.
+
+## Known limits / what is NOT in v1
+
+- **No jump, no crouch.** Deliberately left out of v1.
+- **No bots.** Every player is a real person; a match needs at least 1
+  player per team. With few testers, play 2v2 or 1v2.
+- **No voice chat.** Teams coordinate via a separate call (phone,
+  WhatsApp, Discord) or by shouting across the room.
+- **Commander is a label only** — no orders, map pings or special view.
+- **No anti-cheat rigor.** Shot claims are validated for plausibility, but
+  a modified client could lie about hits. Fine for a friendly POC test.
+- **No persistent accounts or stats.** Closing the page removes you from
+  the room; if everyone leaves, the room resets to a fresh lobby.
+- **One room only.** Everyone who opens the page joins the same lobby.
+- **No mobile Safari pointer lock** (not applicable — touch controls are
+  used instead). Desktop Safari/Chrome/Firefox all work.
+- **Shooting through windows works; walking through them doesn't** — by
+  design, windows are firing positions, not entrances.
+- **Server does not simulate physics/collision** — movement is
+  client-simulated and relayed. Positions are clamped to the map bounds.
+- **No Fly.io deployment yet.** The deploy target is Fly, but v1 runs
+  locally from the laptop (LAN play). See the repo history / notes for the
+  deploy plan when the POC proves itself.
+
+## Files
+
+```
+package.json            start + test scripts; deps: three, ws
+server.mjs              HTTP + WebSocket server, authoritative game state
+public/
+  index.html            lobby + HUD + touch controls markup
+  style.css             lobby/HUD/touch styling
+  main.js               Three.js client: rendering, shooting, HUD, minimap
+  map.js                shared map: houses, collision, floors, spawns
+  controls.js           desktop + mobile input
+  net.js                WebSocket wrapper
+  audio.js              synthesized shoot/hit blips (WebAudio, no assets)
+test/
+  map-test.mjs          map unit tests
+  headless-test.mjs     scripted 2v2 + 1v2 server test
+```
