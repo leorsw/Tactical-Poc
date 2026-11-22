@@ -60,6 +60,21 @@ const MAG_COUNT = 6; // 1 loaded + 5 spare
 // roles stay fixed for the whole match. Score is tracked per team.
 
 const players = new Map(); // id -> player object
+// Every connected socket, joined or just waiting in the lobby: state
+// snapshots go to all of them, so a player waiting for a match to end
+// sees the phase change and the join buttons re-enable. Game events
+// (broadcast) still go to joined players only.
+const sockets = new Set();
+// Team players who disconnected mid-match may rejoin within the grace
+// window (same callsign + team) instead of being blocked as newcomers.
+// Entries: { name, team, until }.
+const recentDisconnects = [];
+const REJOIN_GRACE_MS = 5 * 60 * 1000;
+// Heartbeat: a client pings every 10 s; a player silent longer than the
+// timeout is treated as disconnected (ghost cleanup). Tunable through
+// env for the headless test.
+const HEARTBEAT_TIMEOUT_MS = Number(process.env.HEARTBEAT_TIMEOUT_MS || 30000);
+const HEARTBEAT_SWEEP_MS = Number(process.env.HEARTBEAT_SWEEP_MS || 10000);
 let nextId = 1;
 let hostId = null;
 let attackersTeam = 'A';
@@ -141,7 +156,13 @@ function publicState() {
 }
 
 function broadcastState() {
-  broadcast(publicState());
+  // State goes to every connected socket, including players waiting in
+  // the lobby for a match to end — they need the phase to know when
+  // joining opens again.
+  const text = JSON.stringify(publicState());
+  for (const ws of sockets) {
+    if (ws.readyState === 1) ws.send(text);
+  }
 }
 
 function snapshot() {
@@ -295,6 +316,23 @@ function handleJoin(ws, msg) {
     // Auto-assign to the smaller team (A on a tie).
     team = playersOf('A').length <= playersOf('B').length ? 'A' : 'B';
   }
+  // No mid-match joins: once a match has started (playing, or the
+  // intermission between rounds), newcomers wait in the lobby until the
+  // match ends. Joins open again in 'ended' (for the rematch) and in
+  // 'lobby'. Exception: a team player who disconnected mid-match may
+  // rejoin within the grace window (same callsign + team).
+  if (phase === 'playing' || phase === 'intermission') {
+    const now = Date.now();
+    for (let i = recentDisconnects.length - 1; i >= 0; i--) {
+      if (recentDisconnects[i].until <= now) recentDisconnects.splice(i, 1);
+    }
+    const idx = recentDisconnects.findIndex((r) => r.name === name && r.team === team);
+    if (idx === -1) {
+      send(ws, { t: 'error', message: 'A match is in progress — you can join when it ends.' });
+      return;
+    }
+    recentDisconnects.splice(idx, 1); // one rejoin per disconnect
+  }
   if (playersOf(team).length >= MAX_PER_TEAM) {
     const other = team === 'A' ? 'B' : 'A';
     if (playersOf(other).length >= MAX_PER_TEAM) {
@@ -378,6 +416,11 @@ function handleMessage(ws, msg) {
   }
   if (!p) return; // must join first
   switch (msg.t) {
+    case 'ping': {
+      // Heartbeat: liveness is already recorded by the message handler
+      // (ws._lastSeenAt); nothing else to do.
+      break;
+    }
     case 'switchTeam': {
       if (p.solo || phase !== 'lobby') return;
       const target = msg.team === 'A' || msg.team === 'B' ? msg.team : null;
@@ -542,6 +585,9 @@ function removePlayer(p) {
     roundReason = '';
     matchWinner = null;
     layout = spawnLayout(-1, 1);
+    // No match left to rejoin: drop stale grace entries so they cannot
+    // admit anyone into a later match.
+    recentDisconnects.length = 0;
     return;
   }
   if (hostId === p.id) {
@@ -557,6 +603,13 @@ function removePlayer(p) {
 function handleDisconnect(ws) {
   const p = players.get(ws._pid);
   if (!p) return;
+  // A team player who drops mid-match may rejoin within the grace
+  // window (same callsign + team); without this, a network blip would
+  // lock them out until the match ends.
+  if (!p.solo && (phase === 'playing' || phase === 'intermission')) {
+    recentDisconnects.push({ name: p.name, team: p.team, until: Date.now() + REJOIN_GRACE_MS });
+    if (recentDisconnects.length > 48) recentDisconnects.splice(0, recentDisconnects.length - 48);
+  }
   removePlayer(p);
 }
 
@@ -620,17 +673,45 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 wss.on('connection', (ws) => {
   ws._pid = nextId++;
+  ws._lastSeenAt = Date.now();
+  sockets.add(ws);
   send(ws, { t: 'welcome', id: ws._pid });
+  // Send the current state immediately, so a player who opens the page
+  // mid-match sees the wait message at once instead of only after the
+  // next phase change.
+  send(ws, publicState());
   ws.on('message', (raw) => {
+    // Liveness: any message (move, shot, ping) proves the client is alive.
+    ws._lastSeenAt = Date.now();
     try {
       handleMessage(ws, JSON.parse(String(raw)));
     } catch {
       // Ignore malformed messages.
     }
   });
-  ws.on('close', () => handleDisconnect(ws));
-  ws.on('error', () => handleDisconnect(ws));
+  ws.on('close', () => { sockets.delete(ws); handleDisconnect(ws); });
+  ws.on('error', () => { sockets.delete(ws); handleDisconnect(ws); });
 });
+
+// Ghost sweep: a socket that stopped sending (crashed tab, dead
+// connection) is removed like a disconnect — mid-match players get the
+// rejoin grace entry, so coming back within 5 minutes still works — and
+// the dead socket is terminated so the client notices and reconnects.
+setInterval(() => {
+  const now = Date.now();
+  for (const p of [...players.values()]) {
+    if (now - p.ws._lastSeenAt > HEARTBEAT_TIMEOUT_MS) {
+      handleDisconnect(p.ws);
+      try { p.ws.terminate(); } catch { /* already closed */ }
+    }
+  }
+  for (const ws of [...sockets]) {
+    if (!players.has(ws._pid) && now - ws._lastSeenAt > HEARTBEAT_TIMEOUT_MS) {
+      sockets.delete(ws);
+      try { ws.terminate(); } catch { /* already closed */ }
+    }
+  }
+}, HEARTBEAT_SWEEP_MS);
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Tactical POC server running at http://localhost:${PORT}`);
