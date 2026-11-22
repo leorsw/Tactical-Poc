@@ -73,7 +73,7 @@ const REJOIN_GRACE_MS = 5 * 60 * 1000;
 // Heartbeat: a client pings every 10 s; a player silent longer than the
 // timeout is treated as disconnected (ghost cleanup). Tunable through
 // env for the headless test.
-const HEARTBEAT_TIMEOUT_MS = Number(process.env.HEARTBEAT_TIMEOUT_MS || 30000);
+const HEARTBEAT_TIMEOUT_MS = Number(process.env.HEARTBEAT_TIMEOUT_MS || 90000);
 const HEARTBEAT_SWEEP_MS = Number(process.env.HEARTBEAT_SWEEP_MS || 10000);
 let nextId = 1;
 let hostId = null;
