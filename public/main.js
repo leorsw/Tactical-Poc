@@ -126,6 +126,7 @@ function sendJoin(join) {
   else socket.send({ t: 'join', name: join.name, team: join.team, session: tabSessionId });
 }
 let meta = new Map(); // playerId -> {name, team, role, commander, host}
+let npcMeta = new Map(); // npcId -> {name, team, role} — the solo NPC never appears in state, so its name/team come from snapshots
 let snapPlayers = new Map(); // playerId -> latest snapshot entry
 let game = {
   phase: 'lobby',
@@ -159,6 +160,7 @@ let pendingMatchEnd = null;
 // overlay is already up).
 let killedByFriendlyFire = false;
 let aimBlend = 0; // 0 = rifle lowered at the hip, 1 = aimed down the sights
+let crouchBlend = 0; // 0 = standing eye height, 1 = crouched (eye 0.35 m lower)
 let recoil = 0; // 0..1, decays after each shot
 let flashUntil = 0; // performance.now() timestamp: muzzle flash visible until
 let mapOpen = false;
@@ -269,6 +271,7 @@ function initThree() {
     fireBtn: $('fireBtn'),
     reloadBtn: $('reloadBtn'),
     aimBtn: $('aimBtn'),
+    crouchBtn: $('crouchBtn'),
   });
   if (controls.isTouch) document.body.classList.add('touch');
   $('lookZone').addEventListener('click', () => {
@@ -293,7 +296,7 @@ function initThree() {
 // is the group's local -Z; the sight line sits ~0.13 above it, so the
 // aimed pose puts the sights on the camera axis.
 function buildViewmodel() {
-  const gunmetal = new THREE.MeshLambertMaterial({ color: 0x1c1c1e });
+  const gunmetal = new THREE.MeshLambertMaterial({ color: 0x414741 });
   const gripMat = new THREE.MeshLambertMaterial({ color: 0x3a332a });
   const g = new THREE.Group();
   const add = (w, h, d, x, y, z, mat, rx = 0) => {
@@ -418,6 +421,10 @@ function updateViewmodel(dt, now) {
     camera.updateProjectionMatrix();
   }
   if (flashMesh && flashMesh.visible && now > flashUntil) flashMesh.visible = false;
+  for (const g of playerMeshes.values()) {
+    const u = g.userData;
+    if (u.flash && u.flash.visible && now > (u.flashUntil || 0)) u.flash.visible = false;
+  }
   if (impactMarker && impactMarker.visible) {
     const age = now - (impactMarker.userData.bornAt || 0);
     if (age > 180) {
@@ -450,73 +457,156 @@ function makeNameSprite(name, colorCss) {
   return sprite;
 }
 
+// --- Tactical poses ---------------------------------------------------------
+// The soldier is a small joint hierarchy: hips -> thigh -> knee -> shin,
+// waist -> torso -> shoulder -> elbow -> forearm, plus a neck pivot and a
+// rifle group that follows the upper body. The body is an oval torso with
+// capsule limbs — no sharp corners anywhere — connected by pivots. A pose is a set of joint angles;
+// every frame each mesh lerps its current angles toward its target pose
+// (~0.2 s), so transitions are smooth, and the walk swing adds on top of
+// the hip/knee angles.
+//
+// Sign conventions (rotation.x; forward = -Z):
+//   hip +x swings the leg forward; knee -x bends the shin back (a natural
+//   knee bend); elbow +x bends the forearm forward (a natural elbow bend);
+//   spine +x leans the upper body forward.
+const POSES = {
+  // Rifle low across the chest, muzzle down, slight bend in the knees.
+  ready: {
+    bodyDrop: 0, spine: 0.06, headX: 0,
+    hipL: 0.05, hipR: -0.05, kneeL: -0.08, kneeR: -0.08, hipLz: 0, hipRz: 0,
+    shLx: 0.45, shLz: -0.2, elLx: 1.0,
+    shRx: 0.35, shRz: 0.15, elRx: 1.1,
+    rifleY: 0.47, rifleZ: -0.3, rifleRX: 0.3,
+  },
+  // Rifle shouldered, elbows tucked, lean in, left foot forward.
+  aim: {
+    bodyDrop: -0.01, spine: 0.16, headX: 0.12,
+    hipL: 0.3, hipR: -0.15, kneeL: -0.15, kneeR: -0.1, hipLz: 0, hipRz: 0,
+    shLx: 0.9, shLz: -0.15, elLx: 0.6,
+    shRx: 0.8, shRz: 0.1, elRx: 0.7,
+    rifleY: 0.56, rifleZ: -0.3, rifleRX: 0.0,
+  },
+  // Deep one-knee kneel (left foot forward, right knee down), rifle up —
+  // the front thigh goes just past horizontal so the body drops low.
+  kneel: {
+    bodyDrop: -0.33, spine: 0.12, headX: 0.1,
+    hipL: 1.65, hipR: -0.5, kneeL: -1.65, kneeR: -1.07, hipLz: 0, hipRz: 0,
+    shLx: 0.9, shLz: -0.15, elLx: 0.6,
+    shRx: 0.8, shRz: 0.1, elRx: 0.7,
+    rifleY: 0.56, rifleZ: -0.3, rifleRX: 0.0,
+  },
+  // Crouch-walk: knees bent, feet slightly apart (a small straddle),
+  // rifle up. Upright enough to read as walking, not a squat.
+  crouchWalk: {
+    bodyDrop: -0.07, spine: 0.15, headX: 0.05,
+    hipL: 0.55, hipR: 0.55, kneeL: -0.95, kneeR: -0.95, hipLz: -0.15, hipRz: 0.15,
+    shLx: 0.9, shLz: -0.15, elLx: 0.6,
+    shRx: 0.8, shRz: 0.1, elRx: 0.7,
+    rifleY: 0.56, rifleZ: -0.3, rifleRX: 0.0,
+  },
+};
+const POSE_KEYS = Object.keys(POSES.ready);
+
 function getPlayerMesh(id) {
   if (playerMeshes.has(id)) return playerMeshes.get(id);
-  const m = meta.get(id) || {};
+  const m = meta.get(id) || npcMeta.get(id) || {};
   const group = new THREE.Group();
-  // The figure is fully black; the team shows only in the floating name tag.
-  const black = new THREE.MeshLambertMaterial({ color: 0x111111 });
-  const darker = new THREE.MeshLambertMaterial({ color: 0x080808 });
-  const gunmetal = new THREE.MeshLambertMaterial({ color: 0x1c1c1e });
-  const add = (w, h, d, x, y, z, mat) => {
+  // The figure is dark grey-green; the team shows only in the floating name tag.
+  const body = new THREE.MeshLambertMaterial({ color: 0x535c54 });
+  const darker = new THREE.MeshLambertMaterial({ color: 0x3e443e });
+  const gunmetal = new THREE.MeshLambertMaterial({ color: 0x414741 });
+  const add = (parent, w, h, d, x, y, z, mat) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     mesh.position.set(x, y, z);
-    group.add(mesh);
+    parent.add(mesh);
     return mesh;
   };
-  // A limb segment stretched exactly between two joints.
-  const limb = (from, to, w, d, mat) => {
-    const dir = new THREE.Vector3().subVectors(to, from);
-    const len = dir.length();
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, len, d), mat);
-    mesh.position.copy(from).addScaledVector(dir, 0.5);
-    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
-    group.add(mesh);
-    return mesh;
-  };
-  const V = (x, y, z) => new THREE.Vector3(x, y, z);
-  // Legs + boots, each hanging from a hip pivot so the walk cycle can
-  // swing them. (Pivot at hip height, y 0.55; leg/boot offsets match the
-  // old absolute positions.)
+
+  // Hips group: drops when crouching/kneeling so the feet stay planted.
+  const hips = new THREE.Group();
+  hips.position.y = 0.605;
+  group.add(hips);
+
+  // Legs: thigh hangs from the hip pivot, shin + boot from the knee pivot.
+  // Legs are 10% longer than the original build (thigh 0.31 + shin 0.30
+  // = 0.605): the figure stands taller, and the kneel drops lower.
+  // Limbs are capsules, not boxes — rounded ends, no sharp corners, so the
+  // whole body reads oval. (Capsule total = length + 2 * radius.)
   const mkLeg = (x) => {
-    const pivot = new THREE.Group();
-    pivot.position.set(x, 0.55, 0);
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.55, 0.2), black);
-    leg.position.set(0, -0.27, 0);
+    const hip = new THREE.Group();
+    hip.position.set(x, 0, 0);
+    const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.14, 4, 10), body);
+    thigh.position.set(0, -0.155, 0);
+    hip.add(thigh);
+    const knee = new THREE.Group();
+    knee.position.set(0, -0.31, 0);
+    const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.14, 4, 10), body);
+    shin.position.set(0, -0.15, 0);
     const boot = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.1, 0.32), darker);
-    boot.position.set(0, -0.5, -0.04);
-    pivot.add(leg, boot);
-    group.add(pivot);
-    return pivot;
+    boot.position.set(0, -0.30, -0.04);
+    knee.add(shin, boot);
+    hip.add(knee);
+    hips.add(hip);
+    return { hip, knee };
   };
   const legL = mkLeg(-0.11);
   const legR = mkLeg(0.11);
-  // Torso (hittable) + vest with pouches.
-  const torso = add(0.52, 0.62, 0.3, 0, 0.86, 0, black);
+
+  // Upper body: pivots at the waist so poses can lean the torso. Y values
+  // below are relative to the waist (0.605) — absolute heights are 0.055 higher than before.
+  const upper = new THREE.Group();
+  hips.add(upper);
+  // Torso (hittable): an oval — a sphere squashed front-to-back — instead
+  // of a box, so the body reads round from every angle. Same bounding box
+  // as the old 0.52 x 0.62 x 0.3 box. The vest plate sits against the curve
+  // (its back edge sinks into the torso at the centre) and the pouches sit
+  // on the plate.
+  const torso = new THREE.Mesh(new THREE.SphereGeometry(0.31, 12, 10), body);
+  torso.scale.set(0.84, 1.0, 0.48);
+  torso.position.set(0, 0.31, 0);
   torso.userData.playerId = id;
-  add(0.42, 0.45, 0.06, 0, 0.88, -0.17, darker);
-  add(0.12, 0.14, 0.05, -0.12, 0.82, -0.21, darker);
-  add(0.12, 0.14, 0.05, 0.12, 0.82, -0.21, darker);
-  // Arms: two segments each, reaching forward to hold the rifle.
-  // Left hand ends under the forend; right hand ends on the pistol grip.
-  limb(V(-0.3, 1.12, 0), V(-0.12, 0.98, -0.28), 0.13, 0.15, black);
-  limb(V(-0.12, 0.98, -0.28), V(0.06, 0.96, -0.58), 0.11, 0.13, black);
-  limb(V(0.3, 1.12, 0), V(0.28, 0.95, -0.12), 0.13, 0.15, black);
-  limb(V(0.28, 0.95, -0.12), V(0.1, 0.98, -0.3), 0.11, 0.13, black);
-  // Hands gripping the rifle.
-  add(0.09, 0.09, 0.12, 0.06, 0.96, -0.58, darker);
-  add(0.09, 0.09, 0.12, 0.1, 0.98, -0.3, darker);
-  // Head (hittable, black balaclava) + helmet.
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 10, 8), black);
-  head.position.y = 1.42;
+  upper.add(torso);
+  add(upper, 0.42, 0.45, 0.06, 0, 0.33, -0.13, darker);
+  add(upper, 0.12, 0.14, 0.05, -0.12, 0.27, -0.155, darker);
+  add(upper, 0.12, 0.14, 0.05, 0.12, 0.27, -0.155, darker);
+
+  // Arms: shoulder pivot -> upper arm -> elbow pivot -> forearm + hand.
+  const mkArm = (side) => { // side: -1 left, +1 right
+    const shoulder = new THREE.Group();
+    shoulder.position.set(0.3 * side, 0.57, 0);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8), body);
+    shoulder.add(cap);
+    const upperArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.065, 0.19, 4, 10), body);
+    upperArm.position.set(0, -0.16, 0);
+    shoulder.add(upperArm);
+    const elbow = new THREE.Group();
+    elbow.position.set(0, -0.32, 0);
+    const forearm = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.19, 4, 10), body);
+    forearm.position.set(0, -0.15, 0);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), darker);
+    hand.position.set(0, -0.31, -0.01);
+    elbow.add(forearm, hand);
+    shoulder.add(elbow);
+    upper.add(shoulder);
+    return { shoulder, elbow };
+  };
+  const armL = mkArm(-1);
+  const armR = mkArm(1);
+
+  // Head (hittable): a plain round head, no helmet — the silhouette stays
+  // readable at distance without extra detail.
+  const neck = new THREE.Group();
+  neck.position.set(0, 0.82, 0);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 10, 8), body);
+  head.position.y = 0.05;
   head.userData.playerId = id;
-  group.add(head);
-  const helmet = new THREE.Mesh(
-    new THREE.SphereGeometry(0.26, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), darker);
-  helmet.position.y = 1.46;
-  group.add(helmet);
+  neck.add(head);
+  upper.add(neck);
+
   // Rifle: receiver, barrel, magazine, stock — held forward, stock at the
-  // shoulder, muzzle ahead.
+  // shoulder, muzzle ahead. A child of the upper body so it follows the
+  // lean; each pose sets its exact height.
   const rifleMesh = new THREE.Group();
   const rAdd = (w, h, d, x, y, z, mat) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -531,24 +621,83 @@ function getPlayerMesh(id) {
   rifleMesh.add(barrel);
   rAdd(0.05, 0.16, 0.08, 0, -0.11, -0.02, darker); // magazine
   rAdd(0.06, 0.09, 0.16, 0, 0, 0.28, darker); // stock
-  rifleMesh.position.set(0.08, 1.04, -0.3);
-  rifleMesh.rotation.x = 0.05;
-  group.add(rifleMesh);
+  rifleMesh.position.set(0.08, 0.47, -0.3);
+  rifleMesh.rotation.x = 0.3;
+  upper.add(rifleMesh);
+  // Muzzle flash for this player's shots, seen by everyone else: two
+  // crossed additive planes at the muzzle, hidden until a 'shot' event
+  // shows them for 90 ms (same shape as the first-person flash).
+  const pFlashMat = new THREE.MeshBasicMaterial({
+    color: 0xffc933, transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const pFlash = new THREE.Group();
+  const pf1 = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), pFlashMat);
+  const pf2 = pf1.clone();
+  pf2.rotation.z = Math.PI / 2;
+  pFlash.add(pf1, pf2);
+  pFlash.position.set(0, 0.01, -0.55);
+  pFlash.visible = false;
+  rifleMesh.add(pFlash);
+
   const tag = makeNameSprite(m.name || '?', TEAM_CSS[m.role] || '#ffffff');
-  tag.position.y = 2.0;
-  group.add(tag);
-  group.userData.bodyMat = black;
+  tag.position.y = 1.45;
+  upper.add(tag);
+
+  group.userData.bodyMat = body;
   group.userData.tag = tag;
   group.userData.tagName = m.name || '?';
   group.userData.tagRole = m.role;
-  group.userData.legL = legL;
-  group.userData.legR = legR;
+  group.userData.flash = pFlash;
+  group.userData.flashUntil = 0;
+  group.userData.hips = hips;
+  group.userData.upper = upper;
+  group.userData.legL = legL.hip;
+  group.userData.legR = legR.hip;
+  group.userData.kneeL = legL.knee;
+  group.userData.kneeR = legR.knee;
+  group.userData.armL = armL;
+  group.userData.armR = armR;
+  group.userData.neck = neck;
+  group.userData.rifle = rifleMesh;
+  group.userData.poseCur = { ...POSES.ready };
   group.userData.walkPhase = 0; // advances with distance travelled
   group.userData.walkAmp = 0;   // eases in/out so the legs never snap
   scene.add(group);
   playerMeshes.set(id, group);
   shootTargets.push(torso, head);
   return group;
+}
+
+// Lerp one mesh's joints toward its target pose, then add the walk swing on
+// top of the hip/knee angles. Called every frame for every visible mesh.
+function applyPose(g, target, dt, walkPhase, walkAmp) {
+  const u = g.userData;
+  const k = 1 - Math.exp(-dt * 10); // ~0.2 s to settle
+  const cur = u.poseCur;
+  for (const key of POSE_KEYS) cur[key] += (target[key] - cur[key]) * k;
+  u.hips.position.y = 0.605 + cur.bodyDrop;
+  u.upper.rotation.x = cur.spine;
+  u.neck.rotation.x = cur.headX;
+  const swing = Math.sin(walkPhase) * walkAmp;
+  const norm = walkAmp / 0.55;
+  u.legL.rotation.x = cur.hipL + swing;
+  u.legR.rotation.x = cur.hipR - swing;
+  u.legL.rotation.z = cur.hipLz;
+  u.legR.rotation.z = cur.hipRz;
+  // The knee bends while its leg swings forward, then straightens as the
+  // foot plants — the forward step reads as a step, not a stiff swing.
+  u.kneeL.rotation.x = cur.kneeL - Math.max(0, Math.sin(walkPhase)) * 0.5 * norm;
+  u.kneeR.rotation.x = cur.kneeR - Math.max(0, -Math.sin(walkPhase)) * 0.5 * norm;
+  u.armL.shoulder.rotation.x = cur.shLx;
+  u.armL.shoulder.rotation.z = cur.shLz;
+  u.armL.elbow.rotation.x = cur.elLx;
+  u.armR.shoulder.rotation.x = cur.shRx;
+  u.armR.shoulder.rotation.z = cur.shRz;
+  u.armR.elbow.rotation.x = cur.elRx;
+  u.rifle.position.y = cur.rifleY;
+  u.rifle.position.z = cur.rifleZ;
+  u.rifle.rotation.x = cur.rifleRX;
 }
 
 function removePlayerMesh(id) {
@@ -563,14 +712,14 @@ function removePlayerMesh(id) {
 
 function refreshMeshColors() {
   for (const [id, g] of playerMeshes) {
-    const m = meta.get(id) || {};
-    // Bodies stay black; only the name tag follows the team color, so it
+    const m = meta.get(id) || npcMeta.get(id) || {};
+    // Bodies stay grey-green; only the name tag follows the team color, so it
     // is rebuilt when the name or the team changes.
     if (g.userData.tagName !== (m.name || '?') || g.userData.tagRole !== m.role) {
-      g.remove(g.userData.tag);
+      g.userData.upper.remove(g.userData.tag);
       const tag = makeNameSprite(m.name || '?', TEAM_CSS[m.role] || '#ffffff');
-      tag.position.y = 2.0;
-      g.add(tag);
+      tag.position.y = 1.45;
+      g.userData.upper.add(tag);
       g.userData.tag = tag;
       g.userData.tagName = m.name || '?';
       g.userData.tagRole = m.role;
@@ -1147,7 +1296,7 @@ socket.on('state', (msg) => {
   refreshMeshColors();
   // Drop meshes for players who left.
   for (const id of [...playerMeshes.keys()]) {
-    if (!meta.has(id)) removePlayerMesh(id);
+    if (!meta.has(id) && !npcMeta.has(id)) removePlayerMesh(id);
   }
   // Join availability for players who have not joined yet: while a
   // match is in progress (playing, or the intermission between rounds),
@@ -1202,6 +1351,17 @@ socket.on('snapshot', (msg) => {
   game.timeLeftMs = msg.timeLeftMs;
   game.captureProgress = msg.captureProgress || 0;
   snapPlayers = new Map(msg.players.map((p) => [p.id, p]));
+  // NPC entries (the solo defender dummy) carry their own name/team —
+  // they never appear in state messages, so meta never knows them.
+  for (const [id, s] of snapPlayers) {
+    if (s.npc) npcMeta.set(id, { name: s.name || 'NPC', team: s.team || 'B', role: 'defenders' });
+  }
+  for (const id of [...npcMeta.keys()]) {
+    if (!snapPlayers.has(id)) {
+      npcMeta.delete(id);
+      removePlayerMesh(id);
+    }
+  }
 
   const me = snapPlayers.get(myId);
   if (me) {
@@ -1258,6 +1418,22 @@ socket.on('snapshot', (msg) => {
 });
 
 socket.on('shot', (msg) => {
+  // Another player's shot: a flash on their rifle and a bang, quieter
+  // with distance. This runs for everyone, including solo players
+  // watching the NPC — it is world feedback, not HUD. (My own shots
+  // already flashed and sounded locally when I fired.)
+  if (msg.shooterId !== myId) {
+    const g = playerMeshes.get(msg.shooterId);
+    if (g && g.userData.flash) {
+      g.userData.flash.visible = true;
+      g.userData.flash.rotation.z = Math.random() * Math.PI;
+      g.userData.flashUntil = performance.now() + 90;
+    }
+    const s = snapPlayers.get(msg.shooterId);
+    let vol = 0.5;
+    if (s) vol = Math.max(0.12, 1 - Math.hypot(s.x - local.x, s.z - local.z) / 60);
+    sfx.shoot(vol);
+  }
   if (solo) return; // solo shots never hit; match shots stay out of the solo HUD
   if (msg.targetId === myId && msg.killed && msg.friendlyFire) {
     // I was teamkilled: remember it for the YOU'RE DOWN overlay. If the
@@ -1477,7 +1653,7 @@ function loop() {
     g.visible = true;
     // Name tags are teammates-only: the enemy team sees no tag at all.
     // (Solo players have no team, so they neither show nor see tags.)
-    const m = meta.get(id);
+    const m = meta.get(id) || npcMeta.get(id);
     const isTeammate = !solo && myTeam != null && !!m && !m.solo && m.team === myTeam;
     if (g.userData.tag) g.userData.tag.visible = isTeammate;
     const k = 1 - Math.exp(-dt * 12);
@@ -1489,8 +1665,10 @@ function loop() {
     while (dyaw > Math.PI) dyaw -= Math.PI * 2;
     while (dyaw < -Math.PI) dyaw += Math.PI * 2;
     g.rotation.y += dyaw * k;
-    // Walk animation: swing the legs from the distance actually travelled
-    // (interpolated, so teleports and snapshot jitter don't flail them).
+    // Pose + walk animation: pick the pose from the snapshot flags, lerp
+    // the joints toward it, and swing the legs from the distance actually
+    // travelled (interpolated, so teleports and snapshot jitter don't
+    // flail them).
     const u = g.userData;
     if (u.legL && u.legR) {
       const dx = g.position.x - (u.prevX ?? g.position.x);
@@ -1500,12 +1678,15 @@ function loop() {
       const dist = Math.min(Math.hypot(dx, dz), 0.25);
       const speed = dt > 0 ? dist / dt : 0;
       const moving = speed > 0.4;
-      const targetAmp = moving ? 0.55 : 0;
+      // Crouching reads as a one-knee kneel when still, a low crouch-walk
+      // when moving; aiming raises the rifle; otherwise the ready stance.
+      let poseName = 'ready';
+      if (s.crouch) poseName = moving ? 'crouchWalk' : 'kneel';
+      else if (s.aiming) poseName = 'aim';
+      const targetAmp = moving ? (s.crouch ? 0.3 : 0.55) : 0;
       u.walkAmp += (targetAmp - u.walkAmp) * (1 - Math.exp(-dt * 8));
       if (moving) u.walkPhase += (dist / 1.1) * Math.PI; // one step per ~1.1 m
-      const swing = Math.sin(u.walkPhase) * u.walkAmp;
-      u.legL.rotation.x = swing;
-      u.legR.rotation.x = -swing;
+      applyPose(g, POSES[poseName], dt, u.walkPhase, u.walkAmp);
     }
   }
 
@@ -1535,6 +1716,8 @@ function loop() {
   }
 
   if ((game.phase === 'playing' || solo) && myAlive) {
+    // Crouch blends the eye height down smoothly (no snap on toggle).
+    crouchBlend += ((controls.crouch ? 1 : 0) - crouchBlend) * (1 - Math.exp(-dt * 10));
     // Look.
     const look = controls.takeLook();
     local.yaw -= look.dx * 0.0023;
@@ -1553,8 +1736,8 @@ function loop() {
     let vz = fz * move.z + rz * move.x;
     const len = Math.hypot(vx, vz);
     if (len > 0) {
-      // Aiming down the sights slows movement.
-      const speed = SPEED * (1 - aimBlend * 0.35) * Math.min(1, len);
+      // Aiming down the sights slows movement; crouching slows it more.
+      const speed = SPEED * (1 - aimBlend * 0.35) * (controls.crouch ? 0.45 : 1) * Math.min(1, len);
       vx = (vx / len) * speed;
       vz = (vz / len) * speed;
     }
@@ -1567,21 +1750,24 @@ function loop() {
     local.z = nz;
     local.y = floorHeightAt(nx, nz, local.y);
 
-    camera.position.set(local.x, local.y + EYE_HEIGHT, local.z);
+    camera.position.set(local.x, local.y + EYE_HEIGHT - crouchBlend * 0.35, local.z);
     camera.rotation.set(local.pitch, local.yaw, 0);
 
     // Fire while holding.
     if (controls.firing) tryFire(now);
 
-    // Send movement ~15/sec.
+    // Send movement ~15/sec. The stance flags ride along so other players
+    // see the pose (kneel / aim); aiming uses the smoothed ADS blend so a
+    // half-second ADS flicker doesn't flap the pose.
     if (now - lastMoveSent >= MOVE_SEND_MS) {
       lastMoveSent = now;
-      socket.send({ t: 'move', x: local.x, y: local.y, z: local.z, yaw: local.yaw, pitch: local.pitch });
+      socket.send({ t: 'move', x: local.x, y: local.y, z: local.z, yaw: local.yaw, pitch: local.pitch,
+        aiming: aimBlend > 0.5, crouch: controls.crouch });
     }
   } else if (!myAlive && downUntil) {
     // YOU'RE DOWN: frozen first-person view at the death spot, no input.
     // Takes precedence over the spectate and elevated views.
-    camera.position.set(local.x, local.y + EYE_HEIGHT, local.z);
+    camera.position.set(local.x, local.y + EYE_HEIGHT - crouchBlend * 0.35, local.z);
     camera.rotation.set(local.pitch, local.yaw, 0);
   } else if (game.phase === 'playing' && !myAlive) {
     // Spectate: chase camera behind a living teammate.
