@@ -76,6 +76,13 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #exitSoloBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; }
 #mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto; }
 #fsBtn { position: absolute; top: 98px; left: 10px; pointer-events: auto; }
+#connBanner { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); background: rgba(180, 30, 30, 0.92); color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 14px; font-weight: bold; pointer-events: none; z-index: 30; white-space: nowrap; }
+#mapPanel { position: relative; }
+#mapCloseBtn { position: absolute; top: 2px; right: 4px; background: none; border: none; color: #fff; font-size: 22px; line-height: 1; cursor: pointer; padding: 6px 10px; z-index: 2; }
+#fsHelp { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; z-index: 40; }
+#fsHelp.hidden { display: none; }
+#fsHelpPanel { background: #222; color: #eee; border: 1px solid #555; border-radius: 10px; padding: 20px; max-width: 320px; text-align: center; }
+#fsHelpPanel p { margin: 0 0 12px 0; font-size: 15px; line-height: 1.4; }
 #mapOverlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,0.6); }
 #mapPanel { background: #14171b; border: 1px solid #555; border-radius: 10px; padding: 14px; text-align: center; }
