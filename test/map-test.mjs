@@ -5,10 +5,10 @@ import assert from 'node:assert/strict';
 import {
   HOUSES,
   SPAWNS,
-  SPAWN_MARKS,
   OBJECTIVE,
   GROUND_WINDOWS,
   COLLIDERS,
+  spawnLayout,
   floorHeightAt,
   resolveCollision,
   objectiveContains,
@@ -38,35 +38,63 @@ check('alleys between houses on the same side are 4 m wide', () => {
   }
 });
 
-check('6 spawn points per role, behind the end houses', () => {
-  assert.equal(SPAWNS.attackers.length, 6);
-  assert.equal(SPAWNS.defenders.length, 6);
-  assert.ok(SPAWNS.attackers.every((s) => s.z === -45));
-  assert.ok(SPAWNS.defenders.every((s) => s.z === 45));
-  // Attackers behind the west end house (x -14..-8), defenders behind the
-  // east end house (x 8..14) — off the street axis, hidden by the houses.
-  assert.ok(SPAWNS.attackers.every((s) => s.x >= -14 && s.x <= -8));
-  assert.ok(SPAWNS.defenders.every((s) => s.x >= 8 && s.x <= 14));
+check('spawnLayout: all 4 side combinations, 6 spawns per role, correct ends', () => {
+  for (const atkSide of [-1, 1]) {
+    for (const defSide of [-1, 1]) {
+      const layout = spawnLayout(atkSide, defSide);
+      assert.equal(layout.attackers.length, 6);
+      assert.equal(layout.defenders.length, 6);
+      assert.ok(layout.attackers.every((s) => s.z === -45));
+      assert.ok(layout.defenders.every((s) => s.z === 45));
+      // Attackers cluster around atkSide*11 (x 8..14 or -14..-8), defenders
+      // around defSide*11 — behind the end houses, off the street axis.
+      const atkX = layout.attackers.map((s) => s.x);
+      const defX = layout.defenders.map((s) => s.x);
+      assert.ok(atkX.every((x) => x >= atkSide * 11 - 3 && x <= atkSide * 11 + 3));
+      assert.ok(defX.every((x) => x >= defSide * 11 - 3 && x <= defSide * 11 + 3));
+      assert.ok(layout.attackers.every((s) => s.yaw === Math.PI));
+      assert.ok(layout.defenders.every((s) => s.yaw === 0));
+    }
+  }
+  // Canonical SPAWNS export = attackers west, defenders east.
+  assert.deepEqual(SPAWNS.attackers, spawnLayout(-1, 1).attackers);
+  assert.deepEqual(SPAWNS.defenders, spawnLayout(-1, 1).defenders);
 });
 
-check('spawn points are clear of colliders and on open ground', () => {
-  for (const role of ['attackers', 'defenders']) {
-    for (const s of SPAWNS[role]) {
-      const out = resolveCollision(s.x, s.z, 0);
-      assert.equal(out.x, s.x);
-      assert.equal(out.z, s.z);
-      assert.equal(floorHeightAt(s.x, s.z, 0), 0);
+check('spawn points are clear of colliders and on open ground (all 4 layouts)', () => {
+  for (const atkSide of [-1, 1]) {
+    for (const defSide of [-1, 1]) {
+      const layout = spawnLayout(atkSide, defSide);
+      for (const role of ['attackers', 'defenders']) {
+        for (const s of layout[role]) {
+          const out = resolveCollision(s.x, s.z, 0);
+          assert.equal(out.x, s.x);
+          assert.equal(out.z, s.z);
+          assert.equal(floorHeightAt(s.x, s.z, 0), 0);
+        }
+      }
     }
   }
 });
 
-check('objective is the defenders spawn X', () => {
-  assert.equal(OBJECTIVE.x, SPAWN_MARKS.defenders.x);
-  assert.equal(OBJECTIVE.z, SPAWN_MARKS.defenders.z);
-  // Every defender spawn point sits inside the objective zone.
-  for (const s of SPAWNS.defenders) assert.equal(objectiveContains(s.x, s.z), true);
-  // No attacker spawn point is inside it.
-  for (const s of SPAWNS.attackers) assert.equal(objectiveContains(s.x, s.z), false);
+check('objective is the defenders spawn centre in every layout', () => {
+  for (const atkSide of [-1, 1]) {
+    for (const defSide of [-1, 1]) {
+      const layout = spawnLayout(atkSide, defSide);
+      assert.equal(layout.objective.x, defSide * 11);
+      assert.equal(layout.objective.z, 45);
+      assert.equal(layout.objective.r, 3.5);
+      // Every defender spawn point sits inside the objective zone.
+      for (const s of layout.defenders) assert.equal(objectiveContains(s.x, s.z, layout.objective), true);
+      // No attacker spawn point is inside it.
+      for (const s of layout.attackers) assert.equal(objectiveContains(s.x, s.z, layout.objective), false);
+      // The zone must not reach the street on either side.
+      assert.equal(objectiveContains(6, 45, layout.objective), false, 'zone must not reach the street (east)');
+      assert.equal(objectiveContains(-6, 45, layout.objective), false, 'zone must not reach the street (west)');
+    }
+  }
+  // Canonical OBJECTIVE export matches the canonical layout.
+  assert.deepEqual(OBJECTIVE, spawnLayout(-1, 1).objective);
 });
 
 check('colliders and visual geometry exist', () => {
