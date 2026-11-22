@@ -1,0 +1,113 @@
+/* Tactical POC — minimal dark UI. HUD elements are pointer-transparent
+   except for real buttons, so clicks/touches reach the game canvas. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; background: #101216; color: #e8e8e8;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-user-select: none; user-select: none; }
+button { font: inherit; cursor: pointer; border: 1px solid #555; background: #22262d;
+  color: #eee; padding: 10px 16px; border-radius: 6px; }
+button:hover:not(:disabled) { background: #2e343e; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: #2b6cff; border-color: #2b6cff; font-weight: 600; }
+button.primary:hover:not(:disabled) { background: #3a7bff; }
+button.secondary { background: transparent; }
+button.activeChoice { outline: 2px solid #2b6cff; }
+input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid #555;
+  background: #1a1d22; color: #eee; width: 220px; text-align: center; }
+.hidden { display: none !important; }
+.screen { position: fixed; inset: 0; }
+.hint { color: #9aa3ad; font-size: 13px; line-height: 1.5; }
+.status { color: #9aa3ad; font-size: 14px; margin: 12px 0; }
+
+/* ---------- Lobby ---------- */
+#lobby { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 20px; text-align: center; overflow-y: auto; }
+#lobby h1 { font-size: 34px; letter-spacing: 4px; }
+.subtitle { color: #9aa3ad; }
+.joinRow { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+#joinBox { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.teams { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; }
+.teamCol { min-width: 200px; background: #1a1d22; border: 1px solid #333; border-radius: 8px; padding: 12px; }
+.teamCol h2 { font-size: 17px; margin-bottom: 8px; }
+.role { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #333; color: #ddd; }
+.role.atk { background: #2b6cff; color: #fff; }
+.role.def { background: #c22; color: #fff; }
+.teamCol ul { list-style: none; text-align: left; }
+.teamCol li { padding: 4px 2px; border-bottom: 1px solid #26292f; font-size: 15px; }
+.teamCol li .tag { float: right; font-size: 11px; color: #ffb340; }
+.lobbyActions { margin-top: 12px; }
+#hostControls { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.hostLabel { font-size: 14px; color: #ffb340; }
+#startBtn { margin-top: 4px; }
+
+/* ---------- Game / HUD ---------- */
+#scene-container { position: absolute; inset: 0; }
+#scene-container canvas { display: block; touch-action: none; }
+#hud { position: absolute; inset: 0; pointer-events: none; }
+#topBar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 18px; align-items: center; background: rgba(0,0,0,0.55);
+  padding: 6px 16px; border-radius: 8px; font-weight: 600; font-size: 16px; white-space: nowrap; }
+#timer { font-variant-numeric: tabular-nums; }
+#minimap { position: absolute; top: 10px; right: 10px; width: 150px; height: 150px;
+  border: 1px solid #555; border-radius: 6px; background: rgba(0,0,0,0.55); }
+#killfeed { position: absolute; top: 170px; right: 10px; text-align: right; font-size: 13px;
+  display: flex; flex-direction: column; gap: 3px; }
+#killfeed div { background: rgba(0,0,0,0.55); padding: 3px 8px; border-radius: 4px; }
+#crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 26px; color: rgba(255,255,255,0.85); text-shadow: 0 0 4px #000; }
+#hitmarker { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 30px; color: #ff4444; text-shadow: 0 0 6px #000; }
+#hitmarker.kill { color: #ffcc00; }
+#bottomLeft { position: absolute; left: 14px; bottom: 14px; display: flex; gap: 10px; align-items: center; }
+#healthBar { width: 180px; height: 16px; background: #333; border-radius: 4px; overflow: hidden; }
+#healthFill { height: 100%; width: 100%; background: #4caf50; }
+#healthText { font-weight: 700; font-size: 18px; }
+#bottomRight { position: absolute; right: 14px; bottom: 14px; text-align: right; }
+#ammoText { font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; }
+#reloadBar { width: 140px; height: 6px; background: #333; border-radius: 3px; margin-top: 4px; overflow: hidden; }
+#reloadFill { height: 100%; width: 0%; background: #ffb340; }
+#reloadText { color: #ffb340; font-size: 13px; font-weight: 600; margin-top: 2px; }
+#banner { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.75); padding: 16px 28px; border-radius: 10px;
+  font-size: 24px; font-weight: 700; text-align: center; white-space: pre-line; }
+#spectateBar { position: absolute; bottom: 64px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 8px; font-size: 15px; }
+#lockHint { position: absolute; top: 60%; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 8px; font-size: 15px; }
+#roundInfo { position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
+  font-size: 13px; color: #cfd4da; background: rgba(0,0,0,0.45); padding: 3px 12px; border-radius: 6px; }
+#endScreen { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px;
+  align-items: center; justify-content: center; background: rgba(0,0,0,0.72); text-align: center; }
+#endScreen h2 { font-size: 30px; }
+#endHostBtns { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+/* ---------- Touch controls (body.touch only) ---------- */
+#touchUI { display: none; }
+body.touch #touchUI { display: block; }
+#joyZone { position: absolute; left: 0; bottom: 0; width: 45%; height: 60%; touch-action: none; }
+#lookZone { position: absolute; right: 0; top: 0; width: 55%; height: 100%; touch-action: none; }
+#joyBase { display: none; position: absolute; width: 120px; height: 120px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.35); background: rgba(255,255,255,0.08); pointer-events: none; }
+#joyKnob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px;
+  border-radius: 50%; background: rgba(255,255,255,0.45); }
+#fireBtn { position: absolute; right: 24px; bottom: 96px; width: 84px; height: 84px; border-radius: 50%;
+  background: rgba(200,40,40,0.55); border: 2px solid rgba(255,255,255,0.5);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; touch-action: none; }
+#fireBtn:active { background: rgba(230,60,60,0.8); }
+#reloadBtn { position: absolute; right: 124px; bottom: 60px; width: 64px; height: 64px; border-radius: 50%;
+  background: rgba(255,179,64,0.4); border: 2px solid rgba(255,255,255,0.5);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px;
+  touch-action: none; }
+#reloadBtn:active { background: rgba(255,179,64,0.75); }
+#rotateHint { display: none; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.7); padding: 6px 12px; border-radius: 6px; font-size: 13px; white-space: nowrap; }
+@media (orientation: portrait) {
+  body.touch #rotateHint { display: block; }
+}
+
+/* ---------- Damage flash: red screen on a non-lethal hit ---------- */
+#damageFlash { position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  transition: opacity 0.35s ease-out;
+  background: radial-gradient(ellipse at center, rgba(200,0,0,0.12) 30%, rgba(200,0,0,0.55) 100%); }
+#damageFlash.on { opacity: 1; transition: opacity 0.05s ease-in; }
