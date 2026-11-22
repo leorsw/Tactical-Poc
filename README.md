@@ -99,6 +99,18 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
    The host also has a **Clear room** button (lobby only, two clicks to
    confirm): it kicks every other player — teams and solo — back to the
    join screen, so a new game starts clean. Kicked players can rejoin.
+   **No mid-match joins:** once a match has started, a player who has not
+   joined yet waits in the lobby — the join buttons are disabled and a
+   message says a match is in progress. Joins open again when the match
+   ends (for the rematch) or the room returns to the lobby. A team player
+   who disconnected mid-match may rejoin within 5 minutes (same callsign
+   + team) and spectates until the next round. Solo mode stays available
+   during a match.
+   **Heartbeat:** every client pings the server every 10 seconds (in all
+   states — lobby, playing, spectating, solo). A player silent for more
+   than 30 seconds is removed as if disconnected — mid-match, they get
+   the 5-minute rejoin grace — so a crashed tab or dead connection never
+   leaves a ghost in the room.
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
    is **5:00**.
    - **Attackers** win a round by eliminating all defenders **or** by having
