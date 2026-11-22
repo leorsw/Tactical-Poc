@@ -81,6 +81,10 @@ const REJOIN_GRACE_MS = 5 * 60 * 1000;
 // env for the headless test.
 const HEARTBEAT_TIMEOUT_MS = Number(process.env.HEARTBEAT_TIMEOUT_MS || 90000);
 const HEARTBEAT_SWEEP_MS = Number(process.env.HEARTBEAT_SWEEP_MS || 10000);
+// Silence after which a same-identity record counts as a ghost for a
+// takeover (see findGhost): live clients ping every 10 s, so 15 s of
+// silence means a frozen or dead tab.
+const GHOST_SILENCE_MS = Number(process.env.GHOST_SILENCE_MS || 15000);
 let nextId = 1;
 let hostId = null;
 let attackersTeam = 'A';
@@ -370,8 +374,55 @@ setInterval(() => {
 // WebSocket message handling
 // ---------------------------------------------------------------------------
 
+// A same-identity player record whose connection is dead (socket not
+// open) or has been silent long enough that no live client could be
+// behind it: live clients ping every 10 s and send moves constantly
+// while playing, so GHOST_SILENCE_MS of silence means a frozen or dead
+// tab. An active same-name player is NEVER a ghost — two humans may
+// share a callsign, and a live one is protected.
+function findGhost(name, team, solo) {
+  for (const p of players.values()) {
+    if (p.name !== name || p.solo !== solo) continue;
+    if (!solo && p.team !== team) continue;
+    if (p.ws.readyState !== 1) return p;
+    if (Date.now() - p.ws._lastSeenAt > GHOST_SILENCE_MS) return p;
+  }
+  return null;
+}
+
+// Remove a ghost record and close its dead socket, so the frozen client
+// notices (onclose → auto-reconnect) instead of sitting on a dead
+// connection. No grace entry: the player is back on the new connection.
+function takeOver(p) {
+  removePlayer(p);
+  try { p.ws.terminate(); } catch { /* already closed */ }
+}
+
+// Any player record from the same tab session (the client sends one
+// stable session id per tab). Same tab = same human, whatever the
+// callsign or team — so a rejoin takes it over rather than duplicating.
+// A missing session id (old clients) never matches.
+function findSessionRecord(sessionId) {
+  if (!sessionId) return null;
+  for (const p of players.values()) {
+    if (p.sessionId === sessionId) return p;
+  }
+  return null;
+}
+
+// Remove every record this join would duplicate: a same-identity ghost
+// and/or any record from the same tab session. Called after the join
+// gate passes, so a rejected join never removes anything.
+function takeOverDuplicates(name, team, sessionId, solo) {
+  const ghost = findGhost(name, team, solo);
+  if (ghost) takeOver(ghost);
+  const sessionRecord = findSessionRecord(sessionId);
+  if (sessionRecord) takeOver(sessionRecord);
+}
+
 function handleJoin(ws, msg) {
   const name = String(msg.name || '').trim().slice(0, 16) || `Player${ws._pid}`;
+  const sessionId = String(msg.session || '').slice(0, 64) || null;
   let team = msg.team;
   if (team !== 'A' && team !== 'B') {
     // Auto-assign to the smaller team (A on a tie).
@@ -381,18 +432,29 @@ function handleJoin(ws, msg) {
   // intermission between rounds), newcomers wait in the lobby until the
   // match ends. Joins open again in 'ended' (for the rematch) and in
   // 'lobby'. Exception: a team player who disconnected mid-match may
-  // rejoin within the grace window (same callsign + team).
+  // rejoin within the grace window (same callsign + team) — or take over
+  // their own ghost record, or their own tab-session record, if the old
+  // connection went silent before the sweep removed it (a frozen tab
+  // that came back on a new connection).
   if (phase === 'playing' || phase === 'intermission') {
     const now = Date.now();
     for (let i = recentDisconnects.length - 1; i >= 0; i--) {
       if (recentDisconnects[i].until <= now) recentDisconnects.splice(i, 1);
     }
     const idx = recentDisconnects.findIndex((r) => r.name === name && r.team === team);
-    if (idx === -1) {
+    const ghost = findGhost(name, team, false);
+    const sessionRecord = findSessionRecord(sessionId);
+    const sessionMatch = !!sessionRecord && !sessionRecord.solo && sessionRecord.team === team;
+    if (idx === -1 && !ghost && !sessionMatch) {
       send(ws, { t: 'error', message: 'A match is in progress — you can join when it ends.' });
       return;
     }
-    recentDisconnects.splice(idx, 1); // one rejoin per disconnect
+    if (idx !== -1) recentDisconnects.splice(idx, 1); // one rejoin per disconnect
+    takeOverDuplicates(name, team, sessionId, false);
+  } else {
+    // Lobby / ended: no gate, but still never duplicate a ghost or a
+    // record from the same tab session.
+    takeOverDuplicates(name, team, sessionId, false);
   }
   if (playersOf(team).length >= MAX_PER_TEAM) {
     const other = team === 'A' ? 'B' : 'A';
@@ -408,6 +470,7 @@ function handleJoin(ws, msg) {
     name,
     team,
     solo: false,
+    sessionId,
     joinedAt: Date.now(),
     alive: phase !== 'playing', // late joiners spectate until the next round
     health: 100,
@@ -437,6 +500,8 @@ function handleJoin(ws, msg) {
 // anyone. The room stays in whatever phase it is in.
 function handleSolo(ws, msg) {
   const name = String(msg.name || '').trim().slice(0, 16) || `Player${ws._pid}`;
+  const sessionId = String(msg.session || '').slice(0, 64) || null;
+  takeOverDuplicates(name, null, sessionId, true);
   const spawn = SPAWNS.attackers[0];
   const p = {
     id: ws._pid,
@@ -444,6 +509,7 @@ function handleSolo(ws, msg) {
     name,
     team: null,
     solo: true,
+    sessionId,
     joinedAt: Date.now(),
     alive: true,
     health: 100,
