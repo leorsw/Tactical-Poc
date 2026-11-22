@@ -7,8 +7,6 @@
 import * as THREE from 'three';
 import {
   HOUSES,
-  SPAWNS,
-  SPAWN_MARKS,
   GROUND_WINDOWS,
   visualBoxes,
   stairRamps,
@@ -23,7 +21,6 @@ import { Sfx } from './audio.js';
 const SPEED = 5; // m/s
 const FIRE_INTERVAL = 100; // ms between shots (~10/sec)
 const MOVE_SEND_MS = 66;
-const TEAM_COLORS = { attackers: 0x2b6cff, defenders: 0xe53333 };
 const TEAM_CSS = { attackers: '#2b6cff', defenders: '#e53333' };
 
 // ---------------------------------------------------------------------------
@@ -38,8 +35,10 @@ const teamsBox = $('teamsBox');
 const nameInput = $('nameInput');
 const teamAList = $('teamAList');
 const teamBList = $('teamBList');
-const roleAEl = $('roleA');
-const roleBEl = $('roleB');
+const teamAHeader = $('teamAHeader');
+const teamBHeader = $('teamBHeader');
+const joinAEl = $('joinA');
+const joinBEl = $('joinB');
 const teamHint = $('teamHint');
 const hostControls = $('hostControls');
 const startBtn = $('startBtn');
@@ -59,6 +58,7 @@ const killfeedEl = $('killfeed');
 const hitmarkerEl = $('hitmarker');
 const damageFlashEl = $('damageFlash');
 const bannerEl = $('banner');
+const continueBtn = $('continueBtn');
 const spectateBar = $('spectateBar');
 const lockHint = $('lockHint');
 const exitSoloBtn = $('exitSoloBtn');
@@ -103,8 +103,8 @@ let game = {
   score: { A: 0, B: 0 },
   attackersTeam: 'A',
   timeLeftMs: 0,
-  intermissionLeftMs: 0,
 };
+let currentObjective = null; // {x, z, r} — the defenders' spawn centre this round
 let lastRoundSeen = 0;
 let myAlive = true;
 let myHealth = 100;
@@ -212,21 +212,8 @@ function initThree() {
     shootTargets.push(mesh);
   }
 
-  // Spawn X marks: a blue X at the attackers' spawn, a red X at the
-  // defenders' spawn. The defenders' X IS the attackers' objective —
-  // reaching it wins the round. Both sit behind the end houses,
-  // hidden from the street.
-  const mkX = (mark, color) => {
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
-    for (const rot of [Math.PI / 4, -Math.PI / 4]) {
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.02, 0.55), mat);
-      bar.position.set(mark.x, 0.03, mark.z);
-      bar.rotation.y = rot;
-      scene.add(bar);
-    }
-  };
-  mkX(SPAWN_MARKS.attackers, TEAM_COLORS.attackers);
-  mkX(SPAWN_MARKS.defenders, TEAM_COLORS.defenders);
+  // No ground markings in the 3D world: the objective (the defenders'
+  // spawn X) is shown on the map only — see drawMap.
 
   controls.attach(renderer.domElement, {
     joyZone: $('joyZone'),
@@ -531,6 +518,22 @@ function refreshMeshColors() {
 // Lobby UI
 // ---------------------------------------------------------------------------
 
+// Team columns and join buttons are labelled by ROLE (ATTACKERS /
+// DEFENDERS), following the host's attackers pick. Called from the state
+// handler — before the joined check — so players who have not joined yet
+// also see the correct join-button labels.
+function updateRoleLabels(attackersTeam) {
+  const setHeader = (el, team) => {
+    const isAtk = attackersTeam === team;
+    el.textContent = isAtk ? 'ATTACKERS' : 'DEFENDERS';
+    el.className = isAtk ? 'atk' : 'def';
+  };
+  setHeader(teamAHeader, 'A');
+  setHeader(teamBHeader, 'B');
+  joinAEl.textContent = attackersTeam === 'A' ? 'Join Attackers' : 'Join Defenders';
+  joinBEl.textContent = attackersTeam === 'B' ? 'Join Attackers' : 'Join Defenders';
+}
+
 function renderLobby(state) {
   const byTeam = { A: [], B: [] };
   let soloCount = 0;
@@ -566,14 +569,6 @@ function renderLobby(state) {
   };
   renderList(teamAList, byTeam.A);
   renderList(teamBList, byTeam.B);
-
-  const setRole = (el, team) => {
-    const isAtk = state.attackersTeam === team;
-    el.textContent = isAtk ? 'ATTACKERS' : 'DEFENDERS';
-    el.className = 'role ' + (isAtk ? 'atk' : 'def');
-  };
-  setRole(roleAEl, 'A');
-  setRole(roleBEl, 'B');
 
   const aCount = byTeam.A.length;
   const bCount = byTeam.B.length;
@@ -634,7 +629,7 @@ function updateHUD() {
     if (game.phase === 'playing') {
       timerEl.textContent = fmtTime(game.timeLeftMs);
     } else if (game.phase === 'intermission') {
-      timerEl.textContent = `Next round ${Math.ceil(game.intermissionLeftMs / 1000)}s`;
+      timerEl.textContent = 'Intermission';
     } else {
       timerEl.textContent = '—';
     }
@@ -716,17 +711,23 @@ function showDamageFlash() {
 }
 
 let bannerTimer = null;
+// ms = null keeps the banner up until another banner replaces it (used for
+// the round-end result, which stays until CONTINUE starts the next round).
 function showBanner(text, ms = 4000) {
   bannerEl.textContent = text;
   bannerEl.classList.remove('hidden');
   clearTimeout(bannerTimer);
-  bannerTimer = setTimeout(() => bannerEl.classList.add('hidden'), ms);
+  if (ms != null) bannerTimer = setTimeout(() => bannerEl.classList.add('hidden'), ms);
 }
 
 // ---------------------------------------------------------------------------
-// On-demand map: street, houses and the two spawn X marks only. No player
-// markers of any kind, by design — the map shows terrain, not live positions.
-// The map is static, so it is drawn once when opened.
+// On-demand map: street, houses and the objective only. No player markers
+// of any kind, by design — the map shows terrain, not live positions.
+// The objective is the defenders' spawn X (red), shown on the map only —
+// never as a ground mark in the 3D world. It is labelled by the viewer's
+// role: attackers see "לכבוש" (capture), defenders "להגן" (defend), solo
+// players see the X without a label. The map is drawn when opened, and
+// redrawn on round start (the objective moves with each round's draw).
 // ---------------------------------------------------------------------------
 
 function drawMap() {
@@ -745,7 +746,8 @@ function drawMap() {
   for (const h of HOUSES) {
     mapCtx.fillRect(mx(h.x0), mz(h.z0), mx(h.x1) - mx(h.x0), mz(h.z1) - mz(h.z0));
   }
-  // Spawn X marks (blue = attackers' start, red = defenders' start = objective).
+  // Objective: the defenders' spawn X only (red). The attackers' spawn
+  // is not marked anywhere.
   const drawX = (wx, wz, color) => {
     const x = mx(wx);
     const y = mz(wz);
@@ -758,8 +760,22 @@ function drawMap() {
     mapCtx.lineTo(x - 7, y + 7);
     mapCtx.stroke();
   };
-  drawX(SPAWN_MARKS.attackers.x, SPAWN_MARKS.attackers.z, TEAM_CSS.attackers);
-  drawX(SPAWN_MARKS.defenders.x, SPAWN_MARKS.defenders.z, TEAM_CSS.defenders);
+  if (currentObjective) {
+    drawX(currentObjective.x, currentObjective.z, TEAM_CSS.defenders);
+    let label = null;
+    if (!solo && myTeam) label = myTeam === game.attackersTeam ? 'לכבוש' : 'להגן';
+    if (label) {
+      const lx = mx(currentObjective.x);
+      const ly = mz(currentObjective.z) + 26;
+      mapCtx.font = `bold ${Math.round(W / 26)}px system-ui, sans-serif`;
+      mapCtx.textAlign = 'center';
+      mapCtx.lineWidth = 4;
+      mapCtx.strokeStyle = '#101216';
+      mapCtx.strokeText(label, lx, ly);
+      mapCtx.fillStyle = '#ffffff';
+      mapCtx.fillText(label, lx, ly);
+    }
+  }
   // North (attackers' end) marker.
   mapCtx.fillStyle = '#cfd4da';
   mapCtx.font = `bold ${Math.round(W / 22)}px system-ui, sans-serif`;
@@ -995,6 +1011,8 @@ socket.on('state', (msg) => {
   game.round = msg.round;
   game.score = msg.score;
   game.attackersTeam = msg.attackersTeam;
+  if (msg.objective) currentObjective = msg.objective;
+  updateRoleLabels(msg.attackersTeam);
   meta = new Map(msg.players.map((p) => [p.id, p]));
   const me = meta.get(myId);
   if (me) myTeam = me.team;
@@ -1013,6 +1031,17 @@ socket.on('state', (msg) => {
   } else {
     showScreen('game');
   }
+  if (msg.phase === 'intermission') {
+    // Reconnecting (or joining late) during an intermission: restore the
+    // round result + CONTINUE button the roundEnd event already showed
+    // to everyone else.
+    if (msg.roundWinner) {
+      showBanner(roundResultText(msg.roundWinner, msg.roundReason, msg.score), null);
+      continueBtn.classList.remove('hidden');
+    }
+  } else {
+    continueBtn.classList.add('hidden');
+  }
 });
 
 socket.on('snapshot', (msg) => {
@@ -1020,7 +1049,6 @@ socket.on('snapshot', (msg) => {
   game.round = msg.round;
   game.score = msg.score;
   game.timeLeftMs = msg.timeLeftMs;
-  game.intermissionLeftMs = msg.intermissionLeftMs;
   snapPlayers = new Map(msg.players.map((p) => [p.id, p]));
 
   const me = snapPlayers.get(myId);
@@ -1083,30 +1111,39 @@ socket.on('reloaded', (msg) => {
   if (msg.playerId === myId) reloading = false;
 });
 
+// Shared by the roundEnd event and the intermission restore in the state
+// handler, so a reconnecting player sees the same result text.
+function roundResultText(winner, reason, score) {
+  const winnerRole = game.attackersTeam === winner ? 'ATTACKERS' : 'DEFENDERS';
+  const reasonText =
+    reason === 'elimination'
+      ? 'eliminated the enemy team'
+      : reason === 'objective'
+        ? 'reached the objective'
+        : 'survived the round';
+  return `${winnerRole} (Team ${winner}) WIN THE ROUND\n${reasonText}\nScore: ${score.A} — ${score.B}`;
+}
+
 socket.on('roundStart', (msg) => {
   if (solo) return;
+  if (msg.objective) currentObjective = msg.objective;
+  continueBtn.classList.add('hidden');
   endScreen.classList.add('hidden');
   showBanner(`ROUND ${msg.round}`, 2500);
+  if (mapOpen) drawMap(); // the objective moves with each round's draw
 });
 
 socket.on('roundEnd', (msg) => {
   if (solo) return;
-  const winnerRole = game.attackersTeam === msg.winner ? 'ATTACKERS' : 'DEFENDERS';
-  const teamLetter = msg.winner;
-  const reasonText =
-    msg.reason === 'elimination'
-      ? 'eliminated the enemy team'
-      : msg.reason === 'objective'
-        ? 'reached the objective'
-        : 'survived the round';
-  showBanner(
-    `${winnerRole} (Team ${teamLetter}) WIN THE ROUND\n${reasonText}\nScore: ${msg.score.A} — ${msg.score.B}`,
-    6000
-  );
+  // Sticky banner: it stays up until CONTINUE starts the next round.
+  showBanner(roundResultText(msg.winner, msg.reason, msg.score), null);
+  // No CONTINUE at match end — the matchEnd screen follows with rematch.
+  if (msg.score[msg.winner] < 3) continueBtn.classList.remove('hidden');
 });
 
 socket.on('matchEnd', (msg) => {
   if (solo) return;
+  continueBtn.classList.add('hidden');
   const winnerRole = game.attackersTeam === msg.winner ? 'ATTACKERS' : 'DEFENDERS';
   endTitle.textContent = `${winnerRole} (Team ${msg.winner}) WIN THE MATCH`;
   endScore.textContent = `Final score: Team A ${msg.score.A} — ${msg.score.B} Team B`;
@@ -1142,6 +1179,12 @@ $('switchBtn').addEventListener('click', () => {
 $('atkA').addEventListener('click', () => socket.send({ t: 'setAttackers', team: 'A' }));
 $('atkB').addEventListener('click', () => socket.send({ t: 'setAttackers', team: 'B' }));
 $('startBtn').addEventListener('click', () => socket.send({ t: 'start' }));
+continueBtn.addEventListener('click', () => {
+  socket.send({ t: 'continue' });
+  // The round starts right after; the state handler re-shows the button
+  // if the room is still in intermission.
+  continueBtn.classList.add('hidden');
+});
 $('rematchBtn').addEventListener('click', () => socket.send({ t: 'rematch', swap: false }));
 $('swapBtn').addEventListener('click', () => socket.send({ t: 'rematch', swap: true }));
 mapBtn.addEventListener('click', () => toggleMap());
