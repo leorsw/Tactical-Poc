@@ -69,6 +69,14 @@ Then open <http://localhost:8020> in a desktop browser.
 | RELOAD button | Reload (3.5 s) |
 | Tap look area (while eliminated) | Cycle spectate target |
 
+## Solo mode
+
+Alone? Click **Solo mode — explore alone** in the lobby. You spawn at the
+attackers' end and can walk the whole map, shoot and reload, with no teams,
+no timer and no win condition. Nobody can shoot you and you cannot shoot
+anyone; a match can start alongside you while you explore. **EXIT SOLO**
+(top-left) returns you to the lobby, where you can join a team normally.
+
 ## Match flow
 
 1. **Lobby:** enter a callsign, join Team A or Team B (or auto-assign).
@@ -133,14 +141,16 @@ npm test
 - `test/headless-test.mjs` — spawns the real server and plays through it
   with fake WebSocket clients: damage falloff at close/medium/long range, a
   2v2 elimination win, an objective win, a reload cycle, a no-auto-reload
-  check, a friendly-fire kill, an empty-team start rejection, and an
-  asymmetric 1v2 start.
+  check, a friendly-fire kill, an empty-team start rejection, an
+  asymmetric 1v2 start, and a solo-mode scenario (explore alone,
+  shooting/reload alone, a match starting alongside, leave and re-join).
 
 ## Known limits / what is NOT in v1
 
 - **No jump, no crouch.** Deliberately left out of v1.
 - **No bots.** Every player is a real person; a match needs at least 1
-  player per team. With few testers, play 2v2 or 1v2.
+  player per team. With few testers, play 2v2 or 1v2; a lone tester can
+  use Solo mode to explore the map.
 - **No voice chat.** Teams coordinate via a separate call (phone,
   WhatsApp, Discord) or by shouting across the room.
 - **Commander is a label only** — no orders, map pings or special view.
@@ -155,9 +165,9 @@ npm test
   design, windows are firing positions, not entrances.
 - **Server does not simulate physics/collision** — movement is
   client-simulated and relayed. Positions are clamped to the map bounds.
-- **No Fly.io deployment yet.** The deploy target is Fly, but v1 runs
-  locally from the laptop (LAN play). See the repo history / notes for the
-  deploy plan when the POC proves itself.
+- **Live deployment:** <https://tactical-poc.fly.dev/> (Fly, region `fra`,
+  one machine). Every push to `main` deploys automatically via GitHub
+  Actions (workflow: `.github/workflows/fly-deploy.yml`).
 
 ## Files
 
