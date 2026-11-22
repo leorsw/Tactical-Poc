@@ -176,7 +176,9 @@ npm test
   client-simulated and relayed. Positions are clamped to the map bounds.
 - **Live deployment:** <https://tactical-poc.fly.dev/> (Fly, region `fra`,
   one machine). Every push to `main` deploys automatically via GitHub
-  Actions (workflow: `.github/workflows/fly-deploy.yml`).
+  Actions (workflow: `.github/workflows/fly-deploy.yml`). Multi-file pushes
+  batch into a single deploy run: all commits but the last carry
+  `[skip ci]` (parallel `fly deploy` runs race and fail — 22/11/2026).
 
 ## Files
 
