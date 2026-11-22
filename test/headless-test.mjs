@@ -8,11 +8,21 @@
 //     must succeed (but starting with an empty team must fail).
 //   Scenario 3 (solo): one player explores alone — no team, room stays in
 //     lobby, shooting and reload work, nobody can shoot them or be shot by
-//     them, a match can start alongside, and leaving solo frees them to
-//     join a team.
+//     them, a match can start alongside, and leaving solo mid-match does
+//     NOT let them join a team until the match ends (no mid-match joins).
 //   Scenario 4 (clear room): a non-host clearRoom is ignored; the host's
 //     clearRoom sends 'kicked' to every other player (teams and solo),
 //     closes their sockets, and leaves the host alone in the lobby.
+//   Scenario 5 (no mid-match joins): a newcomer joining during a match is
+//     rejected with an error and the room stays unchanged; the waiter still
+//     receives state snapshots; a disconnected match player may rejoin
+//     within the grace window (same callsign + team) and spectates until
+//     the next round.
+//   Scenario 6 (heartbeat): a player who stops pinging mid-match is swept
+//     from the room within the timeout and their socket is terminated;
+//     they may rejoin within the grace window like a clean disconnect.
+//     (Every scenario runs with a 3 s heartbeat timeout, so clients that
+//     keep pinging prove they are never swept.)
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -54,6 +64,18 @@ class Client {
       this.inbox.push(msg);
       if (msg.t === 'welcome') this.id = msg.id;
     });
+    // Heartbeat like the real client (1 s here — the test server runs a
+    // 3 s timeout). Guarded on readyState so a server-closed socket
+    // (kicked / swept) does not throw.
+    this.pingTimer = setInterval(() => {
+      if (this.ws.readyState === WebSocket.OPEN) this.send({ t: 'ping' });
+    }, 1000);
+  }
+
+  // Stop the heartbeat (simulates a dead connection for the ghost test).
+  stopPing() {
+    clearInterval(this.pingTimer);
+    this.pingTimer = null;
   }
 
   async ready() {
@@ -78,6 +100,7 @@ class Client {
   }
 
   close() {
+    if (this.pingTimer) clearInterval(this.pingTimer);
     this.ws.close();
   }
 }
@@ -100,7 +123,7 @@ async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000' },
+    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -335,16 +358,20 @@ async function main() {
     assert.equal(soloSnap.health, 100);
     console.log('ok - solo player survives the round reset untouched');
 
-    // Leave solo and re-join as a team player.
+    // Leave solo mid-match: the player is out of the room, but joining
+    // a team is blocked until the match ends (no mid-match joins).
     s.send({ t: 'leaveSolo' });
     await s.waitFor('soloLeft');
-    // The room broadcast after removal goes only to players still in the
-    // room, so a remaining player confirms the solo player is gone.
+    // A remaining player confirms the solo player is gone (the leaver's
+    // own inbox also holds a stale empty-room state from connect time).
     await j1.waitFor('state', (m) => !m.players.some((p) => p.id === s.id));
     console.log('ok - leaving solo removes the player from the room');
     s.send({ t: 'join', name: 'Solo', team: 'A' });
-    await s.waitFor('joined');
-    console.log('ok - after leaving solo, joining a team works');
+    const soloJoinErr = await s.waitFor('error', (m) => /in progress/.test(m.message || ''));
+    assert.ok(soloJoinErr);
+    await sleep(300);
+    assert.equal(j1.findLast('state').players.length, 2, 'ex-solo player must not join a team mid-match');
+    console.log('ok - after leaving solo mid-match, joining a team is blocked until the match ends');
 
     for (const c of [s, j1, k1]) c.close();
     await sleep(300);
@@ -387,6 +414,94 @@ async function main() {
     console.log('ok - host clearRoom kicks everyone else; host stays alone in the lobby');
 
     h1.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 5: no mid-match joins
+    const m1 = new Client('M1');
+    const m1b = new Client('M1b');
+    const m2 = new Client('M2');
+    const m2b = new Client('M2b');
+    const late = new Client('Late');
+    for (const c of [m1, m1b, m2, m2b, late]) await c.ready();
+    m1.send({ t: 'join', name: 'M1', team: 'A' });
+    m1b.send({ t: 'join', name: 'M1b', team: 'A' });
+    m2.send({ t: 'join', name: 'M2', team: 'B' });
+    m2b.send({ t: 'join', name: 'M2b', team: 'B' });
+    await m1.waitFor('state', (m) => m.players.length === 4);
+    m1.send({ t: 'start' });
+    await m1.waitFor('state', (m) => m.phase === 'playing');
+    console.log('ok - 2v2 match started for the no-mid-match-join test');
+    // A newcomer cannot join mid-match: the server rejects with an
+    // error and the room stays at 4 players.
+    late.send({ t: 'join', name: 'Late', team: 'A' });
+    const joinErr = await late.waitFor('error', (m) => /in progress/.test(m.message || ''));
+    assert.ok(joinErr);
+    await sleep(300);
+    assert.equal(m1.findLast('state').players.length, 4, 'late joiner must not enter the room mid-match');
+    console.log('ok - newcomer join is rejected mid-match');
+    // The waiter still receives state snapshots, so the lobby can show
+    // the wait message and re-enable joining when the match ends.
+    assert.ok(late.find('state', (m) => m.phase === 'playing'), 'waiter must receive state snapshots');
+    console.log('ok - waiter receives state snapshots while unjoined');
+    // A disconnected match player may rejoin within the grace window
+    // (same callsign + team) — and spectates until the next round.
+    m2.close();
+    await waitFor(() => {
+      const last = m1.findLast('state');
+      return last && last.players.length === 3 ? last : null;
+    }, 5000, 'disconnect reflected in state');
+    const m2c = new Client('M2c');
+    await m2c.ready();
+    m2c.send({ t: 'join', name: 'M2', team: 'B' });
+    await waitFor(() => {
+      const last = m1.findLast('state');
+      return last && last.players.length === 4 ? last : null;
+    }, 5000, 'rejoined player back in the room');
+    await sleep(300); // let a post-rejoin snapshot arrive
+    const rejoinSnap = m1.findLast('snapshot');
+    const rejoined = rejoinSnap.players.find((p) => p.id === m2c.id);
+    assert.ok(rejoined, 'rejoined player must appear in snapshots');
+    assert.equal(rejoined.alive, false, 'mid-match rejoiner spectates until the next round');
+    console.log('ok - disconnected match player rejoins within the grace window and spectates');
+
+    for (const c of [m1, m1b, m2b, m2c, late]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 6: heartbeat / ghost sweep
+    const g1 = new Client('G1');
+    const g2 = new Client('G2');
+    const g3 = new Client('G3');
+    const g4 = new Client('G4');
+    for (const c of [g1, g2, g3, g4]) await c.ready();
+    g1.send({ t: 'join', name: 'G1', team: 'A' });
+    g2.send({ t: 'join', name: 'G2', team: 'A' });
+    g3.send({ t: 'join', name: 'G3', team: 'B' });
+    g4.send({ t: 'join', name: 'G4', team: 'B' });
+    await g1.waitFor('state', (m) => m.players.length === 4);
+    g1.send({ t: 'start' });
+    await g1.waitFor('state', (m) => m.phase === 'playing');
+    console.log('ok - 2v2 match started for the heartbeat test');
+    // G3 goes silent (dead connection): the sweep removes them within
+    // the timeout, and their socket is terminated.
+    g3.stopPing();
+    await waitFor(() => {
+      const last = g1.findLast('state');
+      return last && last.players.length === 3 ? last : null;
+    }, 10000, 'silent player swept from the room');
+    await waitFor(() => g3.ws.readyState === WebSocket.CLOSED, 5000, 'ghost socket terminated');
+    console.log('ok - silent player is swept from the room and their socket is terminated');
+    // The swept player may rejoin within the grace window (same
+    // callsign + team) — the unclean disconnect behaves like a clean one.
+    const g3b = new Client('G3b');
+    await g3b.ready();
+    g3b.send({ t: 'join', name: 'G3', team: 'B' });
+    await waitFor(() => {
+      const last = g1.findLast('state');
+      return last && last.players.length === 4 ? last : null;
+    }, 5000, 'swept player rejoined within the grace window');
+    console.log('ok - swept player rejoins within the grace window');
+
+    for (const c of [g1, g2, g4, g3b]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
