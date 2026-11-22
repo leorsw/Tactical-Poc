@@ -96,6 +96,9 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
    have at least 1 player (1v1 is enough).
    The first player to join **each team** is marked that team's
    **commander** (label only in v1 — no special powers).
+   The host also has a **Clear room** button (lobby only, two clicks to
+   confirm): it kicks every other player — teams and solo — back to the
+   join screen, so a new game starts clean. Kicked players can rejoin.
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
    is **5:00**.
    - **Attackers** win a round by eliminating all defenders **or** by having
@@ -130,6 +133,8 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
   (frozen first-person view) before switching to spectate — or to the
   round/match-end screen, if the round ended. A teamkill adds a
   **FRIENDLY FIRE** line under it (the killfeed also flags teamkills).
+- **Name tags are teammates-only** — the enemy team sees no tag — and a
+  tag behind a wall is hidden by the wall (normal depth testing).
 - **6 magazines × 29 rounds.** Reloading takes **3.5 s** and you cannot fire
   while reloading. No pistol, no other weapon. A player out of ammo can
   still move and observe but cannot fire. There is **no auto-reload**: when
