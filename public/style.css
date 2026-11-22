@@ -12,6 +12,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 button.primary { background: #2b6cff; border-color: #2b6cff; font-weight: 600; }
 button.primary:hover:not(:disabled) { background: #3a7bff; }
 button.secondary { background: transparent; }
+button.danger { background: #4a1518; border-color: #e53333; color: #ffb3b3; }
+button.danger:hover:not(:disabled) { background: #5c1a1e; }
+button.danger.armed { background: #e53333; border-color: #ff8080; color: #fff; }
+#kickNotice { color: #ffb340; font-weight: 600; margin: 8px 0; }
 button.activeChoice { outline: 2px solid #2b6cff; }
 input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid #555;
   background: #1a1d22; color: #eee; width: 220px; text-align: center; }
