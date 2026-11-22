@@ -1,6 +1,6 @@
 // headless-test.mjs — scripted end-to-end test of the game server.
 //
-// Spawns the real server on port 8021 with a short intermission, connects
+// Spawns the real server on port 8021 with a short round timer, connects
 // fake WebSocket clients, and plays through:
 //   Scenario 1 (2v2): elimination round win, then an objective round win,
 //     then a reload cycle — verifying round resets between rounds.
@@ -18,7 +18,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import WebSocket from 'ws';
-import { SPAWNS, OBJECTIVE } from '../public/map.js';
+import { SPAWNS } from '../public/map.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = 8021;
@@ -97,7 +97,7 @@ async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', INTERMISSION_MS: '1000' },
+    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -128,9 +128,13 @@ async function main() {
     // Host (first joiner = A1) picks attackers and starts.
     a1.send({ t: 'setAttackers', team: 'A' });
     a1.send({ t: 'start' });
-    await a1.waitFor('roundStart', (m) => m.round === 1);
+    const r1 = await a1.waitFor('roundStart', (m) => m.round === 1);
     await a1.waitFor('state', (m) => m.phase === 'playing');
     console.log('ok - match started, round 1 playing, A attacks');
+    assert.ok(r1.objective, 'roundStart should carry the objective');
+    assert.ok(Math.abs(r1.objective.x) === 11 && r1.objective.z === 45,
+      `objective must be a defenders spawn centre, got ${JSON.stringify(r1.objective)}`);
+    console.log('ok - round 1 objective is a defenders spawn centre (random side draw)');
 
     // Everyone sends movement updates from their spawn points.
     const sendMoves = () => {
@@ -169,16 +173,26 @@ async function main() {
     assert.equal(round1End.score.A, 1);
     console.log('ok - round 1 ends: attackers win by elimination, score 1-0');
 
-    // Round 2 starts after the 1s intermission; attackers win by objective.
-    await a1.waitFor('roundStart', (m) => m.round === 2);
-    console.log('ok - round 2 started after intermission (positions/ammo reset)');
-    a2.send({ t: 'move', x: OBJECTIVE.x, y: 0, z: OBJECTIVE.z, yaw: 0, pitch: 0 });
+    // Round 2 must NOT start on its own: the intermission waits for a
+    // player to press CONTINUE. Attackers then win by reaching THIS
+    // round's objective (it moves with each round's side draw).
+    await sleep(1500);
+    assert.equal(a1.find('roundStart', (m) => m.round === 2), undefined,
+      'round 2 must not start without CONTINUE');
+    console.log('ok - round 2 does not start by itself during the intermission');
+    a1.send({ t: 'continue' });
+    const r2 = await a1.waitFor('roundStart', (m) => m.round === 2);
+    console.log('ok - round 2 starts after CONTINUE (positions/ammo reset)');
+    assert.ok(r2.objective && Math.abs(r2.objective.x) === 11 && r2.objective.z === 45,
+      `round 2 objective must be a defenders spawn centre, got ${JSON.stringify(r2.objective)}`);
+    a2.send({ t: 'move', x: r2.objective.x, y: 0, z: r2.objective.z, yaw: 0, pitch: 0 });
     const round2End = await a1.waitFor('roundEnd', (m) => m.winner === 'A' && m.reason === 'objective');
     assert.equal(round2End.score.A, 2);
     console.log('ok - round 2 ends: attackers win by reaching the objective, score 2-0');
 
+    a1.send({ t: 'continue' });
     await a1.waitFor('roundStart', (m) => m.round === 3);
-    console.log('ok - round 3 started');
+    console.log('ok - round 3 started after CONTINUE');
 
     // Long range (>50 m): A1 shoots B1 from spawn to spawn (~110 m).
     // 3 hits of 34 damage to kill.
@@ -199,7 +213,11 @@ async function main() {
     assert.equal(longKill.damage, 34);
     console.log('ok - long range (110 m): 3 hits kill (34 damage each)');
 
-    // Friendly fire: A1 shoots teammate A2 once — A2 must die.
+    // Friendly fire: move A2 next to A1 first (spawn sides are drawn
+    // randomly each round, so A2 may be on the far side of the street),
+    // then A1 shoots teammate A2 once — A2 must die.
+    a2.send({ t: 'move', x: -5, y: 0, z: -50, yaw: 0, pitch: 0 });
+    await sleep(150);
     a1.send({ t: 'shot', targetId: a2.id });
     const tk = await a1.waitFor('shot', (m) => m.targetId === a2.id && m.killed, 5000);
     assert.equal(tk.friendlyFire, true);
