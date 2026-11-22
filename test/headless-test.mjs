@@ -37,6 +37,15 @@
 //     is protected (mid-match same-name join is rejected). A rejoin
 //     from the SAME tab session takes over immediately, with no
 //     silence wait at all.
+//   Scenario 9 (stance flags): crouch / aiming sent in a move show up
+//     in the next snapshots for every other client, clearing them
+//     clears the relay, and non-boolean junk is ignored. (The poses
+//     themselves are client-side; this covers the wire only.)
+//   Scenario 10 (solo NPC): while a solo player is in the lobby, a
+//     defender dummy appears in snapshots (never in state), holds fire
+//     out of range, fires 3-shot bursts at a solo player within 30 m
+//     (shots never hit, aim pose on), stops when they leave range, and
+//     vanishes when the last solo player leaves.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -661,6 +670,101 @@ async function main() {
     console.log('ok - mid-match rejoin takes over the ghost and spectates until the next round');
 
     for (const c of [t1, t2, t3, t4, t5, u1]) c.close();
+    await sleep(300);
+
+    // Scenario 9 — stance flags (crouch / aiming) relay through snapshots.
+    // The inbox is cleared before each step so waitFor can only match a
+    // snapshot sent AFTER the move (find() returns the first match).
+    const v1 = new Client('Poser');
+    const v2 = new Client('Watcher');
+    for (const c of [v1, v2]) await c.ready();
+    v1.send({ t: 'join', name: 'Poser', team: 'A' });
+    v2.send({ t: 'join', name: 'Watcher', team: 'B' });
+    await v1.waitFor('state', (m) => m.players.length === 2);
+    const snap0 = await v2.waitFor('snapshot', (m) =>
+      m.players.some((p) => p.id === v1.id && p.crouch === false && p.aiming === false));
+    assert.ok(snap0);
+    v2.inbox.length = 0;
+    v1.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0, crouch: true, aiming: true });
+    const snap1 = await v2.waitFor('snapshot', (m) =>
+      m.players.some((p) => p.id === v1.id && p.crouch === true && p.aiming === true));
+    assert.ok(snap1);
+    console.log('ok - crouch/aiming flags relay in snapshots');
+    v2.inbox.length = 0;
+    v1.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0, crouch: false, aiming: false });
+    const snap2 = await v2.waitFor('snapshot', (m) =>
+      m.players.some((p) => p.id === v1.id && p.crouch === false && p.aiming === false));
+    assert.ok(snap2);
+    console.log('ok - clearing the flags clears the relay');
+    // Non-boolean junk is ignored, not stored.
+    v2.inbox.length = 0;
+    v1.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0, crouch: 'yes' });
+    await sleep(300);
+    const last = v2.findLast('snapshot', (m) => m.players.some((p) => p.id === v1.id));
+    assert.ok(last, 'a snapshot arrived after the junk move');
+    assert.equal(last.players.find((p) => p.id === v1.id).crouch, false);
+    console.log('ok - non-boolean stance values are ignored');
+    for (const c of [v1, v2]) c.close();
+    await sleep(300);
+
+    // Scenario 10 — solo defender NPC. w1 (team A, lobby) observes the
+    // snapshots; n1 is the solo player the NPC shoots at.
+    const w1 = new Client('Observer');
+    await w1.ready();
+    w1.send({ t: 'join', name: 'Observer', team: 'A' });
+    await w1.waitFor('state', (m) => m.players.length === 1);
+    await sleep(500);
+    const noNpcYet = w1.findLast('snapshot');
+    assert.ok(noNpcYet && !noNpcYet.players.some((p) => p.npc === true),
+      'no NPC before any solo player is present');
+    console.log('ok - no NPC while nobody plays solo');
+    const n1 = new Client('NpcSolo');
+    await n1.ready();
+    n1.send({ t: 'solo', name: 'NpcSolo' });
+    await n1.waitFor('soloJoined');
+    const npcSnap = await w1.waitFor('snapshot', (m) =>
+      m.players.some((p) => p.npc === true && p.id === -1));
+    const npcEntry = npcSnap.players.find((p) => p.npc === true);
+    assert.equal(npcEntry.name, 'Dummy');
+    assert.equal(npcEntry.team, 'B');
+    assert.equal(npcEntry.aiming, false);
+    console.log('ok - NPC appears in snapshots once a solo player is present (idle, out of range)');
+    const st = w1.findLast('state');
+    assert.ok(st && !st.players.some((p) => p.id === -1), 'NPC must not appear in state');
+    console.log('ok - NPC never appears in state');
+    // Out of range (solo spawn is ~86 m from the NPC): no shots.
+    await sleep(1500);
+    assert.equal(n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === -1).length, 0);
+    console.log('ok - NPC holds fire while the solo player is out of range');
+    // Walk into range (20 m from the NPC at (0, 40)).
+    n1.send({ t: 'move', x: 0, y: 0, z: 20, yaw: 0, pitch: 0 });
+    const npcShot = await n1.waitFor('shot', (m) => m.shooterId === -1, 5000);
+    assert.equal(npcShot.hit, false);
+    assert.equal(npcShot.killed, false);
+    assert.equal(npcShot.targetId, null);
+    console.log('ok - NPC opens fire within range (shots never hit)');
+    await sleep(2000);
+    const burstCount = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === -1).length;
+    assert.ok(burstCount >= 3, `expected a full burst, got ${burstCount} NPC shots`);
+    const aimSnap = w1.findLast('snapshot', (m) => m.players.some((p) => p.npc === true));
+    assert.equal(aimSnap.players.find((p) => p.npc === true).aiming, true);
+    console.log('ok - NPC fires bursts and shows the aim pose while engaging');
+    // Walk away: the firing stops.
+    const npcShotsBefore = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === -1).length;
+    n1.send({ t: 'move', x: SPAWNS.attackers[0].x, y: 0, z: SPAWNS.attackers[0].z, yaw: Math.PI, pitch: 0 });
+    await sleep(2500);
+    const npcShotsAfter = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === -1).length;
+    assert.equal(npcShotsAfter, npcShotsBefore, 'NPC must stop firing out of range');
+    console.log('ok - NPC holds fire again once the solo player leaves range');
+    // Leave solo: the NPC vanishes from snapshots (the observer stays
+    // joined, so snapshots keep flowing).
+    n1.send({ t: 'leaveSolo' });
+    await n1.waitFor('soloLeft');
+    const goneSnap = await w1.waitFor('snapshot', (m) =>
+      !m.players.some((p) => p.npc === true), 5000);
+    assert.ok(goneSnap);
+    console.log('ok - NPC vanishes from snapshots when the last solo player leaves');
+    for (const c of [n1, w1]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
