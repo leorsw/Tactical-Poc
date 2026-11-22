@@ -57,7 +57,9 @@ Then open <http://localhost:8020> in a desktop browser.
 | WASD / arrows | Move |
 | Mouse | Look (click the game to capture the mouse) |
 | Hold left mouse | Fire |
+| Hold right mouse | Aim down the sights (tighter spread, slight zoom, slower move) |
 | R | Reload (3.5 s) |
+| M | Toggle map (terrain only, no player markers) |
 | Click (while eliminated) | Cycle spectate target |
 
 ### Mobile (touch)
@@ -66,7 +68,9 @@ Then open <http://localhost:8020> in a desktop browser.
 | Left virtual joystick | Move |
 | Drag right side of screen | Look |
 | Hold FIRE | Fire |
+| AIM button | Toggle aim down the sights |
 | RELOAD button | Reload (3.5 s) |
+| MAP button | Show map (terrain only, no player markers) |
 | Tap look area (while eliminated) | Cycle spectate target |
 
 ## Solo mode
@@ -90,8 +94,8 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
    is **5:00**.
    - **Attackers** win a round by eliminating all defenders **or** by having
-     any living attacker enter the objective zone (yellow pillar of light
-     at the defenders' end of the street).
+     any living attacker enter the objective zone (yellow marking painted
+     on the road at the defenders' end of the street).
    - **Defenders** win a round by eliminating all attackers **or** by
      surviving until the timer expires.
    - **10-second intermission** between rounds, then positions, health and
@@ -115,7 +119,11 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
   still move and observe but cannot fire. There is **no auto-reload**: when
   a magazine runs out, nothing happens until you press R (desktop) or the
   RELOAD button (mobile).
-- Hitscan rifle, hold to fire at ~10 rounds/sec with slight spread.
+- Hitscan rifle, hold to fire at ~10 rounds/sec. Spread is wide from the
+  hip and tight when aiming down the sights. There is **no crosshair** by
+  design: the rifle hangs lowered while moving, and aiming raises it so the
+  iron sights sit on the centre of the screen. Each shot kicks the rifle
+  and flashes the muzzle; hits on walls show a brief impact marker.
 - Friendly fire is **ON**: a hit from anyone on anyone kills, including teammates (shown as TEAMKILL in the kill feed). No extra penalty beyond losing the teammate.
 - The server is authoritative for health, ammo, score, timer and win
   conditions. Clients simulate their own movement and send shot claims;
@@ -124,11 +132,12 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
 
 ## The map
 
-One street (~120 m) along the Z axis with **6 grey-box houses**, 3 per side.
-Each house has an enterable ground floor (door gap in the street-facing
-wall), windows on the ground and second floors, and interior stairs to the
-second floor. Each team spawns behind the houses at opposite far ends of the
-street. The objective zone is at the defenders' end.
+One street (~120 m) along the Z axis with **10 grey-box houses**, 5 per
+side, with **4 m alleys** between adjacent houses. Each house has an
+enterable ground floor (door gap in the street-facing wall), windows on the
+ground and second floors, and interior stairs to the second floor. Each team
+spawns behind the houses at opposite far ends of the street. The objective
+zone is marked on the road at the defenders' end.
 
 ## Tests
 
@@ -137,7 +146,7 @@ npm test
 ```
 
 - `test/map-test.mjs` — unit tests for collision, floor height, stairs,
-  doors and the objective zone (11 checks).
+  doors, alleys and the objective zone (12 checks).
 - `test/headless-test.mjs` — spawns the real server and plays through it
   with fake WebSocket clients: damage falloff at close/medium/long range, a
   2v2 elimination win, an objective win, a reload cycle, a no-auto-reload
