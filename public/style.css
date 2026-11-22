@@ -153,6 +153,11 @@ body.touch #touchUI { display: block; }
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px;
   touch-action: none; }
 #aimBtn.active { background: rgba(80,140,255,0.85); }
+#crouchBtn { position: absolute; right: 204px; bottom: 140px; width: 64px; height: 64px; border-radius: 50%;
+  background: rgba(80,200,120,0.4); border: 2px solid rgba(255,255,255,0.5);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 11px;
+  touch-action: none; }
+#crouchBtn.active { background: rgba(80,200,120,0.85); }
 #rotateHint { display: none; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,0.7); padding: 6px 12px; border-radius: 6px; font-size: 13px; white-space: nowrap; }
 @media (orientation: portrait) {
