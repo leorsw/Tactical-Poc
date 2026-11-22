@@ -53,18 +53,43 @@ for (const side of [-1, 1]) {
   }
 }
 
-// Objective zone: at the Defenders' end of the street (south, +z).
-export const OBJECTIVE = { x: 0, z: 52, r: 4 };
+// Objective zone: the Defenders' spawn X (south end, +z). The attackers'
+// end point IS the defenders' start point — reaching it wins the round.
+// r = 3.5 keeps the zone behind the house: the nearest street point
+// (x = 6) is 5 m from the centre, so attackers must leave the street.
+export const OBJECTIVE = { x: 11, z: 45, r: 3.5 };
 
-// Spawn points: one zone per role, behind the houses at the far ends.
-// Attackers spawn north (z = -55) facing +z (yaw = PI); defenders spawn
-// south (z = +55) facing -z (yaw = 0). Yaw follows the Three.js convention:
+// Spawn points: one zone per role, hidden behind the end houses — north /
+// south of the first building at each end, invisible from the street.
+// Attackers spawn north (z = -45) facing +z (yaw = PI); defenders spawn
+// south (z = +45) facing -z (yaw = 0). Yaw follows the Three.js convention:
 // forward = (-sin(yaw), 0, -cos(yaw)).
-const SPAWN_X = [-5, -3, -1, 1, 3, 5];
+const SPAWN_DX = [-3, -1.8, -0.6, 0.6, 1.8, 3];
 export const SPAWNS = {
-  attackers: SPAWN_X.map((x) => ({ x, z: -55, yaw: Math.PI })),
-  defenders: SPAWN_X.map((x) => ({ x, z: 55, yaw: 0 })),
+  attackers: SPAWN_DX.map((dx) => ({ x: -11 + dx, z: -45, yaw: Math.PI })),
+  defenders: SPAWN_DX.map((dx) => ({ x: 11 + dx, z: 45, yaw: 0 })),
 };
+
+// Spawn X centers (the painted ground marks; the defenders' X is the objective).
+export const SPAWN_MARKS = { attackers: { x: -11, z: -45 }, defenders: { x: 11, z: 45 } };
+
+// Ground-floor windows, for the climb-through feature (client only).
+// Each window: the wall plane (axis + coordinate) and the center/half-width
+// along the wall. Ground floor only (windows at y 1.0..2.2); upper-floor
+// windows (y 4.0..5.2) are not climbable. 60 windows total:
+// 10 houses x (2 street + 2 north + 2 south).
+export const GROUND_WINDOWS = [];
+for (const h of HOUSES) {
+  const streetX = h.side * 6;
+  for (const wz of [h.cz - 3.5, h.cz + 3.5]) {
+    GROUND_WINDOWS.push({ axis: 'x', plane: streetX, center: wz, half: 0.8 });
+  }
+  for (const wz of [h.z0, h.z1]) {
+    for (const wx of [h.cx - 3.5, h.cx + 3.5]) {
+      GROUND_WINDOWS.push({ axis: 'z', plane: wz, center: wx, half: 0.8 });
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Movement collision
