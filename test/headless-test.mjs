@@ -29,6 +29,14 @@
 //     objective. A full 1v1 match to 3-0 ends with a matchEnd carrying
 //     per-player stats (kills, deaths, shots, hits, accuracy, damage,
 //     teamkills, captures), sorted by kills then damage.
+//   Scenario 8 (ghost + session takeover): a player whose tab froze
+//     (silent, socket open) comes back on a new connection BEFORE the
+//     heartbeat sweep removes the old record — the rejoin takes over
+//     the ghost instead of duplicating the player (lobby and mid-match),
+//     the ghost's socket is terminated, and an ACTIVE same-name player
+//     is protected (mid-match same-name join is rejected). A rejoin
+//     from the SAME tab session takes over immediately, with no
+//     silence wait at all.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -129,7 +137,7 @@ async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000' },
+    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -575,6 +583,84 @@ async function main() {
     console.log('ok - match ends 3-0 with a correct per-player stats board');
 
     for (const c of [e1, f1]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 8: ghost + session takeover
+    // Part A — same tab session: s1 joins, freezes, and s2 (same session
+    // id, as if the same tab reconnected) joins IMMEDIATELY — the
+    // takeover fires at once, with no silence wait.
+    const s1 = new Client('S1');
+    const s2 = new Client('S1b');
+    for (const c of [s1, s2]) await c.ready();
+    s1.send({ t: 'join', name: 'Ses', team: 'A', session: 'sess-1' });
+    await s1.waitFor('joined');
+    s1.stopPing(); // frozen tab — but the takeover must not wait for silence
+    s2.send({ t: 'join', name: 'Ses', team: 'A', session: 'sess-1' });
+    await s2.waitFor('joined');
+    const st8a = await s2.waitFor('state', (m) =>
+      m.players.filter((p) => p.name === 'Ses').length === 1 &&
+      m.players.some((p) => p.name === 'Ses' && p.id === s2.id));
+    assert.equal(st8a.players.length, 1, 'room holds exactly Ses(new)');
+    console.log('ok - same-session rejoin takes over immediately (no silence wait)');
+    await waitFor(() => s1.ws.readyState === WebSocket.CLOSED, 5000, 'session ghost socket terminated');
+    for (const c of [s1, s2]) c.close();
+    await sleep(300); // room empties and resets to a fresh lobby
+
+    // Part B — ghost takeover (no session id: a different tab, or an old
+    // client): the rejoin takes over only after the silence threshold.
+    const t1 = new Client('Ghost');
+    const u1 = new Client('H1');
+    for (const c of [t1, u1]) await c.ready();
+    t1.send({ t: 'join', name: 'Ghost', team: 'A' });
+    u1.send({ t: 'join', name: 'H1', team: 'B' });
+    await t1.waitFor('state', (m) => m.players.length === 2);
+    // T1 freezes: stops pinging, socket stays open (backgrounded tab).
+    t1.stopPing();
+    await sleep(1800); // past the 1500 ms ghost silence, before the 3 s sweep
+    const t2 = new Client('Ghost');
+    await t2.ready();
+    t2.send({ t: 'join', name: 'Ghost', team: 'A' });
+    await t2.waitFor('joined');
+    const st8 = await u1.waitFor('state', (m) =>
+      m.players.filter((p) => p.name === 'Ghost').length === 1 &&
+      m.players.some((p) => p.name === 'Ghost' && p.id === t2.id));
+    assert.equal(st8.players.length, 2, 'room holds exactly Ghost(new) + H1');
+    console.log('ok - lobby rejoin takes over the silent ghost (no duplication)');
+    // The ghost's socket is terminated: the frozen client notices.
+    await waitFor(() => t1.ws.readyState === WebSocket.CLOSED, 5000, 'ghost socket terminated');
+    console.log('ok - ghost socket terminated on takeover');
+
+    // Mid-match: same takeover, and an ACTIVE same-name player is protected.
+    // A second attacker keeps the round alive when the ghost is removed
+    // (otherwise the takeover itself would end the round by elimination).
+    const t5 = new Client('A2');
+    await t5.ready();
+    t5.send({ t: 'join', name: 'A2', team: 'A' });
+    await t5.waitFor('joined');
+    await u1.waitFor('state', (m) => m.players.length === 3);
+    t2.send({ t: 'start' });
+    await t2.waitFor('roundStart', (m) => m.round === 1);
+    await t2.waitFor('state', (m) => m.phase === 'playing');
+    const t3 = new Client('Ghost');
+    await t3.ready();
+    t3.send({ t: 'join', name: 'Ghost', team: 'A' });
+    const rej = await t3.waitFor('error', (m) => /in progress/.test(m.message));
+    assert.ok(rej);
+    console.log('ok - same-name join rejected while the original is active');
+    // T2 freezes mid-match; the rejoin takes over the ghost and spectates.
+    t2.stopPing();
+    await sleep(1800);
+    const t4 = new Client('Ghost');
+    await t4.ready();
+    t4.send({ t: 'join', name: 'Ghost', team: 'A' });
+    await t4.waitFor('joined');
+    const st8b = await u1.waitFor('state', (m) =>
+      m.players.filter((p) => p.name === 'Ghost').length === 1 &&
+      m.players.some((p) => p.name === 'Ghost' && p.id === t4.id && p.alive === false));
+    assert.ok(st8b);
+    console.log('ok - mid-match rejoin takes over the ghost and spectates until the next round');
+
+    for (const c of [t1, t2, t3, t4, t5, u1]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
