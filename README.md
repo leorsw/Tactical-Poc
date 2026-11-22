@@ -83,6 +83,14 @@ no timer and no win condition. Nobody can shoot you and you cannot shoot
 anyone; a match can start alongside you while you explore. **EXIT SOLO**
 (top-left) returns you to the lobby, where you can join a team normally.
 
+## Player animation
+
+Other players' soldiers walk: each leg hangs from a hip pivot and swings
+with the distance actually travelled (one step per ~1.1 m), easing in when
+a player starts moving and back to neutral when they stop. The arms stay
+on the rifle. The cycle is driven by the interpolated position, so
+teleports (e.g. window climbs) don't flail the legs.
+
 ## Match flow
 
 1. **Lobby:** enter a callsign, join the Attackers or the Defenders
@@ -108,7 +116,7 @@ anyone; a match can start alongside you while you explore. **EXIT SOLO**
    during a match.
    **Heartbeat:** every client pings the server every 10 seconds (in all
    states — lobby, playing, spectating, solo). A player silent for more
-   than 30 seconds is removed as if disconnected — mid-match, they get
+   than 90 seconds is removed as if disconnected — mid-match, they get
    the 5-minute rejoin grace — so a crashed tab or dead connection never
    leaves a ghost in the room.
 3. **Rounds:** first team to **3 round wins** takes the match. Round timer
