@@ -5,6 +5,20 @@ export class Sfx {
   constructor() {
     this.ctx = null;
     this.master = null;
+    // iOS suspends the AudioContext when the tab is backgrounded, and this
+    // game is played across several tabs, so it happens constantly. Resume
+    // the moment the tab is visible / focused again, so the next shot
+    // sounds instead of being silently dropped. Only resumes an existing
+    // context — creation still waits for a user gesture (ensure()).
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) this.resume();
+    });
+    window.addEventListener('focus', () => this.resume());
+  }
+
+  // Resume a suspended context, if one exists. Cheap no-op when running.
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
   }
 
   // Must be called from a user gesture at least once (browser policy).
@@ -17,11 +31,15 @@ export class Sfx {
       this.master.gain.value = 0.25;
       this.master.connect(this.ctx.destination);
     }
-    if (this.ctx.state === 'suspended') this.ctx.resume();
+    this.resume();
   }
 
   // volume: 1 for my own shots, lower for distant ones (0.12 floor).
   shoot(volume = 1) {
+    // Resume first: a shot fired into a suspended context (tab was
+    // backgrounded since the last gesture) is silently lost, which is
+    // why shots sometimes sounded and sometimes didn't.
+    this.ensure();
     if (!this.ctx) return;
     // Short burst of filtered noise: a rough "bang".
     const dur = 0.08;
@@ -43,6 +61,7 @@ export class Sfx {
   }
 
   hit() {
+    this.ensure();
     if (!this.ctx) return;
     const osc = this.ctx.createOscillator();
     osc.type = 'sine';
