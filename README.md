@@ -30,8 +30,8 @@ Then open <http://localhost:8020> in a desktop browser.
 3. On each phone, open `http://<LAN-IP>:8020` (for example
    `http://192.168.1.42:8020`). No install needed — it runs in the browser.
 4. Hold the phone in **landscape**. Use the left virtual joystick to move,
-   drag the right side of the screen to look, hold **FIRE** to shoot and tap
-   **RELOAD** to reload.
+   drag the right side of the screen to look, tap **FIRE** to shoot one shot
+   at a time and swipe the **RELOAD** arrow right-to-left to reload.
 5. If a phone cannot reach the page, check the laptop firewall: port 8020
    must be reachable on the LAN (the server listens on `0.0.0.0`).
 
@@ -67,7 +67,7 @@ Then open <http://localhost:8020> in a desktop browser.
 |---|---|
 | WASD / arrows | Move |
 | Mouse | Look (click the game to capture the mouse) |
-| Hold left mouse | Fire |
+| Click left mouse | Fire one shot (semi-auto — holding does not repeat) |
 | Hold right mouse | Aim down the sights (tighter spread, slight zoom, slower move) |
 | R | Reload (3.5 s) |
 | C | Crouch (toggle — kneel when still, crouch-walk when moving; slower, lower eye level, smaller target) |
@@ -81,7 +81,7 @@ Then open <http://localhost:8020> in a desktop browser.
 |---|---|
 | Left virtual joystick | Move |
 | Drag right side of screen | Look |
-| Hold FIRE | Fire |
+| Tap FIRE | Fire one shot (semi-auto — holding does not repeat) |
 | AIM button | Toggle aim down the sights |
 | CROUCH button | Toggle crouch (kneel when still, crouch-walk when moving) |
 | Swipe the RELOAD arrow right-to-left | Reload (3.5 s; a tap does nothing) |
@@ -95,6 +95,17 @@ transparent left-pointing arrow above FIRE/AIM/CROUCH (210×76 px): swipe
 right-to-left along at least half of it to reload. During the 3.5 s reload
 the arrow fills right-to-left in amber — there is no separate progress
 bar; on desktop only the RELOADING… text shows.
+
+The HUD is minimal by design (UI redesign, 23/11/2026): the top bar shows
+the round timer only — no score, alive counts or round line — and in solo
+mode the top stays empty entirely (no match clock). The ammo reads as a
+sentence, spare magazines only: "5 spare mags" (no round counter;
+it turns orange while the loaded magazine is empty, red at NO AMMO).
+FIRE, CROUCH, CLIMB, MAP and FULLSCREEN are transparent buttons (a faint
+fill + a light border; FIRE's border is red-tinted, CLIMB's blue-tinted);
+AIM is a transparent sight — a light ring with a red dot, no label.
+EXIT SOLO keeps its solid style. Firing is semi-automatic everywhere:
+one shot per mouse click or FIRE tap, on desktop and on mobile.
 
 ## Solo mode
 
