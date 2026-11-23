@@ -130,7 +130,6 @@
       </div>
       <div id="bottomRight">
         <div id="ammoText">29 | 5 mags</div>
-        <div id="reloadBar"><div id="reloadFill"></div></div>
         <div id="reloadText" class="hidden">RELOADING…</div>
       </div>
       <div id="bannerWrap">
@@ -182,7 +181,21 @@
       <div id="lookZone"></div>
       <div id="joyBase"><div id="joyKnob"></div></div>
       <div id="fireBtn">FIRE</div>
-      <div id="reloadBtn">RELOAD</div>
+      <!-- Reload arrow: swipe right-to-left along it to reload. During a
+           reload it fills right-to-left over 3.5 s (the fill rect grows
+           from the arrow's right edge; the clip keeps it inside the
+           arrow shape). Replaces the old round RELOAD button and the
+           progress bar under the ammo text. -->
+      <div id="reloadArrow">
+        <svg viewBox="0 0 210 76" width="100%" height="100%">
+          <defs>
+            <clipPath id="reloadArrowClip"><path d="M6 38 L48 6 V16 H204 V60 H48 V70 Z"/></clipPath>
+          </defs>
+          <rect id="reloadArrowFill" x="204" y="0" width="0" height="76" fill="rgba(255,179,64,0.55)" clip-path="url(#reloadArrowClip)"/>
+          <path d="M6 38 L48 6 V16 H204 V60 H48 V70 Z" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.55)" stroke-width="2.5"/>
+          <text x="126" y="44" text-anchor="middle" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#fff" stroke="rgba(0,0,0,0.55)" stroke-width="3" paint-order="stroke">RELOAD</text>
+        </svg>
+      </div>
       <div id="aimBtn">AIM</div>
       <div id="crouchBtn">CROUCH</div>
       <div id="rotateHint">Rotate your device to landscape for the best view</div>
