@@ -62,8 +62,6 @@ const healthText = $('healthText');
 const ammoText = $('ammoText');
 const reloadArrowFill = $('reloadArrowFill'); // SVG rect inside the reload arrow
 const reloadText = $('reloadText');
-const killfeedEl = $('killfeed');
-const hitmarkerEl = $('hitmarker');
 const damageFlashEl = $('damageFlash');
 const bannerEl = $('banner');
 const continueBtn = $('continueBtn');
@@ -1075,21 +1073,6 @@ function updateHUD() {
   }
 }
 
-function addKillfeed(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  killfeedEl.appendChild(div);
-  while (killfeedEl.children.length > 5) killfeedEl.removeChild(killfeedEl.firstChild);
-  setTimeout(() => div.remove(), 6000);
-}
-
-function showHitmarker(kill) {
-  hitmarkerEl.classList.toggle('kill', !!kill);
-  hitmarkerEl.classList.remove('hidden');
-  clearTimeout(showHitmarker._t);
-  showHitmarker._t = setTimeout(() => hitmarkerEl.classList.add('hidden'), 130);
-}
-
 let damageFlashTimer = null;
 function showDamageFlash() {
   damageFlashEl.classList.add('on');
@@ -1620,16 +1603,9 @@ socket.on('shot', (msg) => {
     sfx.shoot(vol);
   }
   if (solo) {
-    // Solo shots can hit the NPC only: hitmarker + hit sound on my own
-    // NPC hits, killfeed line when the dummy goes down. Match shots stay
-    // out of the solo HUD.
-    if (msg.shooterId === myId && msg.hit) {
-      showHitmarker(msg.killed);
-      sfx.hit();
-    }
-    if (msg.killed && msg.targetId === NPC_ID) {
-      addKillfeed(`${meta.get(msg.shooterId)?.name || '?'} ▸ Dummy`);
-    }
+    // No killfeed, no hitmarker, no hit sound — in solo or in a match
+    // (Lior, 23/11: they hurt realism). A hit is visible only as the
+    // figure falling; match shots stay out of the solo HUD.
     return;
   }
   if (msg.targetId === myId && msg.killed && msg.friendlyFire) {
@@ -1638,17 +1614,8 @@ socket.on('shot', (msg) => {
     killedByFriendlyFire = true;
     if (downUntil) downSub.classList.remove('hidden');
   }
-  if (msg.shooterId === myId && msg.hit) {
-    showHitmarker(msg.killed);
-    sfx.hit();
-  }
   if (msg.targetId === myId && msg.hit && !msg.killed) {
     showDamageFlash();
-  }
-  if (msg.killed) {
-    const shooter = meta.get(msg.shooterId)?.name || '?';
-    const victim = meta.get(msg.targetId)?.name || '?';
-    addKillfeed(msg.friendlyFire ? `${shooter} ▸ ${victim} (TEAMKILL)` : `${shooter} ▸ ${victim}`);
   }
 });
 
