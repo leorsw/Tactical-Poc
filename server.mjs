@@ -225,6 +225,8 @@ function snapshotPlayerList(now) {
   }));
   // The NPC rides the snapshot (never the state): clients render it like
   // any other player, but it never appears in the lobby or the counts.
+  // Its alive flag is its up/down state: a solo kill puts it down for
+  // NPC_DOWN_MS, then updateNpc revives it at full health.
   if (npc) {
     list.push({
       id: NPC_ID,
@@ -233,8 +235,8 @@ function snapshotPlayerList(now) {
       z: NPC_POS.z,
       yaw: npc.yaw,
       pitch: 0,
-      alive: true,
-      health: 100,
+      alive: npc.health > 0,
+      health: npc.health,
       inMag: MAG_SIZE,
       mags: MAG_COUNT - 1,
       reloading: false,
@@ -355,14 +357,17 @@ function checkElimination() {
 // ---------------------------------------------------------------------------
 // Solo defender NPC: a target dummy that shoots at solo players so they can
 // see a muzzle flash from the outside and hear remote shots. It is NOT a
-// player: it lives outside the players map, never joins a match, cannot be
-// hit, and its shots never damage anyone. It exists only while the room is
-// in the lobby phase and at least one solo player is present. Position is
-// overridable via NPC_X / NPC_Z (screenshot runs put it in front of the
-// solo spawn).
+// player: it lives outside the players map and never joins a match, and its
+// shots never damage anyone. Solo players CAN shoot it: same distance damage
+// as a player, and when its health hits 0 it goes down for NPC_DOWN_MS and
+// then gets back up — so a solo player can see the fall. It exists only
+// while the room is in the lobby phase and at least one solo player is
+// present. Position is overridable via NPC_X / NPC_Z (screenshot runs put
+// it in front of the solo spawn).
 // ---------------------------------------------------------------------------
 const NPC_ID = -1; // player ids start at 1 (nextId), so -1 can never collide
 const NPC_NAME = 'Dummy';
+const NPC_DOWN_MS = Number(process.env.NPC_DOWN_MS ?? 5000); // down time after a solo kill
 const NPC_POS = {
   x: Number(process.env.NPC_X ?? 0),
   z: Number(process.env.NPC_Z ?? 40),
@@ -371,7 +376,7 @@ const NPC_RANGE = 30; // opens fire within 30 m
 const NPC_BURST = 3; // shots per burst
 const NPC_BURST_INTERVAL_MS = 120; // inside a burst
 const NPC_BURST_PAUSE_MS = 1200; // between bursts
-let npc = null; // { yaw, aiming, burstLeft, nextShotAt } or null
+let npc = null; // { yaw, aiming, burstLeft, nextShotAt, health, downUntil } or null
 
 function updateNpc(now) {
   const solos = [...players.values()].filter((p) => p.solo && p.alive);
@@ -379,7 +384,16 @@ function updateNpc(now) {
     npc = null;
     return;
   }
-  if (!npc) npc = { yaw: 0, aiming: false, burstLeft: 0, nextShotAt: 0 };
+  if (!npc) npc = { yaw: 0, aiming: false, burstLeft: 0, nextShotAt: 0, health: 100, downUntil: 0 };
+  // Down: shot by a solo player. It lies still — no aiming, no fire —
+  // until the down time passes, then gets back up at full health.
+  if (npc.health <= 0) {
+    if (now < npc.downUntil) {
+      npc.aiming = false;
+      return;
+    }
+    npc.health = 100;
+  }
   let target = null;
   let best = Infinity;
   for (const p of solos) {
@@ -744,8 +758,12 @@ function handleMessage(ws, msg) {
       let targetHealth = null;
       let damage = 0;
       let distance = null;
-      // Solo shots never hit anyone; solo players can never be hit.
+      // Solo shots never hit players; solo players can never be hit.
       const target = p.solo ? null : (msg.targetId != null ? players.get(Number(msg.targetId)) : null);
+      // The broadcast echoes the claimed target whenever it resolved —
+      // even on a miss (a solo, dead or own target) — so the shooter can
+      // tell what the shot was aimed at. An NPC hit reports NPC_ID.
+      let shotTargetId = target ? target.id : null;
       // Friendly fire is ON: any living player except yourself can be hit.
       if (target && target.alive && target.id !== p.id && !target.solo) {
         hit = true;
@@ -768,12 +786,36 @@ function handleMessage(ws, msg) {
         }
         targetHealth = target.health;
       }
+      // Solo players can shoot the NPC dummy: same distance damage as a
+      // player. Enough hits put it down for NPC_DOWN_MS (updateNpc brings
+      // it back up). Not a match kill: no state broadcast, no elimination
+      // check, no kill credit.
+      if (p.solo && Number(msg.targetId) === NPC_ID && npc && npc.health > 0) {
+        hit = true;
+        shotTargetId = NPC_ID;
+        const dx = NPC_POS.x - p.pos.x;
+        const dy = 0 - p.pos.y;
+        const dz = NPC_POS.z - p.pos.z;
+        distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        damage = damageForDistance(distance);
+        p.stats.hits += 1;
+        p.stats.damage += damage;
+        npc.health -= damage;
+        if (npc.health <= 0) {
+          npc.health = 0;
+          npc.downUntil = now + NPC_DOWN_MS;
+          npc.aiming = false;
+          npc.burstLeft = 0;
+          killed = true;
+        }
+        targetHealth = npc.health;
+      }
       broadcast({
         t: 'shot',
         shooterId: p.id,
-        targetId: target ? target.id : null,
+        targetId: shotTargetId,
         hit,
-        friendlyFire: hit ? target.team === p.team : false,
+        friendlyFire: hit && target ? target.team === p.team : false,
         damage,
         distance: distance == null ? null : Math.round(distance * 10) / 10,
         targetHealth,
@@ -781,7 +823,8 @@ function handleMessage(ws, msg) {
         inMag: p.inMag,
         mags: p.mags,
       });
-      if (killed) {
+      // A real player kill can end the round; an NPC down cannot.
+      if (killed && target) {
         broadcastState();
         checkElimination();
       }
