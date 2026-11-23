@@ -52,10 +52,15 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #scene-container { position: absolute; inset: 0; }
 #scene-container canvas { display: block; touch-action: none; }
 #hud { position: absolute; inset: 0; pointer-events: none; }
+/* Top bar: the timer only — score, alive counts and the round line are
+   hidden (UI redesign, 23/11/2026). No dark pill: the timer floats clean
+   over the scene. In solo the timer hides too (no match clock), so the
+   top stays empty. */
 #topBar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 18px; align-items: center; background: rgba(0,0,0,0.55);
+  display: flex; gap: 18px; align-items: center; background: transparent;
   padding: 6px 16px; border-radius: 8px; font-weight: 600; font-size: 16px; white-space: nowrap; }
-#timer { font-variant-numeric: tabular-nums; }
+#scoreBox, #aliveBox, #roundInfo { display: none; }
+#timer { font-variant-numeric: tabular-nums; font-size: 22px; text-shadow: 0 1px 4px rgba(0,0,0,0.9); }
 #killfeed { position: absolute; top: 10px; right: 10px; text-align: right; font-size: 13px;
   display: flex; flex-direction: column; gap: 3px; }
 #killfeed div { background: rgba(0,0,0,0.55); padding: 3px 8px; border-radius: 4px; }
@@ -98,7 +103,12 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #captureFill { height: 100%; width: 0%; background: #4caf50; }
 #captureBar.danger #captureFill { background: #e53333; }
 #exitSoloBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; }
-#mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto; }
+/* Transparent buttons (UI redesign, 23/11/2026): a faint fill + a light
+   border, so the buttons read without covering the scene. EXIT SOLO keeps
+   its solid style. */
+#mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto;
+  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
+  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
 /* z-index 5 on #fsRow / #bottomLeft / #hitmarker: the touch joystick base
    (120px, centred on the touch point) is painted after the HUD in the DOM,
    so without it the joystick graphics cover CLIMB and the health bar while
@@ -106,8 +116,12 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
    Hit-testing is unaffected: the joystick visuals are pointer-events none
    and #bottomLeft inherits none from #hud. */
 #fsRow { position: absolute; top: 98px; left: 10px; display: flex; gap: 10px; align-items: center; z-index: 5; }
-#fsBtn { pointer-events: auto; }
-#climbBtn { pointer-events: auto; background: #2b6cff; font-weight: 700; padding: 10px 22px; font-size: 16px; }
+#fsBtn { pointer-events: auto; background: rgba(255,255,255,0.06);
+  border: 1.5px solid rgba(255,255,255,0.55); color: rgba(255,255,255,0.92);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
+#climbBtn { pointer-events: auto; background: rgba(255,255,255,0.06);
+  border: 1.5px solid rgba(120,170,255,0.75); color: rgba(255,255,255,0.92);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9); font-weight: 700; padding: 10px 22px; font-size: 16px; }
 #connBanner { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); background: rgba(180, 30, 30, 0.92); color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 14px; font-weight: bold; pointer-events: none; z-index: 30; white-space: nowrap; }
 #mapPanel { position: relative; }
 #mapCloseBtn { position: absolute; top: 2px; right: 4px; background: none; border: none; color: #fff; font-size: 22px; line-height: 1; cursor: pointer; padding: 6px 10px; z-index: 2; }
@@ -147,25 +161,31 @@ body.touch #touchUI { display: block; }
 #joyKnob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px;
   border-radius: 50%; background: rgba(255,255,255,0.45); }
 #fireBtn { position: absolute; right: 24px; bottom: 96px; width: 84px; height: 84px; border-radius: 50%;
-  background: rgba(200,40,40,0.55); border: 2px solid rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,120,120,0.75);
+  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
   display: flex; align-items: center; justify-content: center; font-weight: 700; touch-action: none; }
-#fireBtn:active { background: rgba(230,60,60,0.8); }
+#fireBtn:active { background: rgba(255,255,255,0.16); }
 /* Reload arrow: transparent left-pointing arrow above FIRE/AIM/CROUCH.
    Swipe right-to-left along it to reload; it fills right-to-left during
    the 3.5 s reload (see main.js updateHUD). */
 #reloadArrow { position: absolute; right: 40px; bottom: 214px; width: 210px; height: 76px;
   touch-action: none; }
 #reloadArrow svg { display: block; }
+/* AIM as a transparent sight: a light ring + a red dot, no label.
+   The active state (aiming) brightens the ring. */
 #aimBtn { position: absolute; right: 124px; bottom: 140px; width: 64px; height: 64px; border-radius: 50%;
-  background: rgba(80,140,255,0.4); border: 2px solid rgba(255,255,255,0.5);
-  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px;
+  background: transparent; border: 2px solid rgba(255,255,255,0.75);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0;
   touch-action: none; }
-#aimBtn.active { background: rgba(80,140,255,0.85); }
+#aimBtn::after { content: ''; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px;
+  margin: -4px 0 0 -4px; border-radius: 50%; background: #ff2222; box-shadow: 0 0 4px rgba(0,0,0,0.8); }
+#aimBtn.active { background: rgba(255,255,255,0.12); border-color: #fff; }
 #crouchBtn { position: absolute; right: 204px; bottom: 140px; width: 64px; height: 64px; border-radius: 50%;
-  background: rgba(80,200,120,0.4); border: 2px solid rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
+  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 11px;
   touch-action: none; }
-#crouchBtn.active { background: rgba(80,200,120,0.85); }
+#crouchBtn.active { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.9); }
 #rotateHint { display: none; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,0.7); padding: 6px 12px; border-radius: 6px; font-size: 13px; white-space: nowrap; }
 @media (orientation: portrait) {
