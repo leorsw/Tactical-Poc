@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import {
   HOUSES,
   GROUND_WINDOWS,
+  climbFadeAt,
   visualBoxes,
   stairRamps,
   floorHeightAt,
@@ -58,8 +59,7 @@ const roundInfo = $('roundInfo');
 const healthFill = $('healthFill');
 const healthText = $('healthText');
 const ammoText = $('ammoText');
-const reloadBar = $('reloadBar');
-const reloadFill = $('reloadFill');
+const reloadArrowFill = $('reloadArrowFill'); // SVG rect inside the reload arrow
 const reloadText = $('reloadText');
 const killfeedEl = $('killfeed');
 const hitmarkerEl = $('hitmarker');
@@ -137,6 +137,7 @@ let game = {
   captureProgress: 0, // 0..1 while an attacker holds the objective zone
 };
 let currentObjective = null; // {x, z, r} — the defenders' spawn centre this round
+let currentAttackersSpawn = null; // {x, z} — the attackers' spawn centre this round
 let lastRoundSeen = 0;
 let myAlive = true;
 let myHealth = 100;
@@ -145,6 +146,15 @@ let myMags = 5;
 let reloading = false;
 let reloadEndsAt = 0;
 let currentWindow = null; // ground-floor window in climb range, if any
+// Window climb: 1.5 s to cross from one side of the wall to the other.
+// The position interpolates from climbFrom to climbTo (0.75 m past the
+// wall plane); viewers see the figure fade into the wall and out the
+// other side (climbFadeAt in map.js). No screen fade.
+let climbing = false;
+let climbStartAt = 0;
+let climbFrom = null; // {x, z} where the climb started
+let climbTo = null;   // {x, z} 0.75 m past the wall plane
+const CLIMB_MS = 1500;
 let lastFireAt = 0;
 let lastMoveSent = 0;
 // YOU'RE DOWN: on elimination the player sees a 3-second overlay before
@@ -269,7 +279,7 @@ function initThree() {
     joyKnob: $('joyKnob'),
     lookZone: $('lookZone'),
     fireBtn: $('fireBtn'),
-    reloadBtn: $('reloadBtn'),
+    reloadArrow: $('reloadArrow'),
     aimBtn: $('aimBtn'),
     crouchBtn: $('crouchBtn'),
   });
@@ -507,44 +517,64 @@ function makeNameSprite(name, colorCss) {
 // (~0.2 s), so transitions are smooth, and the walk swing adds on top of
 // the hip/knee angles.
 //
-// Sign conventions (rotation.x; forward = -Z):
+// Sign conventions (rotation.x; forward = -Z). Verified against three.js
+// (2026-11-23): the spine/head/rifle signs were documented backwards
+// before — the comments below are the true behaviour.
 //   hip +x swings the leg forward; knee -x bends the shin back (a natural
 //   knee bend); elbow +x bends the forearm forward (a natural elbow bend);
-//   spine +x leans the upper body forward.
+//   spine -x leans the upper body FORWARD (top toward -Z); +x leans it back.
+//   headX -x pitches the head forward/down (toward the stock); +x tilts it
+//   back (chin up). rifleRX +x raises the muzzle; -x lowers it.
+// The shoulder also has a twist (shY, rotation.y): it orients the elbow
+// hinge so the forearm can swing inward to the grip — without it the
+// trigger hand can't reach the pistol grip with a natural tucked elbow
+// (best 3-DOF miss was 10.7 cm with the elbow crossed to the centreline).
+// Arm angles for the rifle-up poses were IK-solved (ik-solve.mjs) so both
+// hands land exactly on the grips at the raised rifle height; the old
+// hand-tuned angles missed the grips by 44-50 cm (hands floating beside
+// the rifle) — a big part of why the hold looked unrealistic.
 const POSES = {
-  // Rifle low across the chest, muzzle down, slight bend in the knees.
+  // Rifle low across the chest, muzzle raised, slight bend in the knees.
   ready: {
     bodyDrop: 0, spine: 0.06, headX: 0,
     hipL: 0.05, hipR: -0.05, kneeL: -0.08, kneeR: -0.08, hipLz: 0, hipRz: 0,
-    shLx: 0.45, shLz: -0.2, elLx: 1.0,
-    shRx: 0.35, shRz: 0.15, elRx: 1.1,
+    shLx: 0.45, shLy: 0, shLz: -0.2, elLx: 1.0,
+    shRx: 0.35, shRy: 0, shRz: 0.15, elRx: 1.1,
     rifleY: 0.47, rifleZ: -0.3, rifleRX: 0.3,
   },
-  // Rifle shouldered, elbows tucked, lean in, left foot forward.
+  // Rifle shouldered at eye level, cheek on the stock, head pitched
+  // forward onto the stock, deep forward lean, deep athletic crouch
+  // (front foot forward, back foot on its toe), narrow stance. The
+  // barrel stays level: rifleRX cancels the spine lean (world pitch =
+  // spine + rifleRX). The rifle sits high — its top edge tucks under
+  // the head, as in Lior's approved illustration — so the stock is
+  // partly hidden behind the head from the side.
   aim: {
-    bodyDrop: -0.01, spine: 0.16, headX: 0.12,
-    hipL: 0.3, hipR: -0.15, kneeL: -0.15, kneeR: -0.1, hipLz: 0, hipRz: 0,
-    shLx: 0.9, shLz: -0.15, elLx: 0.6,
-    shRx: 0.8, shRz: 0.1, elRx: 0.7,
-    rifleY: 0.56, rifleZ: -0.3, rifleRX: 0.0,
+    bodyDrop: -0.07, spine: -0.3, headX: -0.12,
+    hipL: 0.65, hipR: -0.25, kneeL: -0.95, kneeR: -0.45, hipLz: 0, hipRz: 0,
+    shLx: 1.57, shLy: 0.11, shLz: 0.69, elLx: 0.34,
+    shRx: 0.99, shRy: 0.36, shRz: -0.81, elRx: 2.01,
+    rifleY: 0.78, rifleZ: -0.3, rifleRX: 0.3,
   },
   // Deep one-knee kneel (left foot forward, right knee down), rifle up —
   // the front thigh goes just past horizontal so the body drops low.
+  // Same hold as aim: rifle at eye level, hands on the grips.
   kneel: {
-    bodyDrop: -0.33, spine: 0.12, headX: 0.1,
+    bodyDrop: -0.33, spine: -0.12, headX: -0.06,
     hipL: 1.65, hipR: -0.5, kneeL: -1.65, kneeR: -1.07, hipLz: 0, hipRz: 0,
-    shLx: 0.9, shLz: -0.15, elLx: 0.6,
-    shRx: 0.8, shRz: 0.1, elRx: 0.7,
-    rifleY: 0.56, rifleZ: -0.3, rifleRX: 0.0,
+    shLx: 1.57, shLy: 0.11, shLz: 0.69, elLx: 0.34,
+    shRx: 0.99, shRy: 0.36, shRz: -0.81, elRx: 2.01,
+    rifleY: 0.78, rifleZ: -0.3, rifleRX: 0.12,
   },
   // Crouch-walk: knees bent, feet slightly apart (a small straddle),
   // rifle up. Upright enough to read as walking, not a squat.
+  // Same hold as aim: rifle at eye level, hands on the grips.
   crouchWalk: {
-    bodyDrop: -0.07, spine: 0.15, headX: 0.05,
+    bodyDrop: -0.07, spine: -0.14, headX: -0.06,
     hipL: 0.55, hipR: 0.55, kneeL: -0.95, kneeR: -0.95, hipLz: -0.15, hipRz: 0.15,
-    shLx: 0.9, shLz: -0.15, elLx: 0.6,
-    shRx: 0.8, shRz: 0.1, elRx: 0.7,
-    rifleY: 0.56, rifleZ: -0.3, rifleRX: 0.0,
+    shLx: 1.57, shLy: 0.11, shLz: 0.69, elLx: 0.34,
+    shRx: 0.99, shRy: 0.36, shRz: -0.81, elRx: 2.01,
+    rifleY: 0.78, rifleZ: -0.3, rifleRX: 0.14,
   },
 };
 const POSE_KEYS = Object.keys(POSES.ready);
@@ -589,7 +619,7 @@ function getPlayerMesh(id) {
     knee.add(shin, boot);
     hip.add(knee);
     hips.add(hip);
-    return { hip, knee };
+    return { hip, knee, boot };
   };
   const legL = mkLeg(-0.11);
   const legR = mkLeg(0.11);
@@ -656,9 +686,11 @@ function getPlayerMesh(id) {
     return mesh;
   };
   rAdd(0.07, 0.1, 0.45, 0, 0, 0, gunmetal); // receiver
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.3, 8), gunmetal);
+  // Barrel (0.225, half of the 0.45 tried before — Lior found the long
+  // barrel too prominent): total rifle length ~0.83 with stock+receiver.
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.225, 8), gunmetal);
   barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 0.01, -0.36);
+  barrel.position.set(0, 0.01, -0.3225);
   rifleMesh.add(barrel);
   rAdd(0.05, 0.16, 0.08, 0, -0.11, -0.02, darker); // magazine
   rAdd(0.06, 0.09, 0.16, 0, 0, 0.28, darker); // stock
@@ -677,7 +709,7 @@ function getPlayerMesh(id) {
   const pf2 = pf1.clone();
   pf2.rotation.z = Math.PI / 2;
   pFlash.add(pf1, pf2);
-  pFlash.position.set(0, 0.01, -0.55);
+  pFlash.position.set(0, 0.01, -0.47);
   pFlash.visible = false;
   rifleMesh.add(pFlash);
 
@@ -686,6 +718,9 @@ function getPlayerMesh(id) {
   upper.add(tag);
 
   group.userData.bodyMat = body;
+  group.userData.darkerMat = darker;
+  group.userData.gunmetalMat = gunmetal;
+  group.userData.fadeOpacity = 1;
   group.userData.tag = tag;
   group.userData.tagName = m.name || '?';
   group.userData.tagRole = m.role;
@@ -697,6 +732,8 @@ function getPlayerMesh(id) {
   group.userData.legR = legR.hip;
   group.userData.kneeL = legL.knee;
   group.userData.kneeR = legR.knee;
+  group.userData.bootL = legL.boot;
+  group.userData.bootR = legR.boot;
   group.userData.armL = armL;
   group.userData.armR = armR;
   group.userData.neck = neck;
@@ -708,6 +745,26 @@ function getPlayerMesh(id) {
   playerMeshes.set(id, group);
   shootTargets.push(torso, head);
   return group;
+}
+
+// Set a soldier mesh's opacity (window-climb fade). The materials go
+// transparent only while fading — at opacity 1 they are opaque again,
+// so normal rendering (sorting, depth) is untouched. The name tag fades
+// with the body. Skips redundant writes: at rest every mesh sits at 1.
+function setMeshFade(g, opacity) {
+  const u = g.userData;
+  if (u.fadeOpacity === opacity) return;
+  u.fadeOpacity = opacity;
+  const transparent = opacity < 1;
+  for (const mat of [u.bodyMat, u.darkerMat, u.gunmetalMat]) {
+    mat.transparent = transparent;
+    mat.depthWrite = !transparent;
+    mat.opacity = opacity;
+  }
+  if (u.tag) {
+    u.tag.material.transparent = true;
+    u.tag.material.opacity = opacity;
+  }
 }
 
 // Lerp one mesh's joints toward its target pose, then add the walk swing on
@@ -730,10 +787,19 @@ function applyPose(g, target, dt, walkPhase, walkAmp) {
   // foot plants — the forward step reads as a step, not a stiff swing.
   u.kneeL.rotation.x = cur.kneeL - Math.max(0, Math.sin(walkPhase)) * 0.5 * norm;
   u.kneeR.rotation.x = cur.kneeR - Math.max(0, -Math.sin(walkPhase)) * 0.5 * norm;
+  // Boots stay flat on the ground: counter-rotate each boot by its leg's
+  // static pose angles, so a bent knee doesn't tilt the foot (in the aim
+  // pose the back boot used to stab toe-first into the floor at 40°).
+  // Only the pose angles are cancelled — the walk swing still rocks the
+  // boot with the step, as a real foot does.
+  u.bootL.rotation.x = -(cur.hipL + cur.kneeL);
+  u.bootR.rotation.x = -(cur.hipR + cur.kneeR);
   u.armL.shoulder.rotation.x = cur.shLx;
+  u.armL.shoulder.rotation.y = cur.shLy;
   u.armL.shoulder.rotation.z = cur.shLz;
   u.armL.elbow.rotation.x = cur.elLx;
   u.armR.shoulder.rotation.x = cur.shRx;
+  u.armR.shoulder.rotation.y = cur.shRy;
   u.armR.shoulder.rotation.z = cur.shRz;
   u.armR.elbow.rotation.x = cur.elRx;
   u.rifle.position.y = cur.rifleY;
@@ -913,16 +979,22 @@ function updateHUD() {
     ammoText.style.color = myInMag === 0 ? '#ffb340' : '';
   }
 
-  // Reload progress.
+  // Reload progress: the arrow fills right-to-left over the 3.5 s reload.
+  // The arrow spans x 6..204 in its SVG viewBox; the fill rect is anchored
+  // at the right edge and grows left as the reload progresses. On desktop
+  // the arrow is hidden (touch UI) and only RELOADING… shows.
   if (reloading) {
     reloadText.classList.remove('hidden');
     const total = 3500;
     const left = Math.max(0, reloadEndsAt - performance.now());
-    reloadFill.style.width = `${(1 - left / total) * 100}%`;
+    const p = 1 - left / total; // 0..1
+    reloadArrowFill.setAttribute('x', String(204 - p * 198));
+    reloadArrowFill.setAttribute('width', String(p * 198));
     if (left <= 0) reloading = false;
   } else {
     reloadText.classList.add('hidden');
-    reloadFill.style.width = '0%';
+    reloadArrowFill.setAttribute('x', '204');
+    reloadArrowFill.setAttribute('width', '0');
   }
 
   // Lock hint (desktop, alive, in game, not locked).
@@ -991,13 +1063,14 @@ function showBanner(text, ms = 4000) {
 }
 
 // ---------------------------------------------------------------------------
-// On-demand map: street, houses and the objective only. No player markers
-// of any kind, by design — the map shows terrain, not live positions.
-// The objective is the defenders' spawn X (red), shown on the map only —
-// never as a ground mark in the 3D world. It is labelled by the viewer's
-// role: attackers see "לכבוש" (capture), defenders "להגן" (defend), solo
-// players see the X without a label. The map is drawn when opened, and
-// redrawn on round start (the objective moves with each round's draw).
+// On-demand map: street, houses, house numbers and the two spawn marks.
+// No player markers of any kind, by design — the map shows terrain, not
+// live positions. The objective is the defenders' spawn X (red), shown on
+// the map only — never as a ground mark in the 3D world. It is labelled
+// by the viewer's role: attackers see "לכבוש" (capture), defenders "להגן"
+// (defend), solo players see the X without a label. The attackers' spawn
+// is a blue X (no label). The map is drawn when opened, and redrawn on
+// round start (both marks move with each round's draw).
 // ---------------------------------------------------------------------------
 
 function drawMap() {
@@ -1016,8 +1089,22 @@ function drawMap() {
   for (const h of HOUSES) {
     mapCtx.fillRect(mx(h.x0), mz(h.z0), mx(h.x1) - mx(h.x0), mz(h.z1) - mz(h.z0));
   }
-  // Objective: the defenders' spawn X only (red). The attackers' spawn
-  // is not marked anywhere.
+  // House numbers, centred in each house (odd east / even west, 1..10).
+  mapCtx.save();
+  mapCtx.font = `bold ${Math.round(W / 24)}px system-ui, sans-serif`;
+  mapCtx.textAlign = 'center';
+  mapCtx.textBaseline = 'middle';
+  mapCtx.lineWidth = 4;
+  mapCtx.strokeStyle = '#101216';
+  mapCtx.fillStyle = '#ffffff';
+  for (const h of HOUSES) {
+    const label = String(h.number);
+    mapCtx.strokeText(label, mx(h.cx), mz(h.cz));
+    mapCtx.fillText(label, mx(h.cx), mz(h.cz));
+  }
+  mapCtx.restore();
+  // Spawn marks: the objective (defenders' spawn, red X) and the
+  // attackers' spawn (blue X). Neither is marked in the 3D world.
   const drawX = (wx, wz, color) => {
     const x = mx(wx);
     const y = mz(wz);
@@ -1045,6 +1132,9 @@ function drawMap() {
       mapCtx.fillStyle = '#ffffff';
       mapCtx.fillText(label, lx, ly);
     }
+  }
+  if (currentAttackersSpawn) {
+    drawX(currentAttackersSpawn.x, currentAttackersSpawn.z, TEAM_CSS.attackers);
   }
   // North (attackers' end) marker.
   mapCtx.fillStyle = '#cfd4da';
@@ -1128,15 +1218,21 @@ function nearbyWindow() {
 }
 
 function tryClimb() {
+  if (climbing) return;
   const w = currentWindow;
   if (!w) return;
-  // Vault to 0.75 m past the wall plane, same spot along the wall.
-  if (w.axis === 'x') local.x = w.plane + (local.x < w.plane ? 0.75 : -0.75);
-  else local.z = w.plane + (local.z < w.plane ? 0.75 : -0.75);
-  const fixed = resolveCollision(local.x, local.z, local.y);
-  local.x = fixed.x;
-  local.z = fixed.z;
-  // The next move message (<=66 ms away) tells the server the new position.
+  // End point: 0.75 m past the wall plane, same spot along the wall,
+  // collision-resolved so the landing is never inside solid geometry.
+  // The loop interpolates from the current position to it over 1.5 s.
+  let tx = local.x;
+  let tz = local.z;
+  if (w.axis === 'x') tx = w.plane + (local.x < w.plane ? 0.75 : -0.75);
+  else tz = w.plane + (local.z < w.plane ? 0.75 : -0.75);
+  const fixed = resolveCollision(tx, tz, local.y);
+  climbing = true;
+  climbStartAt = performance.now();
+  climbFrom = { x: local.x, z: local.z };
+  climbTo = { x: fixed.x, z: fixed.z };
 }
 
 // Shooting / reload
@@ -1144,6 +1240,7 @@ function tryClimb() {
 
 function tryFire(now) {
   if (!myAlive || (game.phase !== 'playing' && !solo)) return;
+  if (climbing) return; // frozen mid-climb
   if (mapOpen || reloading || myInMag <= 0) return;
   if (now - lastFireAt < FIRE_INTERVAL) return;
   lastFireAt = now;
@@ -1184,6 +1281,7 @@ function tryFire(now) {
 
 function tryReload() {
   if (!myAlive || (game.phase !== 'playing' && !solo)) return;
+  if (climbing) return; // frozen mid-climb
   if (reloading || myMags <= 0 || myInMag >= 29) return;
   socket.send({ t: 'reload' });
 }
@@ -1329,6 +1427,7 @@ socket.on('state', (msg) => {
   game.score = msg.score;
   game.attackersTeam = msg.attackersTeam;
   if (msg.objective) currentObjective = msg.objective;
+  if (msg.attackersSpawn) currentAttackersSpawn = msg.attackersSpawn;
   updateRoleLabels(msg.attackersTeam);
   meta = new Map(msg.players.map((p) => [p.id, p]));
   const me = meta.get(myId);
@@ -1566,6 +1665,7 @@ function escapeHtml(s) {
 socket.on('roundStart', (msg) => {
   if (solo) return;
   if (msg.objective) currentObjective = msg.objective;
+  if (msg.attackersSpawn) currentAttackersSpawn = msg.attackersSpawn;
   continueBtn.classList.add('hidden');
   // A new round clears any pending down state (e.g. someone pressed
   // CONTINUE during another player's 3-second YOU'RE DOWN).
@@ -1725,6 +1825,11 @@ function loop() {
     while (dyaw > Math.PI) dyaw -= Math.PI * 2;
     while (dyaw < -Math.PI) dyaw += Math.PI * 2;
     g.rotation.y += dyaw * k;
+    // Window-climb fade: a figure passing through a window merges with
+    // the wall (fades out at the plane, back in on the other side).
+    // Purely positional, from the interpolated position — see
+    // climbFadeAt in map.js.
+    setMeshFade(g, climbFadeAt(g.position.x, g.position.z));
     // Pose + walk animation: pick the pose from the snapshot flags, lerp
     // the joints toward it, and swing the legs from the distance actually
     // travelled (interpolated, so teleports and snapshot jitter don't
@@ -1753,7 +1858,7 @@ function loop() {
   // Window climb button: visible only while alive in-game near a
   // ground-floor window.
   currentWindow = ((game.phase === 'playing' || solo) && myAlive) ? nearbyWindow() : null;
-  climbBtn.classList.toggle('hidden', !currentWindow);
+  climbBtn.classList.toggle('hidden', !currentWindow || climbing);
 
   // YOU'RE DOWN expiry: after 3 seconds, switch to spectate (round still
   // going) or show the held round/match-end UI (round ended during the 3s).
@@ -1778,37 +1883,48 @@ function loop() {
   if ((game.phase === 'playing' || solo) && myAlive) {
     // Crouch blends the eye height down smoothly (no snap on toggle).
     crouchBlend += ((controls.crouch ? 1 : 0) - crouchBlend) * (1 - Math.exp(-dt * 10));
-    // Look.
+    // Look still works mid-climb (the camera crosses the wall with the
+    // player); movement, fire and reload are frozen (see below, tryFire,
+    // tryReload). The look deltas are consumed either way.
     const look = controls.takeLook();
     local.yaw -= look.dx * 0.0023;
     local.pitch -= look.dy * 0.0023;
     local.pitch = Math.max(-1.45, Math.min(1.45, local.pitch));
 
-    // Move.
-    const move = controls.getMove();
-    const sin = Math.sin(local.yaw);
-    const cos = Math.cos(local.yaw);
-    const fx = -sin;
-    const fz = -cos;
-    const rx = cos;
-    const rz = -sin;
-    let vx = fx * move.z + rx * move.x;
-    let vz = fz * move.z + rz * move.x;
-    const len = Math.hypot(vx, vz);
-    if (len > 0) {
-      // Aiming down the sights slows movement; crouching slows it more.
-      const speed = SPEED * (1 - aimBlend * 0.35) * (controls.crouch ? 0.45 : 1) * Math.min(1, len);
-      vx = (vx / len) * speed;
-      vz = (vz / len) * speed;
+    // Move — or, mid-climb, the scripted crossing: 1.5 s from climbFrom
+    // to climbTo with no collision (the path crosses the wall by design).
+    if (climbing) {
+      const t = Math.min((now - climbStartAt) / CLIMB_MS, 1);
+      const s = t * t * (3 - 2 * t); // smoothstep: slow ends, fastest mid-wall
+      local.x = climbFrom.x + (climbTo.x - climbFrom.x) * s;
+      local.z = climbFrom.z + (climbTo.z - climbFrom.z) * s;
+      if (t >= 1) climbing = false;
+    } else {
+      const move = controls.getMove();
+      const sin = Math.sin(local.yaw);
+      const cos = Math.cos(local.yaw);
+      const fx = -sin;
+      const fz = -cos;
+      const rx = cos;
+      const rz = -sin;
+      let vx = fx * move.z + rx * move.x;
+      let vz = fz * move.z + rz * move.x;
+      const len = Math.hypot(vx, vz);
+      if (len > 0) {
+        // Aiming down the sights slows movement; crouching slows it more.
+        const speed = SPEED * (1 - aimBlend * 0.35) * (controls.crouch ? 0.45 : 1) * Math.min(1, len);
+        vx = (vx / len) * speed;
+        vz = (vz / len) * speed;
+      }
+      let nx = local.x + vx * dt;
+      let nz = local.z + vz * dt;
+      const resolved = resolveCollision(nx, nz, local.y);
+      nx = resolved.x;
+      nz = resolved.z;
+      local.x = nx;
+      local.z = nz;
+      local.y = floorHeightAt(nx, nz, local.y);
     }
-    let nx = local.x + vx * dt;
-    let nz = local.z + vz * dt;
-    const resolved = resolveCollision(nx, nz, local.y);
-    nx = resolved.x;
-    nz = resolved.z;
-    local.x = nx;
-    local.z = nz;
-    local.y = floorHeightAt(nx, nz, local.y);
 
     camera.position.set(local.x, local.y + EYE_HEIGHT - crouchBlend * 0.35, local.z);
     camera.rotation.set(local.pitch, local.yaw, 0);
@@ -1847,6 +1963,11 @@ function loop() {
     camera.lookAt(0, 0, 10);
   }
 
+  // A mid-climb death or round end cancels the climb (the position stays
+  // where it is — the next round's spawn resets it). Runs outside the
+  // movement block so a mid-climb death still clears the flag.
+  if (climbing && !(myAlive && (game.phase === 'playing' || solo))) climbing = false;
+
   updateHUD();
   updateViewmodel(dt, now);
 
@@ -1857,6 +1978,8 @@ function loop() {
 // Boot
 // ---------------------------------------------------------------------------
 window.__tacticalBooted = true;
+window.__tacticalLocal = local; // debug/test hook: the local player's position
+window.__tacticalMeshes = playerMeshes; // debug/test hook: remote player meshes by id
 document.getElementById('boot')?.remove(); // inline splash done its job
 socket.connect();
 // If the server never answers, say so instead of hanging silently.
