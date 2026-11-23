@@ -600,6 +600,21 @@ function handleSolo(ws, msg) {
   const name = String(msg.name || '').trim().slice(0, 16) || `Player${ws._pid}`;
   const sessionId = String(msg.session || '').slice(0, 64) || null;
   takeOverDuplicates(name, null, sessionId, true);
+  // Same-name solo players are the same person in two tabs: solo has no
+  // teams, so two humans never need the same callsign there (the phantom
+  // figure in solo was exactly this — an idle second tab). Kick-takeover
+  // any remaining (active) same-name solo record: the kicked tab gets the
+  // notice and does NOT rejoin (its saved join is cleared), so the tabs
+  // can't ping-pong the record back and forth. Team players keep the
+  // existing protection (an active same-name player is never taken over).
+  for (const p of [...players.values()]) {
+    if (p.solo && p.name === name) {
+      send(p.ws, { t: 'kicked', reason: 'You joined solo in another tab.' });
+      removePlayer(p);
+      // Graceful close after a beat, like clear-room, so the message flushes.
+      setTimeout(() => { try { p.ws.close(); } catch { /* already closed */ } }, 150);
+    }
+  }
   const spawn = SPAWNS.attackers[0];
   const p = {
     id: ws._pid,
@@ -891,15 +906,41 @@ const server = http.createServer((req, res) => {
         return;
       }
     }
-    fs.readFile(filePath, (err, data) => {
-      if (err) {
+    // Cache policy (23/11/2026 — the launch white screen): iOS discards
+    // background tabs, so every return to the game re-downloaded ~750 KB.
+    // Three.js only changes on a dependency upgrade and its URL carries
+    // ?v=<version>, so it can be cached immutably for a year. App files
+    // change on every deploy: revalidate with Last-Modified (cheap 304).
+    const isThree = pathname.startsWith('/three/');
+    fs.stat(filePath, (statErr, stat) => {
+      if (statErr) {
         res.writeHead(404);
         res.end('Not found');
         return;
       }
       const ext = path.extname(filePath);
-      res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-      res.end(data);
+      const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+      if (isThree) {
+        headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+      } else {
+        headers['Cache-Control'] = 'no-cache';
+        headers['Last-Modified'] = stat.mtime.toUTCString();
+        const since = req.headers['if-modified-since'];
+        if (since && Date.parse(since) >= Math.floor(stat.mtime.getTime() / 1000) * 1000) {
+          res.writeHead(304);
+          res.end();
+          return;
+        }
+      }
+      fs.readFile(filePath, (err, data) => {
+        if (err) {
+          res.writeHead(404);
+          res.end('Not found');
+          return;
+        }
+        res.writeHead(200, headers);
+        res.end(data);
+      });
     });
   } catch {
     res.writeHead(400);
