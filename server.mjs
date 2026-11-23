@@ -175,6 +175,7 @@ function publicState() {
     attackersTeam,
     roundEndsAt,
     objective: { ...layout.objective },
+    attackersSpawn: { ...layout.attackersSpawn },
     roundWinner,
     roundReason,
     matchWinner,
@@ -308,7 +309,7 @@ function startRound(n) {
   }
   roundEndsAt = Date.now() + ROUND_MS;
   broadcastState();
-  broadcast({ t: 'roundStart', round, objective: { ...layout.objective } });
+  broadcast({ t: 'roundStart', round, objective: { ...layout.objective }, attackersSpawn: { ...layout.attackersSpawn } });
 }
 
 function startMatch() {
