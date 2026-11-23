@@ -22,15 +22,19 @@ export const BOUNDS = { x0: -18, x1: 18, z0: -62, z1: 62 };
 // Houses: 5 per side of the street, centred at x = +/-11,
 // z = -32 / -16 / 0 / +16 / +32. Each house is 10 m wide (x) by 12 m deep
 // (z), 6 m tall (two 3 m floors), so adjacent houses leave a 4 m alley
-// between them.
+// between them. House numbers (map only): facing north (up the map),
+// odd on the right (east, x = +11), even on the left (west, x = -11),
+// increasing south to north — east 1, 3, 5, 7, 9; west 2, 4, 6, 8, 10.
 export const HOUSES = [];
 for (const side of [-1, 1]) {
   for (const cz of [-32, -16, 0, 16, 32]) {
     const cx = side * 11;
+    const idx = (32 - cz) / 16; // 0 (southernmost) .. 4 (northernmost)
     HOUSES.push({
       cx,
       cz,
       side, // -1 = west (x negative), +1 = east
+      number: 2 * idx + (side > 0 ? 1 : 2),
       // Outer footprint.
       x0: cx - 5,
       x1: cx + 5,
@@ -76,6 +80,8 @@ export function spawnLayout(atkSide, defSide) {
     attackers: mk('attackers', atkSide),
     defenders: mk('defenders', defSide),
     objective: { x: defSide * SPAWN_X, z: SPAWN_Z.defenders, r: OBJECTIVE_R },
+    // Attackers' spawn centre (shown on the map as a blue X).
+    attackersSpawn: { x: atkSide * SPAWN_X, z: SPAWN_Z.attackers },
   };
 }
 
@@ -100,6 +106,27 @@ for (const h of HOUSES) {
       GROUND_WINDOWS.push({ axis: 'z', plane: wz, center: wx, half: 0.8 });
     }
   }
+}
+
+// Window-climb fade (client only): how visible a figure at (x, z) is to
+// other players — 1 = fully visible, 0 = fully merged into the wall.
+// Within 0.75 m of a window's wall plane, inside the window opening along
+// the wall, visibility ramps linearly with the distance from the plane
+// (0 at the plane, 1 at 0.75 m out). A walking player can never get that
+// close — collision stops them ~0.75 m from the plane — so this only
+// fires while climbing through, and only the crossing figure fades.
+// Purely positional: no protocol change, no server involvement.
+export const CLIMB_FADE_DIST = 0.75;
+export function climbFadeAt(x, z) {
+  let fade = 1;
+  for (const w of GROUND_WINDOWS) {
+    let d;
+    let along;
+    if (w.axis === 'x') { d = Math.abs(x - w.plane); along = Math.abs(z - w.center); }
+    else { d = Math.abs(z - w.plane); along = Math.abs(x - w.center); }
+    if (along <= w.half && d < CLIMB_FADE_DIST) fade = Math.min(fade, d / CLIMB_FADE_DIST);
+  }
+  return fade;
 }
 
 // ---------------------------------------------------------------------------
