@@ -48,6 +48,17 @@ Then open <http://localhost:8020> in a desktop browser.
   reload the page.
 - **Phones cannot reach the page** — the phone must be on the same WiFi as
   the laptop, and the laptop firewall must allow port 8020 on the LAN.
+- **Rifle below the screen on mobile (only the sight peeks out when
+  aiming)** — the canvas got stuck at a transitional size (iOS Safari can
+  report ~2x the landscape height during a rotation, and no second resize
+  corrects it), so the game renders zoomed with its centre below the
+  screen edge. The renderer now re-syncs to the live container size from
+  several signals (resize, orientationchange, visualViewport, a
+  ResizeObserver, tab-visibility, plus a twice-a-second check in the
+  render loop), so a stuck canvas heals itself. Workaround on an older
+  build: rotate the phone to portrait and back, or reload in landscape.
+  `?debug=1` shows a small readout of the container / canvas / viewport
+  sizes and the camera aspect, for diagnosing this on a real phone.
 
 ## Controls
 
@@ -92,6 +103,11 @@ bursts — so you can see a muzzle flash from the outside and hear another
 player's shots. Its shots never hit or damage you, you cannot shoot it,
 and it never appears in the lobby list or the counts; it vanishes when
 the last solo player leaves or a match starts.
+
+Solo players with the same callsign are the same person in two tabs, so
+a second solo join with the same name takes over the first tab (it gets a
+"You joined solo in another tab" notice and does not rejoin). Different
+callsigns coexist as separate solo players.
 
 ## Player animation
 
@@ -264,7 +280,9 @@ npm test
   capture; a full 1v1 match ends with a verified stats board), a
   ghost/session-takeover scenario, a stance-flags relay scenario, and a
   solo-NPC scenario (the dummy appears, fires bursts in range, holds
-  fire out of range, and vanishes when the last solo player leaves).
+  fire out of range, and vanishes when the last solo player leaves), plus
+  a solo same-name takeover scenario (a second same-name solo join kicks
+  the first tab; different names coexist).
 
 ## Known limits / what is NOT in v1
 
