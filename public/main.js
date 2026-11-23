@@ -337,7 +337,7 @@ function initThree() {
   }
   window.addEventListener('blur', () => {
     controls.keys.clear();
-    controls.firing = false;
+    controls.fireQueued = false;
   });
 
   requestAnimationFrame(loop);
@@ -938,13 +938,17 @@ function roleLabel(team) {
 }
 
 function updateHUD() {
-  // Score + timer + alive counts.
+  // Score + timer + alive counts. The top bar shows the timer only
+  // (score/alive/round lines are hidden in CSS); in solo there is no
+  // match clock, so the timer hides too and the top stays empty.
   if (solo) {
     scoreBox.textContent = 'SOLO MODE';
     timerEl.textContent = '—';
+    timerEl.classList.add('hidden');
     aliveBox.textContent = '—';
     roundInfo.textContent = 'Explore the map — move, shoot, reload';
   } else {
+    timerEl.classList.remove('hidden');
     scoreBox.textContent = `${roleLabel('A')} ${game.score.A} — ${game.score.B} ${roleLabel('B')}`;
     if (game.phase === 'playing') {
       timerEl.textContent = fmtTime(game.timeLeftMs);
@@ -967,7 +971,9 @@ function updateHUD() {
       : '';
   }
 
-  // Health + ammo (mine).
+  // Health + ammo (mine). The ammo reads as a sentence — spare magazines
+  // only, no round counter (deliberate): "5 spare mags". Orange while the
+  // loaded magazine is empty (reload!), red when nothing is left at all.
   healthFill.style.width = `${myHealth}%`;
   healthFill.style.background = myHealth > 50 ? '#4caf50' : myHealth > 25 ? '#ffb340' : '#e53333';
   healthText.textContent = myHealth;
@@ -975,7 +981,7 @@ function updateHUD() {
     ammoText.textContent = 'NO AMMO';
     ammoText.style.color = '#e53333';
   } else {
-    ammoText.textContent = `${myInMag} | ${myMags} mags`;
+    ammoText.textContent = `${myMags} spare mag${myMags === 1 ? '' : 's'}`;
     ammoText.style.color = myInMag === 0 ? '#ffb340' : '';
   }
 
@@ -1531,7 +1537,7 @@ socket.on('snapshot', (msg) => {
       // banner (or the stats table) for 3 seconds. Found by the
       // screenshot run (22/11/2026).
       controls.exitLock();
-      controls.firing = false;
+      controls.fireQueued = false;
       if (msg.phase === 'playing') {
         downUntil = performance.now() + 3000;
         downOverlay.classList.remove('hidden');
@@ -1782,6 +1788,10 @@ function loop() {
   if (!threeReady) return;
   const dt = Math.min(clock.getDelta(), 0.05);
   const now = performance.now();
+  // Semi-auto: consume a queued FIRE press every frame, even when the
+  // player is dead or spectating — a press then is discarded, never
+  // fired late on the next round.
+  const firePressed = controls.takeFirePress();
 
   // Backstop: re-sync the renderer size twice a second, so a canvas stuck
   // at a stale size (iOS rotation) heals even if no event fires.
@@ -1929,8 +1939,8 @@ function loop() {
     camera.position.set(local.x, local.y + EYE_HEIGHT - crouchBlend * 0.35, local.z);
     camera.rotation.set(local.pitch, local.yaw, 0);
 
-    // Fire while holding.
-    if (controls.firing) tryFire(now);
+    // Semi-auto: one shot per press, never a held-down stream.
+    if (firePressed) tryFire(now);
 
     // Send movement ~15/sec. The stance flags ride along so other players
     // see the pose (kneel / aim); aiming uses the smoothed ADS blend so a
