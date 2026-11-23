@@ -61,12 +61,6 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   padding: 6px 16px; border-radius: 8px; font-weight: 600; font-size: 16px; white-space: nowrap; }
 #scoreBox, #aliveBox, #roundInfo { display: none; }
 #timer { font-variant-numeric: tabular-nums; font-size: 22px; text-shadow: 0 1px 4px rgba(0,0,0,0.9); }
-#killfeed { position: absolute; top: 10px; right: 10px; text-align: right; font-size: 13px;
-  display: flex; flex-direction: column; gap: 3px; }
-#killfeed div { background: rgba(0,0,0,0.55); padding: 3px 8px; border-radius: 4px; }
-#hitmarker { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  font-size: 30px; color: #ff4444; text-shadow: 0 0 6px #000; z-index: 5; }
-#hitmarker.kill { color: #ffcc00; }
 #bottomLeft { position: absolute; left: 14px; bottom: 14px; display: flex; gap: 10px; align-items: center; z-index: 5; }
 #healthBar { width: 180px; height: 16px; background: #333; border-radius: 4px; overflow: hidden; }
 #healthFill { height: 100%; width: 100%; background: #4caf50; }
@@ -109,7 +103,7 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto;
   background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
   color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
-/* z-index 5 on #fsRow / #bottomLeft / #hitmarker: the touch joystick base
+/* z-index 5 on #fsRow / #bottomLeft: the touch joystick base
    (120px, centred on the touch point) is painted after the HUD in the DOM,
    so without it the joystick graphics cover CLIMB and the health bar while
    moving (23/11/2026). Still below the overlays (20) and the banner (30).
