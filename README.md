@@ -84,9 +84,17 @@ Then open <http://localhost:8020> in a desktop browser.
 | Hold FIRE | Fire |
 | AIM button | Toggle aim down the sights |
 | CROUCH button | Toggle crouch (kneel when still, crouch-walk when moving) |
-| RELOAD button | Reload (3.5 s) |
+| Swipe the RELOAD arrow right-to-left | Reload (3.5 s; a tap does nothing) |
 | MAP button | Show map (terrain only, no player markers) |
 | Tap look area (while eliminated) | Cycle spectate target |
+
+The joystick base appears where your thumb lands and its knob follows the
+drag; the HUD buttons (CLIMB, health bar, hitmarker) always paint above it,
+so the joystick graphics can never hide them. The reload control is a
+transparent left-pointing arrow above FIRE/AIM/CROUCH (210×76 px): swipe
+right-to-left along at least half of it to reload. During the 3.5 s reload
+the arrow fills right-to-left in amber — there is no separate progress
+bar; on desktop only the RELOADING… text shows.
 
 ## Solo mode
 
@@ -118,15 +126,24 @@ anywhere; the boots, vest and rifle stay boxy as equipment. Four
 tactical poses are defined as joint angles, and each mesh lerps toward its
 target pose (~0.2 s) so transitions are smooth:
 
-- **Ready** (default): rifle low across the chest, muzzle down, slight
+- **Ready** (default): rifle low across the chest, muzzle raised, slight
   bend in the knees.
-- **Aim** (aiming down the sights): rifle shouldered and level, elbows
-  tucked, lean in, left foot forward.
+- **Aim** (aiming down the sights): rifle shouldered at eye level, cheek
+  on the stock, head pitched forward onto the stock, deep forward lean
+  and a deep athletic crouch (front foot forward, back foot behind,
+  narrow stance). Both hands grip the rifle — the arm angles are
+  IK-solved (`ik-solve.mjs`) so the trigger hand lands on the pistol
+  grip and the support hand on the foregrip, with the elbows tucked; a
+  shoulder-twist joint orients each elbow hinge so the forearm can swing
+  inward to the grip. The rifle is compact (barrel 0.225 m, total ~0.83 m). Boots stay flat on the ground in
+  every static pose: each boot is counter-rotated by its leg's pose
+  angles, so a bent knee never tilts the foot (only the walk swing
+  still rocks it).
 - **Kneel** (crouched and still): a deep one-knee kneel, left foot forward,
-  right knee on the ground, rifle up.
+  right knee on the ground, same rifle hold as Aim.
 - **Crouch-walk** (crouched and moving): knees bent, feet slightly apart
-  in a small straddle, rifle up — upright enough to read as walking, not
-  a squat.
+  in a small straddle, same rifle hold as Aim — upright enough to read as
+  walking, not a squat.
 
 Crouch and aiming are relayed as two booleans in the move message and
 appear in the 15 Hz snapshot, so every player sees the others' poses.
@@ -194,6 +211,14 @@ don't flail the legs.
      The objective is marked with a red **X on the map only** (M) — never
      as a ground mark in the world, at Lior's request — labelled
      **לכבוש** for attackers and **להגן** for defenders.
+   - **House numbers (map only):** facing north (up the map), odd
+     numbers on the right (east) and even on the left (west), increasing
+     south to north — east 1, 3, 5, 7, 9; west 2, 4, 6, 8, 10. The
+     number is drawn centred in each house on the map overlay; the
+     houses carry no numbers in the 3D world.
+   - **Spawn marks (map only):** the objective is a red X (defenders'
+     spawn, labelled לכבוש / להגן); the attackers' spawn is a blue X
+     with no label. Both move with each round's random side draw.
    - **Defenders** win a round by eliminating all attackers **or** by
      surviving until the timer expires.
    - **Spawn sides are drawn fresh every round:** each team independently
@@ -231,7 +256,7 @@ don't flail the legs.
   while reloading. No pistol, no other weapon. A player out of ammo can
   still move and observe but cannot fire. There is **no auto-reload**: when
   a magazine runs out, nothing happens until you press R (desktop) or the
-  RELOAD button (mobile).
+  RELOAD arrow (mobile; swipe right-to-left along it).
 - Hitscan rifle, hold to fire at ~10 rounds/sec. Spread is wide from the
   hip and tight when aiming down the sights. There is **no crosshair** by
   design: the rifle hangs lowered while moving, and aiming raises it so the
@@ -258,7 +283,14 @@ painted **X** in the team's color (blue = attackers, red = defenders) —
 hidden from the street, north/south of the first building at each end.
 The red X is the attackers' objective. Ground-floor windows can be
 climbed through in either direction: get close and a **CLIMB** button
-appears (or press **E**).
+appears (or press **E**). The climb takes 1.5 s to cross from one side
+of the wall to the other — the position interpolates (smoothstep) to
+0.75 m past the wall plane; movement, fire and reload are frozen
+during the crossing, look still works. There is no screen fade:
+instead, other players see the crossing figure merge with the wall —
+its mesh opacity ramps 1 → 0 at the wall plane → 1 on the other side
+(`climbFadeAt` in map.js, purely positional, so no protocol change).
+Dying or the round ending mid-climb cancels it.
 
 ## Tests
 
