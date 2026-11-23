@@ -151,7 +151,7 @@ async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500' },
+    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500', NPC_DOWN_MS: '600' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -805,6 +805,64 @@ async function main() {
     assert.ok(both.players.some((p) => p.solo && p.name === 'Sam'));
     console.log('ok - different-name solo players coexist');
     for (const c of [y1, y2, y3]) c.close();
+    await sleep(300);
+
+    // Scenario 12 — solo players can shoot the NPC dummy down: same
+    // distance damage as a player; enough hits put it down for
+    // NPC_DOWN_MS (600 ms in this test), then it gets back up at full
+    // health and resumes fire. Solo shots at players still never hit.
+    const shooter = new Client('DummyShooter');
+    await shooter.ready();
+    shooter.send({ t: 'solo', name: 'DummyShooter' });
+    await shooter.waitFor('soloJoined');
+    const bystander = new Client('DummyBystander');
+    await bystander.ready();
+    bystander.send({ t: 'solo', name: 'DummyBystander' });
+    await bystander.waitFor('soloJoined');
+    // Walk to 10 m from the NPC at (0, 40): one hit kills (<= 15 m).
+    shooter.send({ t: 'move', x: 0, y: 0, z: 30, yaw: 0, pitch: 0 });
+    await sleep(300);
+    // A solo shot at another player still never hits.
+    shooter.inbox.length = 0;
+    shooter.send({ t: 'shot', targetId: bystander.id });
+    const noHit = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id, 5000);
+    assert.equal(noHit.hit, false);
+    assert.equal(noHit.targetId, null);
+    console.log('ok - solo shot at a player still never hits');
+    // One close-range hit puts the dummy down.
+    await sleep(150); // FIRE_INTERVAL_MS is 90
+    shooter.inbox.length = 0;
+    shooter.send({ t: 'shot', targetId: -1 });
+    const down = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id && m.targetId === -1, 5000);
+    assert.equal(down.hit, true);
+    assert.equal(down.killed, true);
+    assert.equal(down.damage, 100);
+    assert.equal(down.targetHealth, 0);
+    assert.equal(down.friendlyFire, false);
+    console.log('ok - one close-range solo hit puts the dummy down (100 damage)');
+    const downSnap = await shooter.waitFor('snapshot', (m) =>
+      m.players.some((p) => p.npc === true && p.alive === false && p.health === 0), 5000);
+    assert.equal(downSnap.players.find((p) => p.npc === true).aiming, false);
+    console.log('ok - downed NPC shows alive=false, health=0, not aiming');
+    // While down, further shots do not hit it.
+    await sleep(150);
+    shooter.inbox.length = 0;
+    shooter.send({ t: 'shot', targetId: -1 });
+    const downShot = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id, 5000);
+    assert.equal(downShot.hit, false);
+    console.log('ok - shots at the downed dummy do not hit');
+    // After the down time it gets back up at full health and resumes fire.
+    // (Inbox cleared: an alive=true snapshot from before the down would
+    // match the predicate immediately.)
+    shooter.inbox.length = 0;
+    const upSnap = await shooter.waitFor('snapshot', (m) =>
+      m.players.some((p) => p.npc === true && p.alive === true && p.health === 100), 5000);
+    assert.ok(upSnap);
+    console.log('ok - NPC gets back up at full health after the down time');
+    const resumed = await shooter.waitFor('shot', (m) => m.shooterId === -1, 5000);
+    assert.ok(resumed);
+    console.log('ok - revived NPC resumes fire within range');
+    for (const c of [shooter, bystander]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
