@@ -46,6 +46,11 @@
 //     out of range, fires 3-shot bursts at a solo player within 30 m
 //     (shots never hit, aim pose on), stops when they leave range, and
 //     vanishes when the last solo player leaves.
+//   Scenario 11 (solo same-name takeover): two solo players with the
+//     same callsign are the same person in two tabs — the second join
+//     kick-takeovers the first (the kicked tab gets 'kicked' and its
+//     socket closes, so it can't rejoin and ping-pong). Solo players
+//     with different names coexist untouched.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -765,6 +770,41 @@ async function main() {
     assert.ok(goneSnap);
     console.log('ok - NPC vanishes from snapshots when the last solo player leaves');
     for (const c of [n1, w1]) c.close();
+    await sleep(300);
+
+    // Scenario 11 — solo same-name takeover. Two tabs, same callsign:
+    // the second solo join kick-takeovers the first (an active record —
+    // not a ghost, not the same session), and the kicked tab's socket
+    // closes so it can't rejoin and ping-pong.
+    const y1 = new Client('Sam-tab1');
+    await y1.ready();
+    y1.send({ t: 'solo', name: 'Sam', session: 'solo-tab-1' });
+    await y1.waitFor('soloJoined');
+    const y2 = new Client('Sam-tab2');
+    await y2.ready();
+    y2.send({ t: 'solo', name: 'Sam', session: 'solo-tab-2' });
+    await y2.waitFor('soloJoined');
+    const kick = await y1.waitFor('kicked', (m) => /another tab/.test(m.reason || ''), 5000);
+    assert.ok(kick, 'first tab should be kicked with the another-tab reason');
+    console.log('ok - second same-name solo join kicks the first tab');
+    await waitFor(() => y1.ws.readyState === WebSocket.CLOSED, 5000, 'kicked solo socket closed');
+    console.log('ok - kicked solo socket closes (no rejoin ping-pong)');
+    const oneSam = await y2.waitFor('state', (m) =>
+      m.players.filter((p) => p.solo && p.name === 'Sam').length === 1 &&
+      m.players.some((p) => p.id === y2.id), 5000);
+    assert.equal(oneSam.players.find((p) => p.solo && p.name === 'Sam').id, y2.id);
+    console.log('ok - exactly one Sam remains, the second tab');
+    // A different callsign is untouched: two solo players coexist.
+    const y3 = new Client('Alex');
+    await y3.ready();
+    y3.send({ t: 'solo', name: 'Alex', session: 'solo-tab-3' });
+    await y3.waitFor('soloJoined');
+    const both = await y2.waitFor('state', (m) =>
+      m.players.filter((p) => p.solo).length === 2, 5000);
+    assert.ok(both.players.some((p) => p.solo && p.name === 'Alex'));
+    assert.ok(both.players.some((p) => p.solo && p.name === 'Sam'));
+    console.log('ok - different-name solo players coexist');
+    for (const c of [y1, y2, y3]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
