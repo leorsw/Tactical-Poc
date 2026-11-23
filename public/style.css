@@ -21,7 +21,15 @@ button.activeChoice { outline: 2px solid #2b6cff; }
 input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid #555;
   background: #1a1d22; color: #eee; width: 220px; text-align: center; }
 .hidden { display: none !important; }
-.screen { position: fixed; inset: 0; }
+/* Height from the dynamic viewport (dvh), not the layout viewport: on
+   iOS Safari the layout viewport can stay short after the toolbar hides
+   — this page cannot scroll, so nothing re-expands it — leaving a band
+   of page background at the bottom (161 px on Lior's phone after the
+   v32 reload, 23/11/2026). dvh tracks the visible height, so the
+   section always fills the screen; 100vh is the fallback for old
+   browsers. inset:0 alone cannot do this: it pins to the layout
+   viewport, which is the thing that goes stale. */
+.screen { position: fixed; top: 0; left: 0; right: 0; height: 100vh; height: 100dvh; }
 .hint { color: #9aa3ad; font-size: 13px; line-height: 1.5; }
 .status { color: #9aa3ad; font-size: 14px; margin: 12px 0; }
 
