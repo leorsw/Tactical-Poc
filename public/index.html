@@ -11,8 +11,15 @@
 <title>Tactical POC — Team FPS</title>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
-{ "imports": { "three": "/three/three.module.js" } }
+{ "imports": { "three": "/three/three.module.js?v=0.187.0" } }
 </script>
+<style>
+  /* Boot splash (inline, so it paints before style.css / the JS arrive):
+     on a slow connection the page used to sit blank white for seconds. */
+  html, body { background: #101216; margin: 0; }
+  #boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #e8e8e8; font: 600 18px system-ui, -apple-system, sans-serif; letter-spacing: 0.5px; }
+</style>
 <script>
   // Startup watchdog (plain script, runs even if the game module fails):
   // the game sets window.__tacticalBooted when it starts. If it never
@@ -35,6 +42,7 @@
 </script>
 </head>
 <body>
+<div id="boot">Loading…</div>
 <div id="app">
 
   <!-- ================= Lobby ================= -->
