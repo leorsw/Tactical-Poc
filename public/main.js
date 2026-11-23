@@ -21,6 +21,7 @@ import { Sfx } from './audio.js';
 
 const SPEED = 5; // m/s
 const FIRE_INTERVAL = 100; // ms between shots (~10/sec)
+const NPC_ID = -1; // the solo NPC's snapshot id (server: NPC_ID)
 const MOVE_SEND_MS = 66;
 const TEAM_CSS = { attackers: '#2b6cff', defenders: '#e53333' };
 
@@ -155,6 +156,7 @@ let climbStartAt = 0;
 let climbFrom = null; // {x, z} where the climb started
 let climbTo = null;   // {x, z} 0.75 m past the wall plane
 const CLIMB_MS = 1500;
+const FALL_MS = 600; // a fallen figure takes 0.6 s to hit the ground (and to stand back up)
 let lastFireAt = 0;
 let lastMoveSent = 0;
 // YOU'RE DOWN: on elimination the player sees a 3-second overlay before
@@ -583,6 +585,10 @@ function getPlayerMesh(id) {
   if (playerMeshes.has(id)) return playerMeshes.get(id);
   const m = meta.get(id) || npcMeta.get(id) || {};
   const group = new THREE.Group();
+  // Rotation order YXZ: the fall (rotation.x) pitches in the yawed frame,
+  // so a figure always falls backward relative to where it faces. Live
+  // figures only use rotation.y, so this changes nothing for them.
+  group.rotation.order = 'YXZ';
   // The figure is dark grey-green; the team shows only in the floating name tag.
   const body = new THREE.MeshLambertMaterial({ color: 0x535c54 });
   const darker = new THREE.MeshLambertMaterial({ color: 0x3e443e });
@@ -767,6 +773,31 @@ function setMeshFade(g, opacity) {
   }
 }
 
+// Drop a fallen figure's rifle on the ground beside the body (0.55 m to
+// the figure's right, 0.9 m behind the feet — beside the torso), lying
+// flat with the barrel toward the head, resting on its magazine. The rifle
+// is re-parented to the scene so it stops following the body's rotation;
+// pickUpRifle restores it on revival. No-op if already dropped.
+function dropRifle(g) {
+  const u = g.userData;
+  if (!u.rifle || u.rifle.parent !== u.upper) return;
+  // Yaw only — the fall pitch must not tilt the offset.
+  const sin = Math.sin(g.rotation.y), cos = Math.cos(g.rotation.y);
+  const ox = 0.55 * cos + 0.9 * sin;
+  const oz = -0.55 * sin + 0.9 * cos;
+  scene.add(u.rifle);
+  u.rifle.position.set(g.position.x + ox, 0.2, g.position.z + oz);
+  u.rifle.rotation.set(0, g.rotation.y + Math.PI, 0);
+}
+
+// Return a dropped rifle to the figure's hands. applyPose restores its
+// local position/rotation on the next frame. No-op if already attached.
+function pickUpRifle(g) {
+  const u = g.userData;
+  if (!u.rifle || u.rifle.parent === u.upper) return;
+  u.upper.add(u.rifle);
+}
+
 // Lerp one mesh's joints toward its target pose, then add the walk swing on
 // top of the hip/knee angles. Called every frame for every visible mesh.
 function applyPose(g, target, dt, walkPhase, walkAmp) {
@@ -802,14 +833,22 @@ function applyPose(g, target, dt, walkPhase, walkAmp) {
   u.armR.shoulder.rotation.y = cur.shRy;
   u.armR.shoulder.rotation.z = cur.shRz;
   u.armR.elbow.rotation.x = cur.elRx;
-  u.rifle.position.y = cur.rifleY;
-  u.rifle.position.z = cur.rifleZ;
-  u.rifle.rotation.x = cur.rifleRX;
+  // The rifle follows the pose only while it is in the hands — a dropped
+  // rifle (lying beside a fallen body) must not be moved by the pose.
+  if (u.rifle.parent === u.upper) {
+    u.rifle.position.y = cur.rifleY;
+    u.rifle.position.z = cur.rifleZ;
+    u.rifle.rotation.x = cur.rifleRX;
+  }
 }
 
 function removePlayerMesh(id) {
   const g = playerMeshes.get(id);
   if (!g) return;
+  // A dropped rifle is a child of the scene, not the group — remove it
+  // too, or it would lie on the ground forever.
+  const rifle = g.userData.rifle;
+  if (rifle && rifle.parent === scene) scene.remove(rifle);
   scene.remove(g);
   playerMeshes.delete(id);
   for (let i = shootTargets.length - 1; i >= 0; i--) {
@@ -1580,7 +1619,19 @@ socket.on('shot', (msg) => {
     if (s) vol = Math.max(0.12, 1 - Math.hypot(s.x - local.x, s.z - local.z) / 60);
     sfx.shoot(vol);
   }
-  if (solo) return; // solo shots never hit; match shots stay out of the solo HUD
+  if (solo) {
+    // Solo shots can hit the NPC only: hitmarker + hit sound on my own
+    // NPC hits, killfeed line when the dummy goes down. Match shots stay
+    // out of the solo HUD.
+    if (msg.shooterId === myId && msg.hit) {
+      showHitmarker(msg.killed);
+      sfx.hit();
+    }
+    if (msg.killed && msg.targetId === NPC_ID) {
+      addKillfeed(`${meta.get(msg.shooterId)?.name || '?'} ▸ Dummy`);
+    }
+    return;
+  }
   if (msg.targetId === myId && msg.killed && msg.friendlyFire) {
     // I was teamkilled: remember it for the YOU'RE DOWN overlay. If the
     // snapshot already showed my death (overlay up), add the line now.
@@ -1815,12 +1866,48 @@ function loop() {
   for (const [id, s] of snapPlayers) {
     if (id === myId) continue;
     if (!s.alive) {
+      // Fallen: the figure falls backward onto the ground over FALL_MS
+      // and lies there until revival — no name tag, no effects, just the
+      // body. The rifle drops beside it once the body is down. The joints
+      // freeze in the pose the figure died in.
       const g = playerMeshes.get(id);
-      if (g) g.visible = false;
+      if (g) {
+        const u = g.userData;
+        if (u.tag) u.tag.visible = false;
+        setMeshFade(g, 1); // a body that died mid-climb-fade is fully opaque
+        if (u.fallTo !== 1) {
+          u.fallFrom = u.fallT ?? 0;
+          u.fallTo = 1;
+          u.fallStartAt = now;
+        }
+        const t = Math.min((now - u.fallStartAt) / FALL_MS, 1);
+        u.fallT = u.fallFrom + (1 - u.fallFrom) * (t * t); // ease-in: a fall accelerates
+        g.rotation.x = u.fallT * (Math.PI / 2);
+        if (t >= 1) dropRifle(g);
+        g.visible = true;
+      }
       continue;
     }
     const g = getPlayerMesh(id);
     g.visible = true;
+    const u = g.userData;
+    // Stand back up after a fall (NPC revival in solo; round-start
+    // revives teleport, so the reset is invisible there). The rifle
+    // returns to the hands once the figure is upright.
+    if (u.fallTo !== 0) {
+      u.fallFrom = u.fallT ?? 0;
+      u.fallTo = 0;
+      u.fallStartAt = now;
+    }
+    if (u.fallT > 0) {
+      const t = Math.min((now - u.fallStartAt) / FALL_MS, 1);
+      const easeOut = 1 - (1 - t) * (1 - t);
+      u.fallT = u.fallFrom * (1 - easeOut);
+      g.rotation.x = u.fallT * (Math.PI / 2);
+      if (t >= 1) pickUpRifle(g);
+    } else {
+      g.rotation.x = 0;
+    }
     // Name tags are teammates-only: the enemy team sees no tag at all.
     // (Solo players have no team, so they neither show nor see tags.)
     const m = meta.get(id) || npcMeta.get(id);
@@ -1844,7 +1931,6 @@ function loop() {
     // the joints toward it, and swing the legs from the distance actually
     // travelled (interpolated, so teleports and snapshot jitter don't
     // flail them).
-    const u = g.userData;
     if (u.legL && u.legR) {
       const dx = g.position.x - (u.prevX ?? g.position.x);
       const dz = g.position.z - (u.prevZ ?? g.position.z);
@@ -1989,6 +2075,18 @@ function loop() {
 // ---------------------------------------------------------------------------
 window.__tacticalBooted = true;
 window.__tacticalLocal = local; // debug/test hook: the local player's position
+// Debug/test hook: the firing-relevant state (why a click did or did not fire).
+window.__tacticalFire = () => ({
+  queued: controls.fireQueued,
+  locked: controls.locked,
+  alive: myAlive,
+  solo,
+  phase: game.phase,
+  inMag: myInMag,
+  reloading,
+  climbing,
+  mapOpen,
+});
 window.__tacticalMeshes = playerMeshes; // debug/test hook: remote player meshes by id
 document.getElementById('boot')?.remove(); // inline splash done its job
 socket.connect();
