@@ -16,7 +16,7 @@ export class Controls {
     // clicks, which breaks pointer lock and firing entirely.
     this.isTouch = window.matchMedia('(pointer: coarse)').matches;
     this.keys = new Set();
-    this.firing = false; // mouse held (desktop) or FIRE held (mobile)
+    this.fireQueued = false; // a FIRE press waiting to be consumed (semi-auto: one shot per press)
     this.aiming = false; // right mouse held (desktop) or AIM toggled (mobile)
     this.crouch = false; // C toggled (desktop) or CROUCH toggled (mobile)
     this.locked = false;
@@ -93,9 +93,18 @@ export class Controls {
     return out;
   }
 
+  // Consume a queued FIRE press (semi-auto): true once per press, even
+  // if the press and release happened between frames. The loop consumes
+  // it every frame, so a press while dead is discarded, never fired late.
+  takeFirePress() {
+    const pressed = this.fireQueued;
+    this.fireQueued = false;
+    return pressed;
+  }
+
   _onLockChange() {
     this.locked = document.pointerLockElement === this.canvas;
-    if (!this.locked) this.firing = false;
+    if (!this.locked) this.fireQueued = false;
   }
 
   _onMouseMove(e) {
@@ -107,13 +116,12 @@ export class Controls {
   _onMouseDown(e) {
     // Fire when locked, or on a canvas click while unlocked (the click also
     // locks the pointer, so the first click both aims and fires). Clicks on
-    // HUD buttons do not fire.
-    if (e.button === 0 && (this.locked || e.target === this.canvas)) this.firing = true;
+    // HUD buttons do not fire. Semi-auto: the press queues one shot.
+    if (e.button === 0 && (this.locked || e.target === this.canvas)) this.fireQueued = true;
     if (e.button === 2) this.aiming = true;
   }
 
   _onMouseUp(e) {
-    if (e.button === 0) this.firing = false;
     if (e.button === 2) this.aiming = false;
   }
 
@@ -218,7 +226,7 @@ export class Controls {
       el.addEventListener('touchend', (e) => { e.preventDefault(); off(); }, { passive: false });
       el.addEventListener('touchcancel', off);
     };
-    bindHold(fireBtn, () => { this.firing = true; }, () => { this.firing = false; });
+    bindHold(fireBtn, () => { this.fireQueued = true; }, () => {}); // semi-auto: press queues one shot
     // Reload arrow: swipe right-to-left along it to reload. The swipe
     // fires once the finger has travelled half the arrow's width
     // (105 px); a plain tap does nothing, so the reload can't fire by
