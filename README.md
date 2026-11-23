@@ -119,9 +119,13 @@ While you are solo (and the room is in the lobby), a defender dummy
 called **Dummy** stands at the defenders' end (centre of the street, 40 m
 up). Walk within 30 m of it and it turns to face you and fires 3-round
 bursts — so you can see a muzzle flash from the outside and hear another
-player's shots. Its shots never hit or damage you, you cannot shoot it,
-and it never appears in the lobby list or the counts; it vanishes when
-the last solo player leaves or a match starts.
+player's shots. Its shots never hit or damage you, and it never appears
+in the lobby list or the counts; it vanishes when the last solo player
+leaves or a match starts. **You can shoot it**: same distance damage as a
+player, and enough hits put it down for 5 seconds — it falls, lies there
+with its rifle beside it, then gets back up at full health — so you can
+see what a fallen player looks like. Solo shots at other players still
+never hit.
 
 Solo players with the same callsign are the same person in two tabs, so
 a second solo join with the same name takes over the first tab (it gets a
@@ -261,6 +265,10 @@ don't flail the legs.
   (frozen first-person view) before switching to spectate — or to the
   round/match-end screen, if the round ended. A teamkill adds a
   **FRIENDLY FIRE** line under it (the killfeed also flags teamkills).
+  Everyone else sees the body: the figure falls backward onto the ground
+  (0.6 s) and lies there until the next round, its rifle dropped beside
+  it — no name tag, no marker, no effects, just the body. A body that
+  falls against a wall may clip into it (no collision for fallen bodies).
 - **Name tags are teammates-only** — the enemy team sees no tag — and a
   tag behind a wall is hidden by the wall (normal depth testing).
 - **6 magazines × 29 rounds.** Reloading takes **3.5 s** and you cannot fire
@@ -325,7 +333,10 @@ npm test
   solo-NPC scenario (the dummy appears, fires bursts in range, holds
   fire out of range, and vanishes when the last solo player leaves), plus
   a solo same-name takeover scenario (a second same-name solo join kicks
-  the first tab; different names coexist).
+  the first tab; different names coexist), plus an NPC shoot-down
+  scenario (a solo shot at a player still never hits; one close-range
+  hit puts the dummy down for the down time, shots at the downed dummy
+  do not hit, and it gets back up at full health and resumes fire).
 
 ## Known limits / what is NOT in v1
 
