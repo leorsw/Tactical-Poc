@@ -60,16 +60,14 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   display: flex; flex-direction: column; gap: 3px; }
 #killfeed div { background: rgba(0,0,0,0.55); padding: 3px 8px; border-radius: 4px; }
 #hitmarker { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  font-size: 30px; color: #ff4444; text-shadow: 0 0 6px #000; }
+  font-size: 30px; color: #ff4444; text-shadow: 0 0 6px #000; z-index: 5; }
 #hitmarker.kill { color: #ffcc00; }
-#bottomLeft { position: absolute; left: 14px; bottom: 14px; display: flex; gap: 10px; align-items: center; }
+#bottomLeft { position: absolute; left: 14px; bottom: 14px; display: flex; gap: 10px; align-items: center; z-index: 5; }
 #healthBar { width: 180px; height: 16px; background: #333; border-radius: 4px; overflow: hidden; }
 #healthFill { height: 100%; width: 100%; background: #4caf50; }
 #healthText { font-weight: 700; font-size: 18px; }
 #bottomRight { position: absolute; right: 14px; bottom: 14px; text-align: right; }
 #ammoText { font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; }
-#reloadBar { width: 140px; height: 6px; background: #333; border-radius: 3px; margin-top: 4px; overflow: hidden; }
-#reloadFill { height: 100%; width: 0%; background: #ffb340; }
 #reloadText { color: #ffb340; font-size: 13px; font-weight: 600; margin-top: 2px; }
 #bannerWrap { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
   text-align: center; z-index: 5; pointer-events: none; }
@@ -101,7 +99,13 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #captureBar.danger #captureFill { background: #e53333; }
 #exitSoloBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; }
 #mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto; }
-#fsRow { position: absolute; top: 98px; left: 10px; display: flex; gap: 10px; align-items: center; }
+/* z-index 5 on #fsRow / #bottomLeft / #hitmarker: the touch joystick base
+   (120px, centred on the touch point) is painted after the HUD in the DOM,
+   so without it the joystick graphics cover CLIMB and the health bar while
+   moving (23/11/2026). Still below the overlays (20) and the banner (30).
+   Hit-testing is unaffected: the joystick visuals are pointer-events none
+   and #bottomLeft inherits none from #hud. */
+#fsRow { position: absolute; top: 98px; left: 10px; display: flex; gap: 10px; align-items: center; z-index: 5; }
 #fsBtn { pointer-events: auto; }
 #climbBtn { pointer-events: auto; background: #2b6cff; font-weight: 700; padding: 10px 22px; font-size: 16px; }
 #connBanner { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); background: rgba(180, 30, 30, 0.92); color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 14px; font-weight: bold; pointer-events: none; z-index: 30; white-space: nowrap; }
@@ -146,11 +150,12 @@ body.touch #touchUI { display: block; }
   background: rgba(200,40,40,0.55); border: 2px solid rgba(255,255,255,0.5);
   display: flex; align-items: center; justify-content: center; font-weight: 700; touch-action: none; }
 #fireBtn:active { background: rgba(230,60,60,0.8); }
-#reloadBtn { position: absolute; right: 124px; bottom: 60px; width: 64px; height: 64px; border-radius: 50%;
-  background: rgba(255,179,64,0.4); border: 2px solid rgba(255,255,255,0.5);
-  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px;
+/* Reload arrow: transparent left-pointing arrow above FIRE/AIM/CROUCH.
+   Swipe right-to-left along it to reload; it fills right-to-left during
+   the 3.5 s reload (see main.js updateHUD). */
+#reloadArrow { position: absolute; right: 40px; bottom: 214px; width: 210px; height: 76px;
   touch-action: none; }
-#reloadBtn:active { background: rgba(255,179,64,0.75); }
+#reloadArrow svg { display: block; }
 #aimBtn { position: absolute; right: 124px; bottom: 140px; width: 64px; height: 64px; border-radius: 50%;
   background: rgba(80,140,255,0.4); border: 2px solid rgba(255,255,255,0.5);
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px;
