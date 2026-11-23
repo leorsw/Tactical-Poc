@@ -59,18 +59,4 @@ export class Sfx {
     src.connect(filter).connect(gain).connect(this.master);
     src.start();
   }
-
-  hit() {
-    this.ensure();
-    if (!this.ctx) return;
-    const osc = this.ctx.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.value = 880;
-    const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(0.6, this.ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.07);
-    osc.connect(gain).connect(this.master);
-    osc.start();
-    osc.stop(this.ctx.currentTime + 0.08);
-  }
 }
