@@ -44,7 +44,7 @@ export class Controls {
 
   attach(canvas, els) {
     this.canvas = canvas;
-    this.els = els; // { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn, aimBtn }
+    this.els = els; // { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadArrow, aimBtn }
     document.addEventListener('mousemove', this._onMouseMove);
     document.addEventListener('mousedown', this._onMouseDown);
     document.addEventListener('mouseup', this._onMouseUp);
@@ -135,7 +135,7 @@ export class Controls {
   }
 
   _attachTouch() {
-    const { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadBtn, aimBtn, crouchBtn } = this.els;
+    const { joyZone, joyBase, joyKnob, lookZone, fireBtn, reloadArrow, aimBtn, crouchBtn } = this.els;
     const RADIUS = 48; // joystick travel in px
 
     const setKnob = (dx, dy) => {
@@ -219,7 +219,40 @@ export class Controls {
       el.addEventListener('touchcancel', off);
     };
     bindHold(fireBtn, () => { this.firing = true; }, () => { this.firing = false; });
-    bindHold(reloadBtn, () => this.onReload(), () => {});
+    // Reload arrow: swipe right-to-left along it to reload. The swipe
+    // fires once the finger has travelled half the arrow's width
+    // (105 px); a plain tap does nothing, so the reload can't fire by
+    // accident mid-fight.
+    if (reloadArrow) {
+      let swipeId = null;
+      let swipeStartX = 0;
+      let swipeFired = false;
+      reloadArrow.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const t = e.changedTouches[0];
+        swipeId = t.identifier;
+        swipeStartX = t.clientX;
+        swipeFired = false;
+      }, { passive: false });
+      reloadArrow.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          if (t.identifier !== swipeId || swipeFired) continue;
+          if (swipeStartX - t.clientX >= 105) {
+            swipeFired = true;
+            this.onReload();
+          }
+        }
+      }, { passive: false });
+      const endSwipe = (e) => {
+        for (const t of e.changedTouches) {
+          if (t.identifier === swipeId) swipeId = null;
+        }
+      };
+      reloadArrow.addEventListener('touchend', endSwipe);
+      reloadArrow.addEventListener('touchcancel', endSwipe);
+    }
     if (aimBtn) {
       aimBtn.addEventListener('touchstart', (e) => {
         e.preventDefault();
