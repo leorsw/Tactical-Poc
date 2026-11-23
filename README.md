@@ -89,7 +89,7 @@ Then open <http://localhost:8020> in a desktop browser.
 | Tap look area (while eliminated) | Cycle spectate target |
 
 The joystick base appears where your thumb lands and its knob follows the
-drag; the HUD buttons (CLIMB, health bar, hitmarker) always paint above it,
+drag; the HUD buttons (CLIMB, health bar) always paint above it,
 so the joystick graphics can never hide them. The reload control is a
 transparent left-pointing arrow above FIRE/AIM/CROUCH (210×76 px): swipe
 right-to-left along at least half of it to reload. During the 3.5 s reload
@@ -264,11 +264,15 @@ don't flail the legs.
 - When a player is eliminated, they see **YOU'RE DOWN** for 3 seconds
   (frozen first-person view) before switching to spectate — or to the
   round/match-end screen, if the round ended. A teamkill adds a
-  **FRIENDLY FIRE** line under it (the killfeed also flags teamkills).
+  **FRIENDLY FIRE** line under it.
   Everyone else sees the body: the figure falls backward onto the ground
   (0.6 s) and lies there until the next round, its rifle dropped beside
   it — no name tag, no marker, no effects, just the body. A body that
   falls against a wall may clip into it (no collision for fallen bodies).
+- There is **no killfeed, no hitmarker and no hit sound**, in solo or in
+  a match: a hit is visible only as the figure falling. (The victim
+  still sees a red screen flash on a non-lethal hit, and the match-end
+  stats board still counts kills, deaths and teamkills.)
 - **Name tags are teammates-only** — the enemy team sees no tag — and a
   tag behind a wall is hidden by the wall (normal depth testing).
 - **6 magazines × 29 rounds.** Reloading takes **3.5 s** and you cannot fire
@@ -284,7 +288,7 @@ don't flail the legs.
   **Other players' shots are visible and audible too**: a muzzle flash
   shows on the shooter's rifle for 90 ms and a bang plays, quieter with
   distance (full volume up close, fading to a floor past ~50 m).
-- Friendly fire is **ON**: a hit from anyone on anyone kills, including teammates (shown as TEAMKILL in the kill feed). No extra penalty beyond losing the teammate.
+- Friendly fire is **ON**: a hit from anyone on anyone kills, including teammates (teamkills are counted in the match-end stats). No extra penalty beyond losing the teammate.
 - The server is authoritative for health, ammo, score, timer and win
   conditions. Clients simulate their own movement and send shot claims;
   the server validates them (shooter/target alive, ammo left, fire-rate
