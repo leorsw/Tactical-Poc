@@ -9,6 +9,7 @@ import {
   GROUND_WINDOWS,
   COLLIDERS,
   spawnLayout,
+  climbFadeAt,
   floorHeightAt,
   resolveCollision,
   objectiveContains,
@@ -193,6 +194,19 @@ check('ground-floor windows: 60, vault landings clear', () => {
       assert.equal(out.z, pz, `window ${JSON.stringify(w)} side ${side}: z pushed`);
     }
   }
+});
+
+check('window-climb fade: 0 at the plane, 1 at 0.75 m, window-only', () => {
+  // West end house (cz -32), north wall plane z -38, window at x -14.5.
+  assert.equal(climbFadeAt(-14.5, -38), 0);
+  assert.equal(climbFadeAt(-14.5, -38.375), 0.5);
+  assert.equal(climbFadeAt(-14.5, -38.75), 1, 'collision distance: no fade');
+  assert.equal(climbFadeAt(-14.5, -39.5), 1);
+  assert.equal(climbFadeAt(-11, -38), 1, 'at the plane but not in a window');
+  assert.equal(climbFadeAt(0, 0), 1, 'street centre');
+  // Street-side window: west house street wall x -6, window at z -35.5.
+  assert.equal(climbFadeAt(-6, -35.5), 0);
+  assert.equal(climbFadeAt(-6.375, -35.5), 0.5);
 });
 
 console.log(`map tests passed (${n} checks)`);
