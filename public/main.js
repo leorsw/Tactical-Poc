@@ -279,11 +279,52 @@ function initThree() {
     if (!myAlive && game.phase === 'playing') cycleSpectate();
   });
 
-  window.addEventListener('resize', () => {
-    camera.aspect = container.clientWidth / container.clientHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(container.clientWidth, container.clientHeight);
+  // Keep the renderer glued to the live container size. On iOS Safari the
+  // canvas can get stuck at a transitional size (e.g. sized during a
+  // rotation, when the container briefly reports ~2x the landscape height)
+  // and no second resize ever corrects it — the game then renders zoomed
+  // with its centre below the screen, so the rifle vanishes under the
+  // bottom edge and only the sight peeks out when aiming (23/11/2026).
+  // Re-syncing from several signals makes any transient self-heal.
+  const syncRendererSize = () => {
+    if (!renderer || !camera) return;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (!w || !h) return;
+    if (camera.aspect !== w / h) {
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+    const cv = renderer.domElement;
+    if (cv.style.width !== `${w}px` || cv.style.height !== `${h}px`) {
+      renderer.setSize(w, h);
+    }
+  };
+  window.__syncRendererSize = syncRendererSize; // for the render loop
+  window.addEventListener('resize', syncRendererSize);
+  window.addEventListener('orientationchange', () => {
+    // iOS fires this before the new layout settles — re-read twice.
+    setTimeout(syncRendererSize, 300);
+    setTimeout(syncRendererSize, 1000);
   });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncRendererSize);
+  }
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(syncRendererSize).observe(container);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) syncRendererSize();
+  });
+  // ?debug=1 — a tiny readout of the sizes that decide where the rifle
+  // renders (container / canvas / viewport / camera aspect). Off by default.
+  if (new URLSearchParams(location.search).has('debug')) {
+    const d = document.createElement('div');
+    d.id = 'sizeDebug';
+    d.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:99;background:rgba(0,0,0,0.75);color:#0f0;font:11px monospace;padding:4px 6px;border-radius:4px;pointer-events:none;white-space:pre;';
+    document.body.appendChild(d);
+    window.__sizeDebug = d;
+  }
   window.addEventListener('blur', () => {
     controls.keys.clear();
     controls.firing = false;
@@ -1634,12 +1675,31 @@ nameInput.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 
 const clock = new THREE.Clock();
+let lastSizeSync = 0;
 
 function loop() {
   requestAnimationFrame(loop);
   if (!threeReady) return;
   const dt = Math.min(clock.getDelta(), 0.05);
   const now = performance.now();
+
+  // Backstop: re-sync the renderer size twice a second, so a canvas stuck
+  // at a stale size (iOS rotation) heals even if no event fires.
+  // Time-based, not frame-based: a throttled tab still heals promptly.
+  if (now - lastSizeSync > 500) {
+    lastSizeSync = now;
+    window.__syncRendererSize?.();
+    const dbg = window.__sizeDebug;
+    if (dbg && renderer && camera) {
+      const c = $('scene-container');
+      const cv = renderer.domElement;
+      dbg.textContent =
+        `container ${c.clientWidth}x${c.clientHeight}\n` +
+        `canvas ${cv.style.width} x ${cv.style.height} (buf ${cv.width}x${cv.height})\n` +
+        `inner ${window.innerWidth}x${window.innerHeight} dpr ${window.devicePixelRatio}\n` +
+        `aspect ${camera.aspect.toFixed(3)} fov ${camera.fov.toFixed(1)} aim ${aimBlend.toFixed(2)}`;
+    }
+  }
 
   // Remote players: create/update meshes, interpolate towards snapshots.
   for (const [id, s] of snapPlayers) {
@@ -1797,6 +1857,7 @@ function loop() {
 // Boot
 // ---------------------------------------------------------------------------
 window.__tacticalBooted = true;
+document.getElementById('boot')?.remove(); // inline splash done its job
 socket.connect();
 // If the server never answers, say so instead of hanging silently.
 setTimeout(() => {
