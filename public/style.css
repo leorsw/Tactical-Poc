@@ -70,9 +70,13 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #scoreBox, #aliveBox, #roundInfo { display: none; }
 #timer { font-variant-numeric: tabular-nums; font-size: 22px; text-shadow: 0 1px 4px rgba(0,0,0,0.9); }
 #bottomLeft { position: absolute; left: 14px; bottom: 14px; display: flex; gap: 10px; align-items: center; z-index: 5; }
-#healthBar { width: 180px; height: 16px; background: #333; border-radius: 4px; overflow: hidden; }
-#healthFill { height: 100%; width: 100%; background: #4caf50; }
-#healthText { font-weight: 700; font-size: 18px; }
+/* Health icon (24/11/2026, heart+ECG): a transparent single-colour line
+   icon — a heart with an ECG monitor trace across it. Green at full
+   health; red after the first hit. No number — the icon is the whole
+   readout. Opacity 0.6, per the approved mockup. */
+#healthIcon { width: 72px; height: 72px; opacity: 0.6; color: #2ecc71;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.35)); }
+#healthIcon.hurt { color: #e74c3c; }
 #bottomRight { position: absolute; right: 14px; bottom: 14px; text-align: right; }
 #ammoText { font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; }
 #reloadText { color: #ffb340; font-size: 13px; font-weight: 600; margin-top: 2px; }
@@ -116,7 +120,7 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
 /* z-index 5 on #fsRow / #bottomLeft: the touch joystick base
    (120px, centred on the touch point) is painted after the HUD in the DOM,
-   so without it the joystick graphics cover CLIMB and the health bar while
+   so without it the joystick graphics cover CLIMB and the health icon while
    moving (23/11/2026). Still below the overlays (20) and the banner (30).
    Hit-testing is unaffected: the joystick visuals are pointer-events none
    and #bottomLeft inherits none from #hud. */
