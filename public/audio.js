@@ -1,5 +1,5 @@
 // audio.js — tiny synthesized WebAudio blips. No audio assets.
-// Only two sounds by design: shoot and hit.
+// Only one sound by design: the gunshot (the hit ping was removed 23/11).
 
 export class Sfx {
   constructor() {
