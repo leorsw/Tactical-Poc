@@ -343,3 +343,48 @@ export function stairRamps() {
     rise: FLOOR2_Y,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Line of sight
+// ---------------------------------------------------------------------------
+// True when nothing blocks the straight line from eye point A to target
+// point B. The occluders are the visual boxes — walls WITH real window
+// and door gaps — so a ray through a window opening (y 1.0..2.2 ground,
+// 4.0..5.2 upper) or a doorway (below 2.2) passes, while a ray through
+// solid wall, a floor slab or a roof is blocked. That also gives the
+// blind spot under an upper window for free: a ray from an upper window
+// down to a player standing right below it crosses the solid band
+// between the windows (y 2.2..4.0).
+//
+// The server uses this for NPC fire decisions (an NPC only opens fire
+// when it can see its target); the client could reuse it for the same
+// reason. The box list is built once and cached — visualBoxes() is
+// ~300 boxes, and a burst-start check touches each of them once.
+let LOS_BOXES = null;
+export function hasLineOfSight(ax, ay, az, bx, by, bz) {
+  if (!LOS_BOXES) LOS_BOXES = visualBoxes();
+  const dx = bx - ax;
+  const dy = by - ay;
+  const dz = bz - az;
+  for (const b of LOS_BOXES) {
+    // Slab method: the t-range [tmin, tmax] where the ray is inside the
+    // box. Any overlap with the segment [0, 1] means the ray hits it.
+    let tmin = 0;
+    let tmax = 1;
+    let hit = true;
+    for (const [o, d, lo, hi] of [[ax, dx, b.x0, b.x1], [ay, dy, b.y0, b.y1], [az, dz, b.z0, b.z1]]) {
+      if (Math.abs(d) < 1e-9) {
+        if (o < lo || o > hi) { hit = false; break; }
+      } else {
+        let t1 = (lo - o) / d;
+        let t2 = (hi - o) / d;
+        if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+        tmin = Math.max(tmin, t1);
+        tmax = Math.min(tmax, t2);
+        if (tmin > tmax) { hit = false; break; }
+      }
+    }
+    if (hit) return false; // a solid box stands between A and B
+  }
+  return true;
+}
