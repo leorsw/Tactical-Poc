@@ -15,6 +15,7 @@ import {
   objectiveContains,
   visualBoxes,
   stairRamps,
+  hasLineOfSight,
 } from '../public/map.js';
 
 let n = 0;
@@ -207,6 +208,38 @@ check('window-climb fade: 0 at the plane, 1 at 0.75 m, window-only', () => {
   // Street-side window: west house street wall x -6, window at z -35.5.
   assert.equal(climbFadeAt(-6, -35.5), 0);
   assert.equal(climbFadeAt(-6.375, -35.5), 0.5);
+});
+
+check('line of sight: clear street, windows and doors pass', () => {
+  // Open street, eye to torso.
+  assert.equal(hasLineOfSight(0, 1.6, 0, 0, 1.2, 20), true);
+  // Out of a ground-floor window (west house cz=0, window at z=-3.5).
+  assert.equal(hasLineOfSight(-6.8, 1.6, -3.5, 0, 1.2, -3.5), true);
+  // Out of an upper window (eye 4.6, target torso 4.2).
+  assert.equal(hasLineOfSight(-6.8, 4.6, -3.5, 0, 4.2, -3.5), true);
+  // Through a doorway (door gap below 2.2, z=0).
+  assert.equal(hasLineOfSight(-6.8, 1.6, 0, 0, 1.2, 0), true);
+  // Through two windows: house to house across the street.
+  assert.equal(hasLineOfSight(-6.8, 1.6, -3.5, 6.8, 1.2, -3.5), true);
+});
+
+check('line of sight: solid walls block', () => {
+  // North wall of the west house (cz=0) at z=-6, x=-11 is a solid band.
+  assert.equal(hasLineOfSight(-11, 1.6, -3, -11, 1.6, -20), false);
+  // Street wall between window and door (z=-1.5 is a solid band).
+  assert.equal(hasLineOfSight(-6.8, 1.6, -1.5, 0, 1.2, -1.5), false);
+  // Back wall (x=-16) is solid full height — even though the ray enters
+  // through the door gap first.
+  assert.equal(hasLineOfSight(0, 1.6, 0, -17, 1.2, 0), false);
+});
+
+check('line of sight: blind spot under an upper window, slab blocks', () => {
+  // Upper window down to a player right below it: the ray crosses the
+  // solid band between the windows (y 2.2..4.0).
+  assert.equal(hasLineOfSight(-6.8, 4.6, -3.5, -5, 1.2, -3.5), false);
+  // Upper floor to ground floor inside the same house: the second-floor
+  // slab (y 2.8..3.0) is in the way.
+  assert.equal(hasLineOfSight(-6.8, 4.6, -3.5, -11, 1.2, 0), false);
 });
 
 console.log(`map tests passed (${n} checks)`);
