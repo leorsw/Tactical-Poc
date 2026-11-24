@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { SPAWNS, spawnLayout, objectiveContains, HOUSES } from './public/map.js';
+import { SPAWNS, spawnLayout, objectiveContains, HOUSES, hasLineOfSight, EYE_HEIGHT } from './public/map.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -369,6 +369,15 @@ function checkElimination() {
 // first solo player arrives and re-drawn when the next solo player
 // arrives after the room emptied of solo players.
 //
+// An NPC only opens fire when it can SEE its target: within 30 m AND a
+// clear line of sight from its eye to the target's torso (map.js
+// hasLineOfSight — rays pass through window openings and doorways, not
+// through solid wall). Line of sight is checked once per burst: a burst
+// that has started runs to completion even if the target ducks behind
+// cover mid-burst. Without line of sight (or out of range) the NPC
+// stops aiming and faces the street again — it never tracks a target
+// through a wall.
+//
 // Positions: window spots — just inside a house's street wall, at a
 // window centre (x = side * 6.8, z = house centre +/- 3.5), ground floor
 // (y = 0) or second floor (y = 3). The draw takes from all four buckets
@@ -379,10 +388,17 @@ function checkElimination() {
 const NPC_COUNT = 10;
 const NPC_IDS = Array.from({ length: NPC_COUNT }, (_, i) => -(i + 1)); // -1..-10; player ids start at 1 (nextId), so these can never collide
 const NPC_RANGE = 30; // opens fire within 30 m
+const NPC_TARGET_HEIGHT = 1.2; // torso height above the target's feet — the point an NPC must see
 const NPC_BURST = 3; // shots per burst
 const NPC_BURST_INTERVAL_MS = 120; // inside a burst
 const NPC_BURST_PAUSE_MS = 1200; // between bursts
 let npcs = []; // [{ id, name, x, y, z, yaw, aiming, burstLeft, nextShotAt, health }] or []
+
+// The yaw an NPC faces when it is not engaging: out of its window,
+// towards the street. Forward = (-sin(yaw), 0, -cos(yaw)).
+function streetYaw(n) {
+  return n.x < 0 ? -Math.PI / 2 : Math.PI / 2;
+}
 
 // mulberry32: a tiny seeded PRNG so NPC_SEED draws are reproducible.
 function seededRandom(seed) {
@@ -433,7 +449,7 @@ function drawNpcSet() {
     y: s.y,
     z: s.z,
     // Face the street (out of the window).
-    yaw: s.x < 0 ? -Math.PI / 2 : Math.PI / 2,
+    yaw: streetYaw({ x: s.x }),
     aiming: false,
     burstLeft: 0,
     nextShotAt: 0,
@@ -462,9 +478,22 @@ function updateNpcs(now) {
       const d = Math.hypot(p.pos.x - n.x, p.pos.z - n.z);
       if (d < best) { best = d; target = p; }
     }
+    // Out of range: stop engaging and face the street again.
     if (!target || best > NPC_RANGE) {
       n.aiming = false;
       n.burstLeft = 0;
+      n.yaw = streetYaw(n);
+      continue;
+    }
+    // In range: line of sight decides whether the NPC engages at all.
+    // Checked once per burst — a burst that has started (burstLeft > 0)
+    // runs to completion even if the target ducks behind cover.
+    if (n.burstLeft === 0 && !hasLineOfSight(
+      n.x, n.y + EYE_HEIGHT, n.z,
+      target.pos.x, target.pos.y + NPC_TARGET_HEIGHT, target.pos.z,
+    )) {
+      n.aiming = false;
+      n.yaw = streetYaw(n);
       continue;
     }
     n.aiming = true;
@@ -944,6 +973,12 @@ function handleMessage(ws, msg) {
 // players are never host), and re-check the round state.
 function removePlayer(p) {
   players.delete(p.id);
+  // The NPC set lives only while at least one solo player is present.
+  // Clear it eagerly here — not just on the next tick in updateNpcs —
+  // or a solo rejoin landing before that tick resurrects the stale set
+  // (a downed NPC would still be down). A same-name tab takeover also
+  // clears it; the set is re-drawn fresh on the next tick.
+  if (![...players.values()].some((q) => q.solo)) npcs = [];
   if (players.size === 0) {
     // Room is empty: reset to a fresh lobby for the next group.
     hostId = null;
