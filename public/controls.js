@@ -152,6 +152,11 @@ export class Controls {
 
     joyZone.addEventListener('touchstart', (e) => {
       e.preventDefault();
+      // First finger wins: a second finger touching the zone must not
+      // steal the joystick — stealing orphaned the first finger (its
+      // moves were ignored once the stealer lifted) and froze input
+      // until lift + re-press (reported on a real phone, 24/11/2026).
+      if (this.joyId !== null) return;
       const t = e.changedTouches[0];
       this.joyActive = true;
       this.joyId = t.identifier;
@@ -196,6 +201,10 @@ export class Controls {
 
     lookZone.addEventListener('touchstart', (e) => {
       e.preventDefault();
+      // First finger wins (same steal as the joystick, 24/11/2026): a
+      // second finger — e.g. a FIRE tap landing just off the button —
+      // must not steal the look drag from the finger already dragging.
+      if (this.lookId !== null) return;
       const t = e.changedTouches[0];
       this.lookId = t.identifier;
       this.lookLastX = t.clientX;
@@ -238,6 +247,8 @@ export class Controls {
       reloadArrow.addEventListener('touchstart', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        // First finger wins (same steal as look/joystick, 24/11/2026).
+        if (swipeId !== null) return;
         const t = e.changedTouches[0];
         swipeId = t.identifier;
         swipeStartX = t.clientX;
