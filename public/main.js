@@ -21,7 +21,6 @@ import { Sfx } from './audio.js';
 
 const SPEED = 5; // m/s
 const FIRE_INTERVAL = 100; // ms between shots (~10/sec)
-const NPC_ID = -1; // the solo NPC's snapshot id (server: NPC_ID)
 const MOVE_SEND_MS = 66;
 const TEAM_CSS = { attackers: '#2b6cff', defenders: '#e53333' };
 
@@ -70,6 +69,7 @@ const downSub = $('downSub');
 const spectateBar = $('spectateBar');
 const lockHint = $('lockHint');
 const exitSoloBtn = $('exitSoloBtn');
+const exitBtn = $('exitBtn');
 const endScreen = $('endScreen');
 const endTitle = $('endTitle');
 const endScore = $('endScore');
@@ -711,7 +711,13 @@ function getPlayerMesh(id) {
   const pFlash = new THREE.Group();
   const pf1 = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), pFlashMat);
   const pf2 = pf1.clone();
-  pf2.rotation.z = Math.PI / 2;
+  // True cross: rotate about Y, so the second plane faces sideways while
+  // the first faces along the barrel — the flash is visible from the
+  // side as well as from the front and back. (A rotation about Z is a
+  // no-op on a square plane: both planes ended up coplanar, and the
+  // flash was edge-on — invisible — to anyone watching from the side.
+  // Lior, 24/11.)
+  pf2.rotation.y = Math.PI / 2;
   pFlash.add(pf1, pf2);
   pFlash.position.set(0, 0.01, -0.47);
   pFlash.visible = false;
@@ -955,11 +961,76 @@ function showScreen(name) {
   lobbyEl.classList.toggle('hidden', name !== 'lobby');
   gameEl.classList.toggle('hidden', name !== 'game');
   if (name === 'game') initThree();
-  if (name === 'lobby' && mapOpen) {
-    mapOpen = false;
-    mapOverlay.classList.add('hidden');
+  if (name === 'lobby') {
+    hideHelpUI();
+    if (mapOpen) {
+      mapOpen = false;
+      mapOverlay.classList.add('hidden');
+    }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Help slide "איך משחקים?" (Lior, 24/11/2026)
+// ---------------------------------------------------------------------------
+// A DOM overlay over the live game screen. Shown on entering the game
+// the FIRST time on this device (localStorage flag), auto-closing after
+// 10 s. After closing, a "?" button top-right reopens it (auto-closes
+// after 10 s again). The CLIMB callout shows only while the CLIMB
+// button is visible (it only appears near a ground-floor window).
+const HELP_SEEN_KEY = 'tacticalHelpSeen';
+const HELP_AUTO_CLOSE_MS = 10000;
+let helpSlideTimer = 0;
+let helpSlideDoneThisEntry = false;
+
+function helpSeen() {
+  try { return localStorage.getItem(HELP_SEEN_KEY) === '1'; } catch { return false; }
+}
+
+function markHelpSeen() {
+  try { localStorage.setItem(HELP_SEEN_KEY, '1'); } catch { /* private mode: show again next entry */ }
+}
+
+function showHelpSlide() {
+  // CLIMB is only visible near a window — its callout (and leader)
+  // show only when the button is.
+  const climbVisible = !climbBtn.classList.contains('hidden');
+  $('helpCoClimb').classList.toggle('hidden', !climbVisible);
+  $('helpLeaderClimb').classList.toggle('hidden', !climbVisible);
+  $('helpSlide').classList.remove('hidden');
+  $('helpBtn').classList.add('hidden');
+  clearTimeout(helpSlideTimer);
+  helpSlideTimer = setTimeout(closeHelpSlide, HELP_AUTO_CLOSE_MS);
+}
+
+function closeHelpSlide() {
+  clearTimeout(helpSlideTimer);
+  $('helpSlide').classList.add('hidden');
+  $('helpBtn').classList.remove('hidden');
+}
+
+// Once per entry into the game screen: first-time devices get the slide,
+// returning devices just get the "?" button.
+function maybeShowHelpSlide() {
+  if (helpSlideDoneThisEntry) return;
+  helpSlideDoneThisEntry = true;
+  if (helpSeen()) {
+    $('helpBtn').classList.remove('hidden');
+    return;
+  }
+  markHelpSeen();
+  showHelpSlide();
+}
+
+function hideHelpUI() {
+  clearTimeout(helpSlideTimer);
+  $('helpSlide').classList.add('hidden');
+  $('helpBtn').classList.add('hidden');
+  helpSlideDoneThisEntry = false;
+}
+
+$('helpCloseBtn').addEventListener('click', closeHelpSlide);
+$('helpBtn').addEventListener('click', showHelpSlide);
 
 // ---------------------------------------------------------------------------
 // HUD
@@ -1385,6 +1456,7 @@ socket.on('soloJoined', (msg) => {
   teamsBox.classList.add('hidden');
   exitSoloBtn.classList.remove('hidden');
   showScreen('game');
+  maybeShowHelpSlide();
   showBanner('SOLO MODE\nExplore the map — move, shoot, reload', 4000);
 });
 
@@ -1398,6 +1470,30 @@ socket.on('soloLeft', () => {
   myInMag = 29;
   myMags = 5;
   exitSoloBtn.classList.add('hidden');
+  teamsBox.classList.add('hidden');
+  joinBox.classList.remove('hidden');
+  showScreen('lobby');
+});
+
+socket.on('left', () => {
+  // Deliberate team leave (EXIT button): same reset as soloLeft, plus
+  // the mid-match overlays. savedJoin is cleared so the state handler
+  // does not auto-rejoin — the player chose to leave (they may still
+  // rejoin by hand within the 5-minute grace window).
+  joined = false;
+  solo = false;
+  savedJoin = null;
+  myTeam = null;
+  myAlive = true;
+  myHealth = 100;
+  myInMag = 29;
+  myMags = 5;
+  downUntil = 0;
+  downOverlay.classList.add('hidden');
+  pendingRoundEnd = null;
+  pendingMatchEnd = null;
+  exitBtn.classList.add('hidden');
+  endScreen.classList.add('hidden');
   teamsBox.classList.add('hidden');
   joinBox.classList.remove('hidden');
   showScreen('lobby');
@@ -1421,6 +1517,7 @@ socket.on('error', (msg) => {
     teamsBox.classList.add('hidden');
     joinBox.classList.remove('hidden');
     exitSoloBtn.classList.add('hidden');
+    exitBtn.classList.add('hidden');
     endScreen.classList.add('hidden');
     showScreen('lobby');
   }
@@ -1443,6 +1540,7 @@ socket.on('kicked', (msg) => {
   teamsBox.classList.add('hidden');
   joinBox.classList.remove('hidden');
   exitSoloBtn.classList.add('hidden');
+  exitBtn.classList.add('hidden');
   endScreen.classList.add('hidden');
   kickNotice.textContent = msg.reason || 'The host cleared the room. Rejoin to play.';
   kickNotice.classList.remove('hidden');
@@ -1495,8 +1593,14 @@ socket.on('state', (msg) => {
   if (msg.phase === 'lobby') {
     showScreen('lobby');
     endScreen.classList.add('hidden');
+    exitBtn.classList.add('hidden');
   } else {
     showScreen('game');
+    maybeShowHelpSlide();
+    // Team players get an EXIT button (top-left) in the match, in the
+    // intermission and on the final screen — the lobby has none (Lior,
+    // 24/11). Solo players use EXIT SOLO instead (handled above).
+    exitBtn.classList.remove('hidden');
   }
   if (msg.phase === 'intermission') {
     // Reconnecting (or joining late) during an intermission: restore the
@@ -1519,8 +1623,13 @@ socket.on('snapshot', (msg) => {
   game.timeLeftMs = msg.timeLeftMs;
   game.captureProgress = msg.captureProgress || 0;
   snapPlayers = new Map(msg.players.map((p) => [p.id, p]));
-  // NPC entries (the solo defender dummy) carry their own name/team —
-  // they never appear in state messages, so meta never knows them.
+  // Debug hook: the live NPC list (id, position, alive) for the
+  // screenshot runs, which aim the camera at a chosen NPC.
+  window.__npcs = msg.players
+    .filter((p) => p.npc)
+    .map((p) => ({ id: p.id, x: p.x, y: p.y, z: p.z, alive: p.alive, health: p.health }));
+  // NPC entries carry their own name/team — they never appear in state
+  // messages, so meta never knows them.
   for (const [id, s] of snapPlayers) {
     if (s.npc) npcMeta.set(id, { name: s.name || 'NPC', team: s.team || 'B', role: 'defenders' });
   }
@@ -1747,6 +1856,7 @@ $('soloBtn').addEventListener('click', () => {
   sendJoin(savedJoin);
 });
 exitSoloBtn.addEventListener('click', () => socket.send({ t: 'leaveSolo' }));
+exitBtn.addEventListener('click', () => socket.send({ t: 'leave' }));
 $('switchBtn').addEventListener('click', () => {
   socket.send({ t: 'switchTeam', team: myTeam === 'A' ? 'B' : 'A' });
 });
@@ -1858,9 +1968,10 @@ function loop() {
     const g = getPlayerMesh(id);
     g.visible = true;
     const u = g.userData;
-    // Stand back up after a fall (NPC revival in solo; round-start
-    // revives teleport, so the reset is invisible there). The rifle
-    // returns to the hands once the figure is upright.
+    // Stand back up after a fall (round-start revives teleport, so the
+    // reset is invisible there). The rifle returns to the hands once the
+    // figure is upright. Solo NPCs never stand back up — their snapshot
+    // alive flag stays false once down.
     if (u.fallTo !== 0) {
       u.fallFrom = u.fallT ?? 0;
       u.fallTo = 0;
