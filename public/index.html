@@ -116,6 +116,7 @@
       <div id="captureBar" class="hidden"><span id="captureLabel"></span><div class="capture-track"><div id="captureFill"></div></div></div>
       <div id="connBanner" class="hidden">Connection lost — reconnecting…</div>
       <button id="exitSoloBtn" class="hidden">EXIT SOLO</button>
+      <button id="exitBtn" class="hidden">EXIT</button>
       <button id="mapBtn">MAP</button>
       <div id="fsRow">
         <button id="fsBtn">FULLSCREEN</button>
@@ -178,7 +179,7 @@
       <div id="joyZone"></div>
       <div id="lookZone"></div>
       <div id="joyBase"><div id="joyKnob"></div></div>
-      <div id="fireBtn">FIRE</div>
+      <div id="fireBtn" aria-label="Fire"><svg width="56" height="56" viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       <!-- Reload arrow: swipe right-to-left along it to reload. During a
            reload it fills right-to-left over 3.5 s (the fill rect grows
            from the arrow's right edge; the clip keeps it inside the
@@ -194,9 +195,46 @@
           <text x="126" y="44" text-anchor="middle" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#fff" stroke="rgba(0,0,0,0.55)" stroke-width="3" paint-order="stroke">RELOAD</text>
         </svg>
       </div>
-      <div id="aimBtn">AIM</div>
+      <div id="aimBtn" aria-label="Aim"><svg width="70" height="70" viewBox="0 0 70 70"><g stroke="#fff" stroke-width="3" stroke-linecap="round"><line x1="35" y1="5" x2="35" y2="23"/><line x1="35" y1="47" x2="35" y2="65"/><line x1="5" y1="35" x2="23" y2="35"/><line x1="47" y1="35" x2="65" y2="35"/></g><circle cx="35" cy="35" r="4.5" fill="none" stroke="#fff" stroke-width="2"/></svg></div>
       <div id="crouchBtn">CROUCH</div>
       <div id="rotateHint">Rotate your device to landscape for the best view</div>
+    </div>
+
+    <!-- Help slide "איך משחקים?" (Lior, 24/11/2026): a DOM overlay over
+         the live game screen — callouts + leader lines point at the real
+         buttons. Shown on first entry per device, auto-closes after 10 s;
+         the "?" button reopens it. Callout coordinates are the approved
+         mockup's (844x390 reference frame). -->
+    <div id="helpUI">
+      <div id="helpSlide" class="hidden" dir="rtl">
+        <svg id="helpLeaders" viewBox="0 0 844 390" preserveAspectRatio="none" aria-hidden="true">
+          <g stroke="rgba(255,255,255,0.85)" stroke-width="1.5" fill="rgba(255,255,255,0.9)">
+            <line x1="130" y1="34" x2="124" y2="34"/><circle cx="122" cy="34" r="3" stroke="none"/>
+            <line x1="86" y1="85" x2="80" y2="85"/><circle cx="78" cy="85" r="3" stroke="none"/>
+            <line x1="62" y1="158" x2="70" y2="153"/><circle cx="71" cy="152" r="3" stroke="none"/>
+            <g id="helpLeaderClimb"><line x1="197" y1="158" x2="197" y2="152"/><circle cx="197" cy="150" r="3" stroke="none"/></g>
+            <line x1="262" y1="300" x2="252" y2="300"/><circle cx="250" cy="300" r="3" stroke="none"/>
+            <line x1="715" y1="108" x2="715" y2="113"/><circle cx="715" cy="115" r="3" stroke="none"/>
+            <line x1="645" y1="262" x2="645" y2="257"/><circle cx="645" cy="255" r="3" stroke="none"/>
+            <line x1="750" y1="262" x2="750" y2="257"/><circle cx="750" cy="255" r="3" stroke="none"/>
+            <line x1="405" y1="276" x2="428" y2="293"/><circle cx="430" cy="295" r="3" stroke="none"/>
+            <polyline points="515,208 515,300 677,353" fill="none"/><circle cx="680" cy="355" r="3" stroke="none"/>
+          </g>
+        </svg>
+        <div class="help-callout" style="left:130px; top:18px;">יציאה מהמשחק</div>
+        <div class="help-callout" style="left:86px; top:70px;">מפה</div>
+        <div class="help-callout" style="left:10px; top:158px;">מסך מלא</div>
+        <div class="help-callout" id="helpCoClimb" style="left:150px; top:158px;">טיפוס דרך חלון</div>
+        <div class="help-callout" style="left:262px; top:285px;">תנועה</div>
+        <div class="help-callout" style="left:660px; top:82px;">החלקה לטעינה</div>
+        <div class="help-callout" style="left:615px; top:262px;">כריעה</div>
+        <div class="help-callout" style="left:720px; top:262px;">כוונת</div>
+        <div class="help-callout" style="left:320px; top:250px;">ירי · לחיצה = כדור</div>
+        <div class="help-callout" style="left:422px; top:182px; transform:translateX(-50%);">תזיז את הרובה כדי להזיז את המבט</div>
+        <div id="helpTitle">איך משחקים?</div>
+        <button id="helpCloseBtn" aria-label="Close help">✕</button>
+      </div>
+      <button id="helpBtn" class="hidden" aria-label="Show help">?</button>
     </div>
   </section>
 
