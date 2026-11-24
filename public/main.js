@@ -52,6 +52,7 @@ const waitHost = $('waitHost');
 const scoreBox = $('scoreBox');
 const timerEl = $('timer');
 const aliveBox = $('aliveBox');
+const emptyCaption = $('emptyCaption');
 const captureBar = $('captureBar');
 const captureLabel = $('captureLabel');
 const captureFill = $('captureFill');
@@ -1351,10 +1352,23 @@ function tryClimb() {
 // Shooting / reload
 // ---------------------------------------------------------------------------
 
+// EMPTY caption: how long it stays up per press (each press re-triggers).
+const EMPTY_CAPTION_MS = 1500;
+let emptyCaptionTimer = 0;
+function showEmptyCaption() {
+  emptyCaption.classList.add('show');
+  clearTimeout(emptyCaptionTimer);
+  emptyCaptionTimer = setTimeout(() => emptyCaption.classList.remove('show'), EMPTY_CAPTION_MS);
+}
+
 function tryFire(now) {
   if (!myAlive || (game.phase !== 'playing' && !solo)) return;
   if (climbing) return; // frozen mid-climb
-  if (mapOpen || reloading || myInMag <= 0) return;
+  if (mapOpen || reloading) return;
+  // Empty magazine: no shot, but tell the player why — a red EMPTY
+  // caption at the top of the screen. (While reloading the RELOADING…
+  // text already covers it, so no caption there.)
+  if (myInMag <= 0) { showEmptyCaption(); return; }
   if (now - lastFireAt < FIRE_INTERVAL) return;
   lastFireAt = now;
 
