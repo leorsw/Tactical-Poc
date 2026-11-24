@@ -65,6 +65,12 @@
 //     damage the solo player (health stays 100 through bursts); leaving
 //     solo and rejoining re-draws the set — all 10 NPCs alive again at
 //     full health, including one shot down before leaving.
+//   Scenario 15 (NPC line of sight): an NPC only opens fire when it can
+//     see the solo player (within 30 m AND a clear ray through a window
+//     or doorway). Behind a house the NPCs hold fire, stop aiming and
+//     face the street again; a burst that started before the player
+//     ducked behind cover runs to completion, and fire resumes once
+//     line of sight returns.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -1049,6 +1055,60 @@ async function main() {
     assert.equal(rSnap2.players.find((p) => p.id === rTarget.id).health, 100);
     console.log('ok - rejoining solo re-draws the set: all 10 NPCs alive at full health');
     for (const c of [rs1, ro]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 15: NPC
+    // line of sight — an NPC only opens fire when it can see the solo
+    // player (within 30 m AND a clear ray through a window or doorway).
+    // Behind a house the NPCs hold fire and face the street; a burst
+    // that started before the player ducked behind cover runs to
+    // completion.
+    const lo = new Client('LosObserver');
+    await lo.ready();
+    lo.send({ t: 'join', name: 'LosObserver', team: 'A' });
+    await lo.waitFor('state', (m) => m.players.length === 1);
+    const ls1 = new Client('LosSolo');
+    await ls1.ready();
+    ls1.send({ t: 'solo', name: 'LosSolo' });
+    await ls1.waitFor('soloJoined');
+    const lSnap = await ls1.waitFor('snapshot', (m) =>
+      m.players.filter((p) => p.npc === true).length === 10);
+    const lNpcs = lSnap.players.filter((p) => p.npc === true);
+    // A ground-floor NPC (eye 1.6, same height as the player's torso
+    // ray — the cleanest LoS case) and the street in front of its window.
+    const lTarget = lNpcs.find((p) => p.y === 0);
+    ls1.send({ t: 'move', x: 0, y: 0, z: lTarget.z, yaw: 0, pitch: 0 });
+    await ls1.waitFor('shot', (m) => m.shooterId === lTarget.id, 5000);
+    console.log('ok - NPC fires at a solo player it can see (street, clear LoS)');
+    // Let the in-flight burst finish, then catch the NEXT burst's first
+    // shot and duck behind the NPC's house in the same instant.
+    await sleep(600);
+    ls1.inbox.length = 0;
+    await ls1.waitFor('shot', (m) => m.shooterId === lTarget.id, 5000);
+    ls1.inbox.length = 0; // drop shot 1 of the burst; shots 2-3 must follow
+    const behindX = lTarget.x < 0 ? -17 : 17;
+    ls1.send({ t: 'move', x: behindX, y: 0, z: lTarget.z, yaw: 0, pitch: 0 });
+    await sleep(2500);
+    const midBurst = ls1.inbox.filter((m) => m.t === 'shot' && m.shooterId === lTarget.id).length;
+    assert.equal(midBurst, 2, `burst must complete after LoS breaks, got ${midBurst} more shots`);
+    console.log('ok - a started burst runs to completion after line of sight breaks');
+    // Behind the house, no NPC anywhere can see the player: total
+    // silence, no aiming, every NPC facing the street again.
+    ls1.inbox.length = 0;
+    await sleep(2500);
+    const hiddenShots = ls1.inbox.filter((m) => m.t === 'shot' && m.shooterId < 0).length;
+    assert.equal(hiddenShots, 0, `no NPC may fire without line of sight, got ${hiddenShots} shots`);
+    const hiddenSnap = lo.findLast('snapshot', (m) => m.players.some((p) => p.npc === true));
+    const hiddenNpcs = hiddenSnap.players.filter((p) => p.npc === true);
+    assert.ok(hiddenNpcs.every((p) => p.aiming === false), 'no NPC aims without line of sight');
+    assert.ok(hiddenNpcs.every((p) => Math.abs(p.yaw - (p.x < 0 ? -Math.PI / 2 : Math.PI / 2)) < 0.01),
+      'every NPC faces the street again without line of sight');
+    console.log('ok - behind a house: no NPC fire, no aiming, all face the street');
+    // Step back onto the street: the NPC opens fire again.
+    ls1.send({ t: 'move', x: 0, y: 0, z: lTarget.z, yaw: 0, pitch: 0 });
+    await ls1.waitFor('shot', (m) => m.shooterId === lTarget.id, 5000);
+    console.log('ok - NPC resumes fire once line of sight returns');
+    for (const c of [ls1, lo]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
