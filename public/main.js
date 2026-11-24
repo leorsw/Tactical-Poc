@@ -56,8 +56,7 @@ const captureBar = $('captureBar');
 const captureLabel = $('captureLabel');
 const captureFill = $('captureFill');
 const roundInfo = $('roundInfo');
-const healthFill = $('healthFill');
-const healthText = $('healthText');
+const healthIcon = $('healthIcon');
 const ammoText = $('ammoText');
 const reloadArrowFill = $('reloadArrowFill'); // SVG rect inside the reload arrow
 const reloadText = $('reloadText');
@@ -777,11 +776,14 @@ function setMeshFade(g, opacity) {
   }
 }
 
-// Drop a fallen figure's rifle on the ground beside the body (0.55 m to
+// Drop a fallen figure's rifle on the floor beside the body (0.55 m to
 // the figure's right, 0.9 m behind the feet — beside the torso), lying
 // flat with the barrel toward the head, resting on its magazine. The rifle
 // is re-parented to the scene so it stops following the body's rotation;
-// pickUpRifle restores it on revival. No-op if already dropped.
+// pickUpRifle restores it on revival. The drop height follows the figure's
+// own floor — a second-floor body keeps its rifle upstairs (24/11/2026:
+// the old hardcoded y=0.2 dropped it through the floor to the ground).
+// No-op if already dropped.
 function dropRifle(g) {
   const u = g.userData;
   if (!u.rifle || u.rifle.parent !== u.upper) return;
@@ -790,16 +792,22 @@ function dropRifle(g) {
   const ox = 0.55 * cos + 0.9 * sin;
   const oz = -0.55 * sin + 0.9 * cos;
   scene.add(u.rifle);
-  u.rifle.position.set(g.position.x + ox, 0.2, g.position.z + oz);
+  u.rifle.position.set(g.position.x + ox, g.position.y + 0.2, g.position.z + oz);
   u.rifle.rotation.set(0, g.rotation.y + Math.PI, 0);
 }
 
-// Return a dropped rifle to the figure's hands. applyPose restores its
-// local position/rotation on the next frame. No-op if already attached.
+// Return a dropped rifle to the figure's hands. The local position and
+// rotation are reset here: the rifle still carries its world-space drop
+// coordinates, and applyPose only writes y/z/rx — without this reset the
+// stale x (up to ±18) left the rifle floating metres from the body
+// forever after a revival (24/11/2026: 7.8 m in the rifle-probe re-run).
+// No-op if already attached.
 function pickUpRifle(g) {
   const u = g.userData;
   if (!u.rifle || u.rifle.parent === u.upper) return;
   u.upper.add(u.rifle);
+  u.rifle.position.set(0.08, u.poseCur.rifleY, u.poseCur.rifleZ);
+  u.rifle.rotation.set(u.poseCur.rifleRX, 0, 0);
 }
 
 // Lerp one mesh's joints toward its target pose, then add the walk swing on
@@ -839,10 +847,16 @@ function applyPose(g, target, dt, walkPhase, walkAmp) {
   u.armR.elbow.rotation.x = cur.elRx;
   // The rifle follows the pose only while it is in the hands — a dropped
   // rifle (lying beside a fallen body) must not be moved by the pose.
+  // x and ry/rz are pinned too: a re-parented rifle keeps its stale
+  // world-space x and drop rotation otherwise (24/11/2026 floating
+  // rifle bug — the pose is the only per-frame writer of the rifle).
   if (u.rifle.parent === u.upper) {
+    u.rifle.position.x = 0.08;
     u.rifle.position.y = cur.rifleY;
     u.rifle.position.z = cur.rifleZ;
     u.rifle.rotation.x = cur.rifleRX;
+    u.rifle.rotation.y = 0;
+    u.rifle.rotation.z = 0;
   }
 }
 
@@ -1082,9 +1096,9 @@ function updateHUD() {
   // Health + ammo (mine). The ammo reads as a sentence — spare magazines
   // only, no round counter (deliberate): "5 spare mags". Orange while the
   // loaded magazine is empty (reload!), red when nothing is left at all.
-  healthFill.style.width = `${myHealth}%`;
-  healthFill.style.background = myHealth > 50 ? '#4caf50' : myHealth > 25 ? '#ffb340' : '#e53333';
-  healthText.textContent = myHealth;
+  // Health icon: green + smiling at full health, red + sad after the
+  // first hit (24/11/2026 — the bar and the number are gone).
+  healthIcon.classList.toggle('hurt', myHealth < 100);
   if (myInMag === 0 && myMags === 0) {
     ammoText.textContent = 'NO AMMO';
     ammoText.style.color = '#e53333';
