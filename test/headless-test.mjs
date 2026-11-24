@@ -41,16 +41,30 @@
 //     in the next snapshots for every other client, clearing them
 //     clears the relay, and non-boolean junk is ignored. (The poses
 //     themselves are client-side; this covers the wire only.)
-//   Scenario 10 (solo NPC): while a solo player is in the lobby, a
-//     defender dummy appears in snapshots (never in state), holds fire
-//     out of range, fires 3-shot bursts at a solo player within 30 m
-//     (shots never hit, aim pose on), stops when they leave range, and
-//     vanishes when the last solo player leaves.
+//   Scenario 10 (solo NPCs): while a solo player is in the lobby, 10
+//     NPC targets appear in snapshots (never in state) — ids -1..-10,
+//     spread over both sides of the street and both floors, in windows.
+//     They fire 3-shot bursts at a solo player within 30 m (shots never
+//     hit, aim pose on), stop when they leave range, and vanish when the
+//     last solo player leaves.
 //   Scenario 11 (solo same-name takeover): two solo players with the
 //     same callsign are the same person in two tabs — the second join
 //     kick-takeovers the first (the kicked tab gets 'kicked' and its
 //     socket closes, so it can't rejoin and ping-pong). Solo players
 //     with different names coexist untouched.
+//   Scenario 12 (solo NPC shoot-down): a solo shot at another player
+//     still never hits; distance damage on NPCs (1 hit <= 15 m, 2 hits
+//     15-50 m, 3 hits > 50 m); a downed NPC stays down — no revive —
+//     and stops firing, and shots at it do not hit.
+//   Scenario 13 (deliberate team leave): a 1v1 match, one player sends
+//     'leave' mid-match — the leaver gets 'left', the other team wins
+//     the round by elimination, the leaver is gone from the state, and
+//     they may rejoin within the grace window (same callsign + team).
+//     A solo player sending 'leave' is ignored (solo uses leaveSolo).
+//   Scenario 14 (solo NPC reset + harmless fire): NPC shots never
+//     damage the solo player (health stays 100 through bursts); leaving
+//     solo and rejoining re-draws the set — all 10 NPCs alive again at
+//     full health, including one shot down before leaving.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -151,7 +165,7 @@ async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500', NPC_DOWN_MS: '600' },
+    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -712,8 +726,8 @@ async function main() {
     for (const c of [v1, v2]) c.close();
     await sleep(300);
 
-    // Scenario 10 — solo defender NPC. w1 (team A, lobby) observes the
-    // snapshots; n1 is the solo player the NPC shoots at.
+    // Scenario 10 — solo NPCs. w1 (team A, lobby) observes the
+    // snapshots; n1 is the solo player the NPCs shoot at.
     const w1 = new Client('Observer');
     await w1.ready();
     w1.send({ t: 'join', name: 'Observer', team: 'A' });
@@ -721,54 +735,73 @@ async function main() {
     await sleep(500);
     const noNpcYet = w1.findLast('snapshot');
     assert.ok(noNpcYet && !noNpcYet.players.some((p) => p.npc === true),
-      'no NPC before any solo player is present');
-    console.log('ok - no NPC while nobody plays solo');
+      'no NPCs before any solo player is present');
+    console.log('ok - no NPCs while nobody plays solo');
     const n1 = new Client('NpcSolo');
     await n1.ready();
     n1.send({ t: 'solo', name: 'NpcSolo' });
     await n1.waitFor('soloJoined');
     const npcSnap = await w1.waitFor('snapshot', (m) =>
-      m.players.some((p) => p.npc === true && p.id === -1));
-    const npcEntry = npcSnap.players.find((p) => p.npc === true);
-    assert.equal(npcEntry.name, 'Dummy');
-    assert.equal(npcEntry.team, 'B');
-    assert.equal(npcEntry.aiming, false);
-    console.log('ok - NPC appears in snapshots once a solo player is present (idle, out of range)');
+      m.players.filter((p) => p.npc === true).length === 10);
+    const npcs = npcSnap.players.filter((p) => p.npc === true);
+    // Ids -1..-10, names NPC 1..NPC 10, team B, all alive at full health.
+    assert.deepEqual(npcs.map((p) => p.id).sort((a, b) => a - b),
+      [-10, -9, -8, -7, -6, -5, -4, -3, -2, -1]);
+    assert.deepEqual(npcs.map((p) => p.name).sort(),
+      ['NPC 1', 'NPC 10', 'NPC 2', 'NPC 3', 'NPC 4', 'NPC 5', 'NPC 6', 'NPC 7', 'NPC 8', 'NPC 9']);
+    assert.ok(npcs.every((p) => p.team === 'B' && p.alive === true && p.health === 100));
+    assert.ok(npcs.every((p) => typeof p.aiming === 'boolean'));
+    // (No aiming=false assertion here: the solo spawn sits within 30 m
+    // of the nearest NPCs, so some of them are already engaging.)
+    // Window spots: just inside a street wall, at a window centre,
+    // ground floor (y=0) or second floor (y=3); spread over both sides
+    // of the street and both floors.
+    const windowZ = [-35.5, -28.5, -19.5, -12.5, -3.5, 3.5, 12.5, 19.5, 28.5, 35.5];
+    assert.ok(npcs.every((p) => Math.abs(Math.abs(p.x) - 6.8) < 0.01 && (p.y === 0 || p.y === 3) && windowZ.includes(p.z)),
+      `NPC positions must be window spots, got ${JSON.stringify(npcs.map((p) => [p.x, p.y, p.z]))}`);
+    assert.ok(npcs.filter((p) => p.x < 0).length >= 3 && npcs.filter((p) => p.x > 0).length >= 3,
+      'NPCs must span both sides of the street');
+    assert.ok(npcs.filter((p) => p.y === 0).length >= 3 && npcs.filter((p) => p.y === 3).length >= 3,
+      'NPCs must span both floors');
+    console.log('ok - 10 NPCs appear in snapshots once a solo player is present (window spots, both sides/floors)');
     const st = w1.findLast('state');
-    assert.ok(st && !st.players.some((p) => p.id === -1), 'NPC must not appear in state');
-    console.log('ok - NPC never appears in state');
-    // Out of range (solo spawn is ~86 m from the NPC): no shots.
-    await sleep(1500);
-    assert.equal(n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === -1).length, 0);
-    console.log('ok - NPC holds fire while the solo player is out of range');
-    // Walk into range (20 m from the NPC at (0, 40)).
-    n1.send({ t: 'move', x: 0, y: 0, z: 20, yaw: 0, pitch: 0 });
-    const npcShot = await n1.waitFor('shot', (m) => m.shooterId === -1, 5000);
+    assert.ok(st && !st.players.some((p) => p.id < 0), 'NPCs must not appear in state');
+    console.log('ok - NPCs never appear in state');
+    // Walk next to one NPC (street centre, same z): it opens fire.
+    const target = npcs[0];
+    n1.send({ t: 'move', x: 0, y: 0, z: target.z, yaw: 0, pitch: 0 });
+    const npcShot = await n1.waitFor('shot', (m) => m.shooterId === target.id, 5000);
     assert.equal(npcShot.hit, false);
     assert.equal(npcShot.killed, false);
     assert.equal(npcShot.targetId, null);
     console.log('ok - NPC opens fire within range (shots never hit)');
     await sleep(2000);
-    const burstCount = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === -1).length;
+    const burstCount = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === target.id).length;
     assert.ok(burstCount >= 3, `expected a full burst, got ${burstCount} NPC shots`);
     const aimSnap = w1.findLast('snapshot', (m) => m.players.some((p) => p.npc === true));
-    assert.equal(aimSnap.players.find((p) => p.npc === true).aiming, true);
+    assert.equal(aimSnap.players.find((p) => p.id === target.id).aiming, true);
     console.log('ok - NPC fires bursts and shows the aim pose while engaging');
-    // Walk away: the firing stops.
-    const npcShotsBefore = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === -1).length;
-    n1.send({ t: 'move', x: SPAWNS.attackers[0].x, y: 0, z: SPAWNS.attackers[0].z, yaw: Math.PI, pitch: 0 });
+    // Walk away from THAT npc: 35 m along the street puts the player
+    // out of its 30 m range (other NPCs nearby may keep firing — only
+    // this one's shots are counted).
+    const far = npcs.find((p) => Math.abs(p.z) >= 28.5);
+    n1.send({ t: 'move', x: 0, y: 0, z: far.z, yaw: 0, pitch: 0 });
+    await n1.waitFor('shot', (m) => m.shooterId === far.id, 5000);
+    const farShotsBefore = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === far.id).length;
+    const awayZ = far.z >= 0 ? far.z - 35 : far.z + 35;
+    n1.send({ t: 'move', x: 0, y: 0, z: awayZ, yaw: 0, pitch: 0 });
     await sleep(2500);
-    const npcShotsAfter = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === -1).length;
-    assert.equal(npcShotsAfter, npcShotsBefore, 'NPC must stop firing out of range');
-    console.log('ok - NPC holds fire again once the solo player leaves range');
-    // Leave solo: the NPC vanishes from snapshots (the observer stays
+    const farShotsAfter = n1.inbox.filter((m) => m.t === 'shot' && m.shooterId === far.id).length;
+    assert.equal(farShotsAfter, farShotsBefore, 'NPC must stop firing out of range');
+    console.log('ok - NPC holds fire again once the solo player leaves its range');
+    // Leave solo: the NPCs vanish from snapshots (the observer stays
     // joined, so snapshots keep flowing).
     n1.send({ t: 'leaveSolo' });
     await n1.waitFor('soloLeft');
     const goneSnap = await w1.waitFor('snapshot', (m) =>
       !m.players.some((p) => p.npc === true), 5000);
     assert.ok(goneSnap);
-    console.log('ok - NPC vanishes from snapshots when the last solo player leaves');
+    console.log('ok - NPCs vanish from snapshots when the last solo player leaves');
     for (const c of [n1, w1]) c.close();
     await sleep(300);
 
@@ -807,62 +840,215 @@ async function main() {
     for (const c of [y1, y2, y3]) c.close();
     await sleep(300);
 
-    // Scenario 12 — solo players can shoot the NPC dummy down: same
-    // distance damage as a player; enough hits put it down for
-    // NPC_DOWN_MS (600 ms in this test), then it gets back up at full
-    // health and resumes fire. Solo shots at players still never hit.
-    const shooter = new Client('DummyShooter');
+    // Scenario 12 — solo players can shoot the NPCs down: distance
+    // damage (1 hit <= 15 m, 2 hits 15-50 m, 3 hits > 50 m). A downed
+    // NPC stays down — no revive — stops firing, and shots at it do
+    // not hit. Solo shots at players still never hit.
+    const shooter = new Client('NpcShooter');
     await shooter.ready();
-    shooter.send({ t: 'solo', name: 'DummyShooter' });
+    shooter.send({ t: 'solo', name: 'NpcShooter' });
     await shooter.waitFor('soloJoined');
-    const bystander = new Client('DummyBystander');
+    const bystander = new Client('NpcBystander');
     await bystander.ready();
-    bystander.send({ t: 'solo', name: 'DummyBystander' });
+    bystander.send({ t: 'solo', name: 'NpcBystander' });
     await bystander.waitFor('soloJoined');
-    // Walk to 10 m from the NPC at (0, 40): one hit kills (<= 15 m).
+    // Read the NPC set from a snapshot (the observer closed; the
+    // shooter sees the same snapshots).
+    const setSnap = await shooter.waitFor('snapshot', (m) =>
+      m.players.filter((p) => p.npc === true).length === 10);
+    const set = setSnap.players.filter((p) => p.npc === true);
+    const dist3d = (npc, x, z) =>
+      Math.sqrt((npc.x - x) ** 2 + npc.y ** 2 + (npc.z - z) ** 2);
+    // A solo shot at another player still never hits.
     shooter.send({ t: 'move', x: 0, y: 0, z: 30, yaw: 0, pitch: 0 });
     await sleep(300);
-    // A solo shot at another player still never hits.
     shooter.inbox.length = 0;
     shooter.send({ t: 'shot', targetId: bystander.id });
     const noHit = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id, 5000);
     assert.equal(noHit.hit, false);
     assert.equal(noHit.targetId, null);
     console.log('ok - solo shot at a player still never hits');
-    // One close-range hit puts the dummy down.
-    await sleep(150); // FIRE_INTERVAL_MS is 90
+    // Close range: stand on the street at the NPC's window (3D distance
+    // ~7 m) — one hit kills (<= 15 m, 100 damage).
+    const close = set[0];
+    shooter.send({ t: 'move', x: 0, y: 0, z: close.z, yaw: 0, pitch: 0 });
+    await sleep(300);
+    assert.ok(dist3d(close, 0, close.z) <= 15, 'close-range setup must be within 15 m');
     shooter.inbox.length = 0;
-    shooter.send({ t: 'shot', targetId: -1 });
-    const down = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id && m.targetId === -1, 5000);
+    shooter.send({ t: 'shot', targetId: close.id });
+    const down = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id && m.targetId === close.id, 5000);
     assert.equal(down.hit, true);
     assert.equal(down.killed, true);
     assert.equal(down.damage, 100);
     assert.equal(down.targetHealth, 0);
     assert.equal(down.friendlyFire, false);
-    console.log('ok - one close-range solo hit puts the dummy down (100 damage)');
+    console.log('ok - one close-range solo hit puts the NPC down (100 damage)');
     const downSnap = await shooter.waitFor('snapshot', (m) =>
-      m.players.some((p) => p.npc === true && p.alive === false && p.health === 0), 5000);
-    assert.equal(downSnap.players.find((p) => p.npc === true).aiming, false);
+      m.players.some((p) => p.npc === true && p.id === close.id && p.alive === false && p.health === 0), 5000);
+    assert.equal(downSnap.players.find((p) => p.id === close.id).aiming, false);
     console.log('ok - downed NPC shows alive=false, health=0, not aiming');
     // While down, further shots do not hit it.
     await sleep(150);
     shooter.inbox.length = 0;
-    shooter.send({ t: 'shot', targetId: -1 });
+    shooter.send({ t: 'shot', targetId: close.id });
     const downShot = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id, 5000);
     assert.equal(downShot.hit, false);
-    console.log('ok - shots at the downed dummy do not hit');
-    // After the down time it gets back up at full health and resumes fire.
-    // (Inbox cleared: an alive=true snapshot from before the down would
-    // match the predicate immediately.)
+    console.log('ok - shots at the downed NPC do not hit');
+    // No revive: well past the old down time it is still down, and it
+    // has not fired since going down.
+    const closeShotsBefore = shooter.inbox.filter((m) => m.t === 'shot' && m.shooterId === close.id).length;
+    await sleep(2500);
+    const stillDown = shooter.findLast('snapshot', (m) =>
+      m.players.some((p) => p.id === close.id));
+    assert.ok(stillDown && stillDown.players.find((p) => p.id === close.id).alive === false
+      && stillDown.players.find((p) => p.id === close.id).health === 0,
+      'downed NPC must stay down (no revive)');
+    assert.equal(shooter.inbox.filter((m) => m.t === 'shot' && m.shooterId === close.id).length,
+      closeShotsBefore, 'downed NPC must not fire');
+    console.log('ok - downed NPC stays down after 2.5 s+ and never fires again');
+    // Medium range (15-50 m): 20 m along the street — 50 damage, 2 hits.
+    const medium = set.find((p) => p.id !== close.id);
+    const medZ = medium.z + 20 <= 60 ? medium.z + 20 : medium.z - 20;
+    shooter.send({ t: 'move', x: 0, y: 0, z: medZ, yaw: 0, pitch: 0 });
+    await sleep(300);
+    const medDist = dist3d(medium, 0, medZ);
+    assert.ok(medDist > 15 && medDist <= 50, `medium setup must be 15-50 m, got ${medDist.toFixed(1)}`);
     shooter.inbox.length = 0;
-    const upSnap = await shooter.waitFor('snapshot', (m) =>
-      m.players.some((p) => p.npc === true && p.alive === true && p.health === 100), 5000);
-    assert.ok(upSnap);
-    console.log('ok - NPC gets back up at full health after the down time');
-    const resumed = await shooter.waitFor('shot', (m) => m.shooterId === -1, 5000);
-    assert.ok(resumed);
-    console.log('ok - revived NPC resumes fire within range');
+    shooter.send({ t: 'shot', targetId: medium.id });
+    const med1 = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id && m.targetId === medium.id, 5000);
+    assert.equal(med1.hit, true);
+    assert.equal(med1.killed, false);
+    assert.equal(med1.damage, 50);
+    assert.equal(med1.targetHealth, 50);
+    await sleep(150);
+    shooter.inbox.length = 0;
+    shooter.send({ t: 'shot', targetId: medium.id });
+    const med2 = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id && m.targetId === medium.id, 5000);
+    assert.equal(med2.killed, true);
+    assert.equal(med2.targetHealth, 0);
+    console.log('ok - medium range takes 2 hits (50 damage each)');
+    // Long range (> 50 m): 55 m along the street — 34 damage, 3 hits.
+    const farNpc = set.find((p) => p.id !== close.id && p.id !== medium.id && p.z >= 0);
+    const farZ = farNpc.z - 55;
+    shooter.send({ t: 'move', x: 0, y: 0, z: farZ, yaw: 0, pitch: 0 });
+    await sleep(300);
+    const farDist = dist3d(farNpc, 0, farZ);
+    assert.ok(farDist > 50, `long setup must be > 50 m, got ${farDist.toFixed(1)}`);
+    const farHealth = [];
+    for (let i = 0; i < 3; i++) {
+      shooter.inbox.length = 0;
+      shooter.send({ t: 'shot', targetId: farNpc.id });
+      const s = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id && m.targetId === farNpc.id, 5000);
+      assert.equal(s.hit, true);
+      assert.equal(s.damage, 34);
+      farHealth.push(s.targetHealth);
+      assert.equal(s.killed, i === 2);
+      await sleep(150);
+    }
+    assert.deepEqual(farHealth, [66, 32, 0]);
+    console.log('ok - long range takes 3 hits (34 damage each)');
     for (const c of [shooter, bystander]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 13: deliberate team leave
+    // A 1v1 match; one player leaves mid-match (EXIT button). The
+    // leaver gets 'left', the other team wins the round by elimination,
+    // and the leaver may rejoin within the grace window. A solo player
+    // sending 'leave' is ignored.
+    const l1 = new Client('Leaver');
+    const l2 = new Client('Stayer');
+    for (const c of [l1, l2]) await c.ready();
+    l1.send({ t: 'join', name: 'Leaver', team: 'A' });
+    l2.send({ t: 'join', name: 'Stayer', team: 'B' });
+    await l1.waitFor('state', (m) => m.players.length === 2);
+    l1.send({ t: 'start' });
+    await l1.waitFor('state', (m) => m.phase === 'playing');
+    console.log('ok - 1v1 match started for the leave test');
+    const ls = new Client('LeaveSolo');
+    await ls.ready();
+    ls.send({ t: 'solo', name: 'LeaveSolo' });
+    await ls.waitFor('soloJoined');
+    ls.inbox.length = 0;
+    ls.send({ t: 'leave' });
+    await sleep(300);
+    assert.equal(ls.inbox.filter((m) => m.t === 'left').length, 0, 'solo leave must be ignored');
+    const stillThere = l1.findLast('state');
+    assert.ok(stillThere && stillThere.players.some((p) => p.solo && p.name === 'LeaveSolo'));
+    console.log('ok - leave from a solo player is ignored');
+    l1.send({ t: 'leave' });
+    const left = await l1.waitFor('left', () => true, 5000);
+    assert.ok(left);
+    console.log('ok - leaver gets the left reply');
+    const leaveRoundEnd = await l2.waitFor('roundEnd', (m) => m.winner === 'B' && m.reason === 'elimination', 5000);
+    assert.ok(leaveRoundEnd);
+    console.log('ok - round ends by elimination, the other team wins');
+    await waitFor(() => {
+      const last = l2.findLast('state');
+      return last && last.players.length === 2 && !last.players.some((p) => p.name === 'Leaver') ? last : null;
+    }, 5000, 'leaver removed from the state');
+    console.log('ok - leaver removed from the state (solo observer stays)');
+    const l1b = new Client('Leaver-again');
+    await l1b.ready();
+    l1b.send({ t: 'join', name: 'Leaver', team: 'A' });
+    await waitFor(() => {
+      const last = l2.findLast('state');
+      return last && last.players.some((p) => p.name === 'Leaver' && p.team === 'A') ? last : null;
+    }, 5000, 'leaver rejoined within the grace window');
+    console.log('ok - leaver rejoins within the grace window');
+    for (const c of [l1, l2, ls, l1b]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 14: NPC fire
+    // never damages the solo player, and leaving solo + rejoining
+    // re-draws the NPC set (all 10 alive again at full health).
+    // ro observes snapshots throughout: a client that left solo stops
+    // receiving them (broadcasts go to players only).
+    const ro = new Client('ResetObserver');
+    await ro.ready();
+    ro.send({ t: 'join', name: 'ResetObserver', team: 'A' });
+    await ro.waitFor('state', (m) => m.players.length === 1);
+    const rs1 = new Client('ResetSolo');
+    await rs1.ready();
+    rs1.send({ t: 'solo', name: 'ResetSolo' });
+    await rs1.waitFor('soloJoined');
+    const rSnap = await rs1.waitFor('snapshot', (m) =>
+      m.players.filter((p) => p.npc === true).length === 10);
+    const rNpcs = rSnap.players.filter((p) => p.npc === true);
+    // Stand next to one NPC for a few seconds: it fires bursts at the
+    // player, but none of them hit and the player's health stays 100.
+    const rTarget = rNpcs[0];
+    rs1.send({ t: 'move', x: 0, y: 0, z: rTarget.z, yaw: 0, pitch: 0 });
+    await rs1.waitFor('shot', (m) => m.shooterId === rTarget.id, 5000);
+    await sleep(2500);
+    const npcShots = rs1.inbox.filter((m) => m.t === 'shot' && m.shooterId < 0);
+    assert.ok(npcShots.length >= 3, `expected NPC bursts, got ${npcShots.length} shots`);
+    assert.ok(npcShots.every((s) => s.hit === false && s.killed === false && s.targetId === null),
+      'NPC shots must never hit');
+    const rHealth = rs1.findLast('snapshot', (m) => m.players.some((p) => p.id === rs1.id));
+    assert.equal(rHealth.players.find((p) => p.id === rs1.id).health, 100);
+    console.log('ok - NPC bursts never damage the solo player (health stays 100)');
+    // Shoot one NPC down, then leave solo.
+    rs1.inbox.length = 0;
+    rs1.send({ t: 'shot', targetId: rTarget.id });
+    const rDown = await rs1.waitFor('shot', (m) => m.shooterId === rs1.id && m.targetId === rTarget.id, 5000);
+    assert.equal(rDown.killed, true);
+    rs1.send({ t: 'leaveSolo' });
+    await rs1.waitFor('soloLeft');
+    const rGone = await ro.waitFor('snapshot', (m) =>
+      !m.players.some((p) => p.npc === true), 5000);
+    assert.ok(rGone);
+    console.log('ok - NPC shot down, then the set vanishes on leaving solo');
+    // Rejoin solo: a fresh set — all 10 alive at full health, including
+    // the one shot down before leaving.
+    rs1.send({ t: 'solo', name: 'ResetSolo' });
+    await rs1.waitFor('soloJoined');
+    const rSnap2 = await rs1.waitFor('snapshot', (m) =>
+      m.players.filter((p) => p.npc === true && p.alive === true && p.health === 100).length === 10);
+    assert.ok(rSnap2);
+    assert.equal(rSnap2.players.find((p) => p.id === rTarget.id).alive, true);
+    assert.equal(rSnap2.players.find((p) => p.id === rTarget.id).health, 100);
+    console.log('ok - rejoining solo re-draws the set: all 10 NPCs alive at full health');
+    for (const c of [rs1, ro]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
