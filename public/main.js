@@ -1485,7 +1485,8 @@ socket.on('soloJoined', (msg) => {
   exitSoloBtn.classList.remove('hidden');
   showScreen('game');
   maybeShowHelpSlide();
-  showBanner('SOLO MODE\nExplore the map — move, shoot, reload', 4000);
+  // No intro banner: it overlapped the help slide on first entry and
+  // added nothing on later ones (removed 24/11/2026, Lior's call).
 });
 
 socket.on('soloLeft', () => {
