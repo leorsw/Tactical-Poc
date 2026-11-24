@@ -132,6 +132,15 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   border: 1.5px solid rgba(120,170,255,0.75); color: rgba(255,255,255,0.92);
   text-shadow: 0 1px 3px rgba(0,0,0,0.9); font-weight: 700; padding: 10px 22px; font-size: 16px; }
 #connBanner { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); background: rgba(180, 30, 30, 0.92); color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 14px; font-weight: bold; pointer-events: none; z-index: 30; white-space: nowrap; }
+/* EMPTY caption (24/11/2026): flashes red at the top of the screen when
+   the player presses FIRE with an empty magazine — the answer to "why
+   didn't my gun fire". Shows for 1.5 s per press (each press re-triggers
+   it); not shown while reloading (RELOADING… already covers that). */
+#emptyCaption { position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
+  color: #e74c3c; font-size: 28px; font-weight: 700; letter-spacing: 0.2em;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.8); pointer-events: none; z-index: 15;
+  opacity: 0; transition: opacity 0.25s ease-out; white-space: nowrap; }
+#emptyCaption.show { opacity: 1; transition: opacity 0.05s ease-in; }
 #mapPanel { position: relative; }
 #mapCloseBtn { position: absolute; top: 2px; right: 4px; background: none; border: none; color: #fff; font-size: 22px; line-height: 1; cursor: pointer; padding: 6px 10px; z-index: 2; }
 #fsHelp { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; z-index: 40; }
