@@ -194,15 +194,17 @@ body.touch #touchUI { display: block; }
 #reloadArrow svg { display: block; }
 /* AIM as a transparent sight: a light ring + white crosshairs (SVG),
    no label, no red dot (24/11/2026, illustration v4). The active state
-   (aiming) brightens the ring. Centre (750,220) on the 844x390 frame. */
-#aimBtn { position: absolute; right: 59px; bottom: 135px; width: 70px; height: 70px; border-radius: 50%;
+   (aiming) brightens the ring. Centre (705,220) on the 844x390 frame
+   (moved 45px left, 24/11/2026, mockup v5). */
+#aimBtn { position: absolute; right: 104px; bottom: 135px; width: 70px; height: 70px; border-radius: 50%;
   background: transparent; border: 2px solid rgba(255,255,255,0.75);
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0;
   touch-action: none; }
 #aimBtn.active { background: rgba(255,255,255,0.12); border-color: #fff; }
 /* CROUCH (24/11/2026, illustration v4): same look, spread right.
-   Centre (645,220) on the 844x390 frame. */
-#crouchBtn { position: absolute; right: 164px; bottom: 135px; width: 70px; height: 70px; border-radius: 50%;
+   Centre (794,265) on the 844x390 frame (moved right + down, 24/11/2026,
+   mockup v5: 15px off the right edge, 15px below the v3 spot). */
+#crouchBtn { position: absolute; right: 15px; bottom: 90px; width: 70px; height: 70px; border-radius: 50%;
   background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
   color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px;
