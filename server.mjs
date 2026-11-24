@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { SPAWNS, spawnLayout, objectiveContains } from './public/map.js';
+import { SPAWNS, spawnLayout, objectiveContains, HOUSES } from './public/map.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -223,27 +223,28 @@ function snapshotPlayerList(now) {
     crouch: !!p.crouch,
     aiming: !!p.aiming,
   }));
-  // The NPC rides the snapshot (never the state): clients render it like
-  // any other player, but it never appears in the lobby or the counts.
-  // Its alive flag is its up/down state: a solo kill puts it down for
-  // NPC_DOWN_MS, then updateNpc revives it at full health.
-  if (npc) {
+  // The NPCs ride the snapshot (never the state): clients render them
+  // like any other player, but they never appear in the lobby or the
+  // counts. An NPC's alive flag is its up/down state: a solo kill puts
+  // it down for good — it never gets back up (no revive; the set is
+  // re-drawn only when the next solo session starts).
+  for (const n of npcs) {
     list.push({
-      id: NPC_ID,
-      x: NPC_POS.x,
-      y: 0,
-      z: NPC_POS.z,
-      yaw: npc.yaw,
+      id: n.id,
+      x: n.x,
+      y: n.y,
+      z: n.z,
+      yaw: n.yaw,
       pitch: 0,
-      alive: npc.health > 0,
-      health: npc.health,
+      alive: n.health > 0,
+      health: n.health,
       inMag: MAG_SIZE,
       mags: MAG_COUNT - 1,
       reloading: false,
       crouch: false,
-      aiming: npc.aiming,
+      aiming: n.aiming,
       npc: true,
-      name: NPC_NAME,
+      name: n.name,
       team: 'B',
     });
   }
@@ -355,80 +356,142 @@ function checkElimination() {
 }
 
 // ---------------------------------------------------------------------------
-// Solo defender NPC: a target dummy that shoots at solo players so they can
-// see a muzzle flash from the outside and hear remote shots. It is NOT a
-// player: it lives outside the players map and never joins a match, and its
-// shots never damage anyone. Solo players CAN shoot it: same distance damage
-// as a player, and when its health hits 0 it goes down for NPC_DOWN_MS and
-// then gets back up — so a solo player can see the fall. It exists only
-// while the room is in the lobby phase and at least one solo player is
-// present. Position is overridable via NPC_X / NPC_Z (screenshot runs put
-// it in front of the solo spawn).
+// Solo NPCs: 10 target figures scattered along the street — some in
+// ground-floor windows, some on the second floor (visible through the
+// upper windows) — so a solo player can see muzzle flashes from the
+// outside and hear remote shots, and has targets to shoot at. They are
+// NOT players: they live outside the players map and never join a match,
+// and their shots never damage anyone. Solo players CAN shoot them: same
+// distance damage as a player, and enough hits put one down for good —
+// it stays down until the solo session ends (no revive, unlike the old
+// single Dummy). They exist only while the room is in the lobby phase
+// and at least one solo player is present; the set is drawn when the
+// first solo player arrives and re-drawn when the next solo player
+// arrives after the room emptied of solo players.
+//
+// Positions: window spots — just inside a house's street wall, at a
+// window centre (x = side * 6.8, z = house centre +/- 3.5), ground floor
+// (y = 0) or second floor (y = 3). The draw takes from all four buckets
+// (west/east x ground/upper) so the set always spans both sides of the
+// street and both floors. NPC_SEED pins the draw (screenshot runs);
+// otherwise it is random on every solo session.
 // ---------------------------------------------------------------------------
-const NPC_ID = -1; // player ids start at 1 (nextId), so -1 can never collide
-const NPC_NAME = 'Dummy';
-const NPC_DOWN_MS = Number(process.env.NPC_DOWN_MS ?? 5000); // down time after a solo kill
-const NPC_POS = {
-  x: Number(process.env.NPC_X ?? 0),
-  z: Number(process.env.NPC_Z ?? 40),
-};
+const NPC_COUNT = 10;
+const NPC_IDS = Array.from({ length: NPC_COUNT }, (_, i) => -(i + 1)); // -1..-10; player ids start at 1 (nextId), so these can never collide
 const NPC_RANGE = 30; // opens fire within 30 m
 const NPC_BURST = 3; // shots per burst
 const NPC_BURST_INTERVAL_MS = 120; // inside a burst
 const NPC_BURST_PAUSE_MS = 1200; // between bursts
-let npc = null; // { yaw, aiming, burstLeft, nextShotAt, health, downUntil } or null
+let npcs = []; // [{ id, name, x, y, z, yaw, aiming, burstLeft, nextShotAt, health }] or []
 
-function updateNpc(now) {
+// mulberry32: a tiny seeded PRNG so NPC_SEED draws are reproducible.
+function seededRandom(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function drawNpcSet() {
+  // Candidate window spots, bucketed by side and floor.
+  const buckets = { westGround: [], westUpper: [], eastGround: [], eastUpper: [] };
+  for (const h of HOUSES) {
+    for (const wz of [h.cz - 3.5, h.cz + 3.5]) {
+      const spot = { x: h.side * 6.8, z: wz };
+      for (const y of [0, 3]) {
+        const bucket = (h.side < 0 ? 'west' : 'east') + (y === 0 ? 'Ground' : 'Upper');
+        buckets[bucket].push({ ...spot, y });
+      }
+    }
+  }
+  const seedEnv = process.env.NPC_SEED;
+  const rand = seedEnv != null && seedEnv !== ''
+    ? seededRandom([...seedEnv].reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7))
+    : Math.random;
+  const shuffle = (arr) => {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  };
+  // Round-robin across the four buckets (3, 3, 2, 2): the set always
+  // spans both sides of the street and both floors.
+  const takes = { westGround: 3, westUpper: 3, eastGround: 2, eastUpper: 2 };
+  const spots = [];
+  for (const [bucket, take] of Object.entries(takes)) {
+    spots.push(...shuffle(buckets[bucket]).slice(0, take));
+  }
+  return spots.map((s, i) => ({
+    id: NPC_IDS[i],
+    name: `NPC ${i + 1}`,
+    x: s.x,
+    y: s.y,
+    z: s.z,
+    // Face the street (out of the window).
+    yaw: s.x < 0 ? -Math.PI / 2 : Math.PI / 2,
+    aiming: false,
+    burstLeft: 0,
+    nextShotAt: 0,
+    health: 100,
+  }));
+}
+
+function updateNpcs(now) {
   const solos = [...players.values()].filter((p) => p.solo && p.alive);
   if (phase !== 'lobby' || solos.length === 0) {
-    npc = null;
+    npcs = [];
     return;
   }
-  if (!npc) npc = { yaw: 0, aiming: false, burstLeft: 0, nextShotAt: 0, health: 100, downUntil: 0 };
-  // Down: shot by a solo player. It lies still — no aiming, no fire —
-  // until the down time passes, then gets back up at full health.
-  if (npc.health <= 0) {
-    if (now < npc.downUntil) {
-      npc.aiming = false;
-      return;
+  if (npcs.length === 0) npcs = drawNpcSet();
+  for (const n of npcs) {
+    // Down: shot by a solo player. It lies still — no aiming, no fire —
+    // for good; the set is re-drawn only when the next solo session
+    // starts (see above).
+    if (n.health <= 0) {
+      n.aiming = false;
+      continue;
     }
-    npc.health = 100;
-  }
-  let target = null;
-  let best = Infinity;
-  for (const p of solos) {
-    const d = Math.hypot(p.pos.x - NPC_POS.x, p.pos.z - NPC_POS.z);
-    if (d < best) { best = d; target = p; }
-  }
-  if (!target || best > NPC_RANGE) {
-    npc.aiming = false;
-    npc.burstLeft = 0;
-    return;
-  }
-  npc.aiming = true;
-  npc.yaw = Math.atan2(-(target.pos.x - NPC_POS.x), -(target.pos.z - NPC_POS.z));
-  if (npc.burstLeft > 0 && now >= npc.nextShotAt) {
-    npc.burstLeft -= 1;
-    npc.nextShotAt = now + NPC_BURST_INTERVAL_MS;
-    // Same 'shot' event a real player produces, so the NPC's fire goes
-    // through the exact same client path (flash + sound). It never hits.
-    broadcast({
-      t: 'shot',
-      shooterId: NPC_ID,
-      targetId: null,
-      hit: false,
-      friendlyFire: false,
-      damage: 0,
-      distance: Math.round(best * 10) / 10,
-      targetHealth: null,
-      killed: false,
-      inMag: MAG_SIZE,
-      mags: MAG_COUNT - 1,
-    });
-    if (npc.burstLeft === 0) npc.nextShotAt = now + NPC_BURST_PAUSE_MS;
-  } else if (npc.burstLeft === 0 && now >= npc.nextShotAt) {
-    npc.burstLeft = NPC_BURST;
-    npc.nextShotAt = now;
+    let target = null;
+    let best = Infinity;
+    for (const p of solos) {
+      const d = Math.hypot(p.pos.x - n.x, p.pos.z - n.z);
+      if (d < best) { best = d; target = p; }
+    }
+    if (!target || best > NPC_RANGE) {
+      n.aiming = false;
+      n.burstLeft = 0;
+      continue;
+    }
+    n.aiming = true;
+    n.yaw = Math.atan2(-(target.pos.x - n.x), -(target.pos.z - n.z));
+    if (n.burstLeft > 0 && now >= n.nextShotAt) {
+      n.burstLeft -= 1;
+      n.nextShotAt = now + NPC_BURST_INTERVAL_MS;
+      // Same 'shot' event a real player produces, so the NPC's fire goes
+      // through the exact same client path (flash + sound). It never hits.
+      broadcast({
+        t: 'shot',
+        shooterId: n.id,
+        targetId: null,
+        hit: false,
+        friendlyFire: false,
+        damage: 0,
+        distance: Math.round(best * 10) / 10,
+        targetHealth: null,
+        killed: false,
+        inMag: MAG_SIZE,
+        mags: MAG_COUNT - 1,
+      });
+      if (n.burstLeft === 0) n.nextShotAt = now + NPC_BURST_PAUSE_MS;
+    } else if (n.burstLeft === 0 && now >= n.nextShotAt) {
+      n.burstLeft = NPC_BURST;
+      n.nextShotAt = now;
+    }
   }
 }
 
@@ -477,7 +540,7 @@ setInterval(() => {
     endRound(defendersTeam, 'timeout');
   }
 
-  updateNpc(now);
+  updateNpcs(now);
   if (players.size > 0) broadcast(snapshot());
 }, TICK_MS);
 
@@ -762,7 +825,8 @@ function handleMessage(ws, msg) {
       const target = p.solo ? null : (msg.targetId != null ? players.get(Number(msg.targetId)) : null);
       // The broadcast echoes the claimed target whenever it resolved —
       // even on a miss (a solo, dead or own target) — so the shooter can
-      // tell what the shot was aimed at. An NPC hit reports NPC_ID.
+      // tell what the shot was aimed at. An NPC hit reports the NPC's
+      // own (negative) id.
       let shotTargetId = target ? target.id : null;
       // Friendly fire is ON: any living player except yourself can be hit.
       if (target && target.alive && target.id !== p.id && !target.solo) {
@@ -786,29 +850,30 @@ function handleMessage(ws, msg) {
         }
         targetHealth = target.health;
       }
-      // Solo players can shoot the NPC dummy: same distance damage as a
-      // player. Enough hits put it down for NPC_DOWN_MS (updateNpc brings
-      // it back up). Not a match kill: no state broadcast, no elimination
-      // check, no kill credit.
-      if (p.solo && Number(msg.targetId) === NPC_ID && npc && npc.health > 0) {
+      // Solo players can shoot the NPCs: same distance damage as a
+      // player. Enough hits put one down for good (no revive; the set
+      // is re-drawn only when the next solo session starts). Not a
+      // match kill: no state broadcast, no elimination check, no kill
+      // credit. An NPC hit reports its own (negative) id.
+      const npcHit = p.solo ? npcs.find((n) => n.id === Number(msg.targetId)) : null;
+      if (npcHit && npcHit.health > 0) {
         hit = true;
-        shotTargetId = NPC_ID;
-        const dx = NPC_POS.x - p.pos.x;
-        const dy = 0 - p.pos.y;
-        const dz = NPC_POS.z - p.pos.z;
+        shotTargetId = npcHit.id;
+        const dx = npcHit.x - p.pos.x;
+        const dy = npcHit.y - p.pos.y;
+        const dz = npcHit.z - p.pos.z;
         distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
         damage = damageForDistance(distance);
         p.stats.hits += 1;
         p.stats.damage += damage;
-        npc.health -= damage;
-        if (npc.health <= 0) {
-          npc.health = 0;
-          npc.downUntil = now + NPC_DOWN_MS;
-          npc.aiming = false;
-          npc.burstLeft = 0;
+        npcHit.health -= damage;
+        if (npcHit.health <= 0) {
+          npcHit.health = 0;
+          npcHit.aiming = false;
+          npcHit.burstLeft = 0;
           killed = true;
         }
-        targetHealth = npc.health;
+        targetHealth = npcHit.health;
       }
       broadcast({
         t: 'shot',
@@ -843,6 +908,16 @@ function handleMessage(ws, msg) {
       if (!p.solo) return;
       removePlayer(p);
       send(ws, { t: 'soloLeft' });
+      break;
+    }
+    case 'leave': {
+      // A team player leaving deliberately (EXIT button): same as a
+      // disconnect — a mid-match leave opens the 5-minute grace window,
+      // so a mistaken tap is not fatal (rejoin as a spectator until the
+      // next round). Solo players use leaveSolo.
+      if (p.solo) return;
+      handleDisconnect(ws);
+      send(ws, { t: 'left' });
       break;
     }
     case 'continue': {
@@ -884,6 +959,10 @@ function removePlayer(p) {
     // No match left to rejoin: drop stale grace entries so they cannot
     // admit anyone into a later match.
     recentDisconnects.length = 0;
+    // Broadcast the reset: without this, unjoined watchers (and the
+    // exit-run observer) keep the stale pre-reset state forever —
+    // every other removePlayer path broadcasts below.
+    broadcastState();
     return;
   }
   if (hostId === p.id) {
