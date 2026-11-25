@@ -13,8 +13,8 @@
 // the second floor is y = 3.
 
 export const PLAYER_RADIUS = 0.4;
-export const PLAYER_HEIGHT = 1.7;
-export const EYE_HEIGHT = 1.6;
+export const PLAYER_HEIGHT = 1.8;
+export const EYE_HEIGHT = 1.7;
 export const FLOOR2_Y = 3;
 
 export const BOUNDS = { x0: -18, x1: 18, z0: -62, z1: 62 };
@@ -136,7 +136,7 @@ export function climbFadeAt(x, z) {
 // only blocks a player whose body (y .. y + PLAYER_HEIGHT) overlaps that
 // range. This is what makes doors work: the door header (y 2.2..6) blocks a
 // player standing on the second floor, while a player on the ground floor
-// (body 0..1.7) walks through the gap underneath it.
+// (body 0..1.8) walks through the gap underneath it.
 //
 // Windows are NOT gaps in movement collision: the street wall is solid for
 // movement except for the door. Bullets use the visual meshes (which do have
