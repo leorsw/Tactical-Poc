@@ -49,6 +49,13 @@ const clearRoomBtn = $('clearRoomBtn');
 const kickNotice = $('kickNotice');
 const startHint = $('startHint');
 const waitHost = $('waitHost');
+const adminLoginRow = $('adminLoginRow');
+const adminCodeInput = $('adminCodeInput');
+const adminLoginBtn = $('adminLoginBtn');
+const adminError = $('adminError');
+const adminPanel = $('adminPanel');
+const adminPlayerRows = $('adminPlayerRows');
+const adminGrenadeBtn = $('adminGrenadeBtn');
 const scoreBox = $('scoreBox');
 const timerEl = $('timer');
 const aliveBox = $('aliveBox');
@@ -59,6 +66,32 @@ const captureFill = $('captureFill');
 const roundInfo = $('roundInfo');
 const healthIcon = $('healthIcon');
 const ammoText = $('ammoText');
+const magIcons = $('magIcons');
+// One spare-magazine icon: a magazine outline with a baseplate, white
+// stroke on transparent (the red state is applied by CSS, see style.css).
+const MAG_SVG = '<svg viewBox="0 0 24 24"><path d="M9 2 H15 V6 H16.5 V19 A1.5 1.5 0 0 1 15 20.5 H9 A1.5 1.5 0 0 1 7.5 19 V6 H9 Z"/></svg>';
+function renderMagIcons() {
+  // One icon per spare magazine. When the loaded magazine is empty, the
+  // leftmost icon turns red (reload!); the reload consumes it and it
+  // disappears. Nothing left at all: the icons hide, NO AMMO shows.
+  // Rebuilds only when the count/red state changed (this runs every frame).
+  if (myInMag === 0 && myMags === 0) {
+    magIcons.classList.add('hidden');
+    ammoText.classList.remove('hidden');
+    ammoText.textContent = 'NO AMMO';
+    ammoText.style.color = '#e53333';
+    magIcons.dataset.key = '';
+    return;
+  }
+  ammoText.classList.add('hidden');
+  magIcons.classList.remove('hidden');
+  const red = myInMag === 0;
+  const key = `${myMags}:${red}`;
+  if (magIcons.dataset.key === key) return;
+  magIcons.dataset.key = key;
+  magIcons.innerHTML = Array.from({ length: myMags }, (_, i) =>
+    `<span class="magIcon${red && i === 0 ? ' red' : ''}">${MAG_SVG}</span>`).join('');
+}
 const reloadArrowFill = $('reloadArrowFill'); // SVG rect inside the reload arrow
 const reloadText = $('reloadText');
 const damageFlashEl = $('damageFlash');
@@ -97,13 +130,16 @@ const controls = new Controls({
   onMap: () => toggleMap(),
   onFullscreen: () => toggleFullscreen(),
   onClimb: () => tryClimb(),
+  onGrenade: () => startGrenadeArm(),
 });
 
 let myId = null;
+let myClass = 'rifleman'; // my class: rifleman | marksman | gunner
 let joined = false;
 let solo = false;
 let myTeam = null;
 let isHost = false;
+let amAdmin = false; // set from the state (me.admin) — the admin runs the match
 // One stable id per tab session (survives reloads, NOT shared between
 // tabs): the server uses it to recognise a reconnecting tab and take over
 // its old record instead of duplicating the player.
@@ -121,9 +157,12 @@ try {
 }
 // Send a join/solo message, tagged with this tab's session id.
 function sendJoin(join) {
-  if (join.solo) socket.send({ t: 'solo', name: join.name, session: tabSessionId });
+  if (join.solo) socket.send({ t: 'solo', name: join.name, cls: join.cls || 'rifleman', grenades: join.grenades !== false, session: tabSessionId });
   else socket.send({ t: 'join', name: join.name, team: join.team, session: tabSessionId });
 }
+// Solo class picker (Lior, 25/11/2026): solo players choose their own
+// class in the lobby; team players get theirs from the admin.
+let soloClass = 'rifleman';
 let meta = new Map(); // playerId -> {name, team, role, commander, host}
 let npcMeta = new Map(); // npcId -> {name, team, role} — the solo NPC never appears in state, so its name/team come from snapshots
 let snapPlayers = new Map(); // playerId -> latest snapshot entry
@@ -134,6 +173,8 @@ let game = {
   attackersTeam: 'A',
   timeLeftMs: 0,
   captureProgress: 0, // 0..1 while an attacker holds the objective zone
+  prepActive: false,
+  prepMsLeft: 0,
 };
 let currentObjective = null; // {x, z, r} — the defenders' spawn centre this round
 let currentAttackersSpawn = null; // {x, z} — the attackers' spawn centre this round
@@ -142,8 +183,15 @@ let myAlive = true;
 let myHealth = 100;
 let myInMag = 29;
 let myMags = 5;
+let myGrenades = 2; // grenades left this round (Lior, 25/11/2026)
+let soloGrenades = true; // solo toggle: add grenades to my solo mode
+let grenadeArming = null; // { endsAt } while a grenade button fills (3 s)
+let localThrowAt = 0; // my own throw, for the viewmodel dip
+const grenadeMeshes = new Map(); // id -> flying/landed grenade mesh
+const activeExplosions = []; // { mesh, bornAt } expanding blast visuals
 let reloading = false;
 let reloadEndsAt = 0;
+let myReloadMs = 3500; // this class's reload time (gunner: 5000)
 let currentWindow = null; // ground-floor window in climb range, if any
 // Window climb: 1.5 s to cross from one side of the wall to the other.
 // The position interpolates from climbFrom to climbTo (0.75 m past the
@@ -170,7 +218,13 @@ let pendingMatchEnd = null;
 // overlay is already up).
 let killedByFriendlyFire = false;
 let aimBlend = 0; // 0 = rifle lowered at the hip, 1 = aimed down the sights
-let crouchBlend = 0; // 0 = standing eye height, 1 = crouched (eye 0.35 m lower)
+let crouchBlend = 0; // 0 = standing eye height, 1 = crouched (eye lower)
+const CROUCH_EYE_DROP = 0.5; // 0.5 m — standing eye 1.70, kneel eye 1.20.
+// The player is 1.8 m tall (Lior, 25/11/2026), so the drop is significant;
+// the kneel pose deepens to match (bodyDrop -0.50).
+// the kneel leg angles re-solved so the feet stay planted.
+const CROUCH_WALK_LIMIT_MS = 2000; // crouch-walking limit (Lior, 25/11/2026)
+let crouchWalkMs = 0; // continuous crouch-walking time; resets on stop/stand
 let recoil = 0; // 0..1, decays after each shot
 let flashUntil = 0; // performance.now() timestamp: muzzle flash visible until
 let mapOpen = false;
@@ -465,8 +519,20 @@ function updateViewmodel(dt, now) {
     HIP_ROT.y + (ADS_ROT.y - HIP_ROT.y) * aimBlend,
     HIP_ROT.z + (ADS_ROT.z - HIP_ROT.z) * aimBlend
   );
-  // Aiming narrows the field of view slightly.
-  const targetFov = 75 - aimBlend * 20;
+  // My own grenade throw: the rifle dips down and back over 0.6 s
+  // (Lior, 25/11/2026).
+  const throwT = localThrowAt ? (now - localThrowAt) / 600 : 1;
+  if (throwT < 1) {
+    const dip = Math.sin(Math.PI * throwT);
+    rifle.position.y -= dip * 0.18;
+    rifle.position.z += dip * 0.1;
+  } else if (localThrowAt) {
+    localThrowAt = 0;
+  }
+  // Aiming narrows the field of view slightly — the marksman's scope
+  // magnifies x3 (FOV 29 at full aim, vs 55 for the other classes).
+  const adsFov = myClass === 'marksman' ? 29 : 55;
+  const targetFov = 75 - aimBlend * (75 - adsFov);
   if (Math.abs(camera.fov - targetFov) > 0.05) {
     camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-dt * 10));
     camera.updateProjectionMatrix();
@@ -486,26 +552,111 @@ function updateViewmodel(dt, now) {
   }
 }
 
-function makeNameSprite(name, colorCss) {
+// --- On-body name (Lior, 25/11/2026) --------------------------------------
+// The player's name printed ON the body — forehead (front of the head) and
+// upper back, like a jersey name, in the team colour, teammates-only like
+// the floating tag. It is a curved texture patch hugging the geometry,
+// NOT a flat floating plane: a sphere segment just above the head sphere
+// and one above the torso ellipsoid, using the same canvas-texture
+// technique as the tag. The patch is invisible except where the letters
+// are (transparent canvas), follows the head/torso pivots, and wraps away
+// naturally when seen from the side.
+//   SphereGeometry parametrisation (three.js): phi is the horizontal angle
+//   (z = r·sin(phi)·sin(theta)), so the front (-Z) is phi=-PI/2 and the
+//   back (+Z) is phi=+PI/2; theta is measured from the top (+Y).
+function makeBodyNameTexture(name, colorCss, w, h) {
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 56;
+  canvas.width = w;
+  canvas.height = h;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(0, 0, 256, 56);
-  ctx.font = 'bold 30px system-ui, sans-serif';
+  ctx.clearRect(0, 0, w, h);
+  const text = name.slice(0, 16);
+  // Fit the font to the canvas (Lior, 25/11/2026): the name spreads almost
+  // to the edges of the patch, and the size follows the name's length — a
+  // short name is drawn much bigger than a long one. Start from the tallest
+  // font that fits the height, then shrink until the width fits too.
+  const maxW = w * 0.92, maxH = h * 0.88;
+  let size = Math.floor(maxH);
+  ctx.font = `bold ${size}px system-ui, sans-serif`;
+  const tw = ctx.measureText(text).width;
+  if (tw > maxW) size = Math.max(8, Math.floor(size * maxW / tw));
+  ctx.font = `bold ${size}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  // Dark outline so the team colour reads on the dark body.
+  ctx.lineWidth = Math.max(4, size / 10);
+  ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+  ctx.strokeText(text, w / 2, h / 2 + 2);
   ctx.fillStyle = colorCss;
-  ctx.fillText(name.slice(0, 16), 128, 30);
+  ctx.fillText(text, w / 2, h / 2 + 2);
   const tex = new THREE.CanvasTexture(canvas);
-  // depthTest stays on (default): a tag behind a wall is hidden by the
-  // wall, like everything else. (depthTest:false made tags visible
-  // through walls.)
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex }));
-  sprite.scale.set(2.4, 0.53, 1);
-  sprite.renderOrder = 10;
-  return sprite;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function makeBodyNamePatch(name, colorCss, opts) {
+  const tex = makeBodyNameTexture(name, colorCss, opts.canvasW, opts.canvasH);
+  const geo = new THREE.SphereGeometry(opts.radius, 16, 10,
+    opts.phiCenter - opts.phiLength / 2, opts.phiLength,
+    opts.thetaStart, opts.thetaLength);
+  // Lambert, like the body — the patch shades with the figure. Transparent
+  // so only the letters show; depthWrite off so its transparent texels
+  // never occlude the body behind them.
+  const mat = new THREE.MeshLambertMaterial({ map: tex, transparent: true, depthWrite: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  if (opts.scale) mesh.scale.set(opts.scale[0], opts.scale[1], opts.scale[2]);
+  mesh.position.set(opts.position[0], opts.position[1], opts.position[2]);
+  mesh.renderOrder = 2; // above the opaque body, below the tag sprite (10)
+  return mesh;
+}
+
+// (Re)build a figure's head + back name patches. NPCs and solo players get
+// none — nobody can see them (teammates-only, and solo players have no
+// team). Called from getPlayerMesh and from refreshMeshColors on name/team
+// change, next to the tag rebuild.
+function rebuildBodyNamePatches(id, g) {
+  const u = g.userData;
+  const m = meta.get(id) || npcMeta.get(id) || {};
+  for (const key of ['headPatch', 'backPatch']) {
+    if (u[key]) {
+      if (u[key].parent) u[key].parent.remove(u[key]);
+      u[key].geometry.dispose();
+      if (u[key].material.map) u[key].material.map.dispose();
+      u[key].material.dispose();
+      u[key] = null;
+    }
+  }
+  u.patchMats = [];
+  if (npcMeta.has(id) || m.solo) return;
+  const color = TEAM_CSS[m.role] || '#ffffff';
+  const name = m.name || '?';
+  // Head: sphere r 0.21 -> patch at 0.215, forehead band (theta 40-80 deg
+  // from the top), 109 deg arc around the front (-Z) so the name spreads
+  // wide across the head (Lior, 25/11/2026). The canvas is 384 wide to
+  // match the patch aspect (~2.4:1) so the letters don't stretch.
+  const head = makeBodyNamePatch(name, color, {
+    radius: 0.215, phiCenter: -Math.PI / 2, phiLength: 1.9,
+    thetaStart: 0.7, thetaLength: 0.7,
+    canvasW: 384, canvasH: 160, position: [0, 0.05, 0],
+  });
+  // Back: torso ellipsoid (r 0.31, scale 0.84/1.0/0.48) -> patch at 0.315
+  // with the same scale, back band (theta 34-92 deg), 126 deg arc around
+  // the back (+Z) so the name spreads edge to edge across the back
+  // (Lior, 25/11/2026). The band is tall so the letters themselves are big;
+  // the canvas is 512x256 to match the patch aspect (~2:1) so the letters
+  // don't stretch.
+  const back = makeBodyNamePatch(name, color, {
+    radius: 0.315, scale: [0.84, 1.0, 0.48], phiCenter: Math.PI / 2, phiLength: 2.2,
+    thetaStart: 0.6, thetaLength: 1.0,
+    canvasW: 512, canvasH: 256, position: [0, 0.31, 0],
+  });
+  u.neck.add(head);
+  u.upper.add(back);
+  u.headPatch = head;
+  u.backPatch = back;
+  u.patchMats = [head.material, back.material];
+  u.patchName = name;
+  u.patchRole = m.role;
 }
 
 // --- Tactical poses ---------------------------------------------------------
@@ -550,7 +701,7 @@ const POSES = {
   // the head, as in Lior's approved illustration — so the stock is
   // partly hidden behind the head from the side.
   aim: {
-    bodyDrop: -0.07, spine: -0.3, headX: -0.12,
+    bodyDrop: -0.09, spine: -0.3, headX: -0.12,
     hipL: 0.65, hipR: -0.25, kneeL: -0.95, kneeR: -0.45, hipLz: 0, hipRz: 0,
     shLx: 1.57, shLy: 0.11, shLz: 0.69, elLx: 0.34,
     shRx: 0.99, shRy: 0.36, shRz: -0.81, elRx: 2.01,
@@ -559,9 +710,14 @@ const POSES = {
   // Deep one-knee kneel (left foot forward, right knee down), rifle up —
   // the front thigh goes just past horizontal so the body drops low.
   // Same hold as aim: rifle at eye level, hands on the grips.
+  // bodyDrop -0.50 (was -0.38): the player is 1.8 m tall (Lior,
+  // 25/11/2026) — hips 0.885 -> 0.385, eye 1.70 -> 1.20, a 0.5 m drop.
+  // The leg angles were re-solved by FK (kneel-fk.mjs) for the longer
+  // legs so the front foot stays planted (1.67/-1.99) and the back knee
+  // stays on the ground (-0.56/-1.01, it slides 2 cm back).
   kneel: {
-    bodyDrop: -0.33, spine: -0.12, headX: -0.06,
-    hipL: 1.65, hipR: -0.5, kneeL: -1.65, kneeR: -1.07, hipLz: 0, hipRz: 0,
+    bodyDrop: -0.50, spine: -0.12, headX: -0.06,
+    hipL: 1.67, hipR: -0.56, kneeL: -1.99, kneeR: -1.01, hipLz: 0, hipRz: 0,
     shLx: 1.57, shLy: 0.11, shLz: 0.69, elLx: 0.34,
     shRx: 0.99, shRy: 0.36, shRz: -0.81, elRx: 2.01,
     rifleY: 0.78, rifleZ: -0.3, rifleRX: 0.12,
@@ -569,8 +725,10 @@ const POSES = {
   // Crouch-walk: knees bent, feet slightly apart (a small straddle),
   // rifle up. Upright enough to read as walking, not a squat.
   // Same hold as aim: rifle at eye level, hands on the grips.
+  // bodyDrop stays -0.08: with the 1.8 m legs the FK (kneel-fk.mjs)
+  // shows the boot lands exactly at -0.08 — no re-solve needed.
   crouchWalk: {
-    bodyDrop: -0.07, spine: -0.14, headX: -0.06,
+    bodyDrop: -0.08, spine: -0.14, headX: -0.06,
     hipL: 0.55, hipR: 0.55, kneeL: -0.95, kneeR: -0.95, hipLz: -0.15, hipRz: 0.15,
     shLx: 1.57, shLy: 0.11, shLz: 0.69, elLx: 0.34,
     shRx: 0.99, shRy: 0.36, shRz: -0.81, elRx: 2.01,
@@ -587,7 +745,7 @@ function getPlayerMesh(id) {
   // so a figure always falls backward relative to where it faces. Live
   // figures only use rotation.y, so this changes nothing for them.
   group.rotation.order = 'YXZ';
-  // The figure is dark grey-green; the team shows only in the floating name tag.
+  // The figure is dark grey-green; the team shows only in the on-body name.
   const body = new THREE.MeshLambertMaterial({ color: 0x535c54 });
   const darker = new THREE.MeshLambertMaterial({ color: 0x3e443e });
   const gunmetal = new THREE.MeshLambertMaterial({ color: 0x414741 });
@@ -600,26 +758,25 @@ function getPlayerMesh(id) {
 
   // Hips group: drops when crouching/kneeling so the feet stay planted.
   const hips = new THREE.Group();
-  hips.position.y = 0.605;
+  hips.position.y = 0.885; // head top 1.80 - 0.915 torso/head stack
   group.add(hips);
 
   // Legs: thigh hangs from the hip pivot, shin + boot from the knee pivot.
-  // Legs are 10% longer than the original build (thigh 0.31 + shin 0.30
-  // = 0.605): the figure stands taller, and the kneel drops lower.
-  // Limbs are capsules, not boxes — rounded ends, no sharp corners, so the
-  // whole body reads oval. (Capsule total = length + 2 * radius.)
+  // The player is 1.8 m tall (Lior, 25/11/2026): thigh 0.45 + shin 0.44
+  // = 0.885. Limbs are capsules, not boxes — rounded ends, no sharp
+  // corners, so the whole body reads oval. (Capsule total = length + 2 * radius.)
   const mkLeg = (x) => {
     const hip = new THREE.Group();
     hip.position.set(x, 0, 0);
-    const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.14, 4, 10), body);
-    thigh.position.set(0, -0.155, 0);
+    const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.28, 4, 10), body);
+    thigh.position.set(0, -0.225, 0);
     hip.add(thigh);
     const knee = new THREE.Group();
-    knee.position.set(0, -0.31, 0);
-    const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.14, 4, 10), body);
-    shin.position.set(0, -0.15, 0);
+    knee.position.set(0, -0.45, 0);
+    const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.28, 4, 10), body);
+    shin.position.set(0, -0.22, 0);
     const boot = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.1, 0.32), darker);
-    boot.position.set(0, -0.30, -0.04);
+    boot.position.set(0, -0.44, -0.04);
     knee.add(shin, boot);
     hip.add(knee);
     hips.add(hip);
@@ -629,7 +786,7 @@ function getPlayerMesh(id) {
   const legR = mkLeg(0.11);
 
   // Upper body: pivots at the waist so poses can lean the torso. Y values
-  // below are relative to the waist (0.605) — absolute heights are 0.055 higher than before.
+  // below are relative to the waist (0.885).
   const upper = new THREE.Group();
   hips.add(upper);
   // Torso (hittable): an oval — a sphere squashed front-to-back — instead
@@ -723,17 +880,10 @@ function getPlayerMesh(id) {
   pFlash.visible = false;
   rifleMesh.add(pFlash);
 
-  const tag = makeNameSprite(m.name || '?', TEAM_CSS[m.role] || '#ffffff');
-  tag.position.y = 1.45;
-  upper.add(tag);
-
   group.userData.bodyMat = body;
   group.userData.darkerMat = darker;
   group.userData.gunmetalMat = gunmetal;
   group.userData.fadeOpacity = 1;
-  group.userData.tag = tag;
-  group.userData.tagName = m.name || '?';
-  group.userData.tagRole = m.role;
   group.userData.flash = pFlash;
   group.userData.flashUntil = 0;
   group.userData.hips = hips;
@@ -751,6 +901,7 @@ function getPlayerMesh(id) {
   group.userData.poseCur = { ...POSES.ready };
   group.userData.walkPhase = 0; // advances with distance travelled
   group.userData.walkAmp = 0;   // eases in/out so the legs never snap
+  rebuildBodyNamePatches(id, group);
   scene.add(group);
   playerMeshes.set(id, group);
   shootTargets.push(torso, head);
@@ -759,8 +910,9 @@ function getPlayerMesh(id) {
 
 // Set a soldier mesh's opacity (window-climb fade). The materials go
 // transparent only while fading — at opacity 1 they are opaque again,
-// so normal rendering (sorting, depth) is untouched. The name tag fades
-// with the body. Skips redundant writes: at rest every mesh sits at 1.
+// so normal rendering (sorting, depth) is untouched. The on-body name
+// patches fade with the body. Skips redundant writes: at rest every mesh
+// sits at 1.
 function setMeshFade(g, opacity) {
   const u = g.userData;
   if (u.fadeOpacity === opacity) return;
@@ -771,9 +923,11 @@ function setMeshFade(g, opacity) {
     mat.depthWrite = !transparent;
     mat.opacity = opacity;
   }
-  if (u.tag) {
-    u.tag.material.transparent = true;
-    u.tag.material.opacity = opacity;
+  // Body-name patches fade with the body (same opacity) but keep their own
+  // transparent/depthWrite flags — flipping transparent off would paint the
+  // patch's transparent texels black on the body.
+  if (u.patchMats) {
+    for (const mat of u.patchMats) mat.opacity = opacity;
   }
 }
 
@@ -818,7 +972,7 @@ function applyPose(g, target, dt, walkPhase, walkAmp) {
   const k = 1 - Math.exp(-dt * 10); // ~0.2 s to settle
   const cur = u.poseCur;
   for (const key of POSE_KEYS) cur[key] += (target[key] - cur[key]) * k;
-  u.hips.position.y = 0.605 + cur.bodyDrop;
+  u.hips.position.y = 0.885 + cur.bodyDrop; // 1.8 m figure (Lior, 25/11/2026)
   u.upper.rotation.x = cur.spine;
   u.neck.rotation.x = cur.headX;
   const swing = Math.sin(walkPhase) * walkAmp;
@@ -859,6 +1013,19 @@ function applyPose(g, target, dt, walkPhase, walkAmp) {
     u.rifle.rotation.y = 0;
     u.rifle.rotation.z = 0;
   }
+  // Grenade throw (Lior, 25/11/2026): the right arm swings up and
+  // forward over 0.6 s, additive on top of the pose. Set by the
+  // grenadeThrown event (u.throwAt).
+  if (u.throwAt) {
+    const throwT = (performance.now() - u.throwAt) / 600;
+    if (throwT < 1) {
+      const swing = Math.sin(Math.PI * throwT);
+      u.armR.shoulder.rotation.x -= swing * 1.1;
+      u.armR.elbow.rotation.x -= swing * 0.5;
+    } else {
+      u.throwAt = 0;
+    }
+  }
 }
 
 function removePlayerMesh(id) {
@@ -878,16 +1045,10 @@ function removePlayerMesh(id) {
 function refreshMeshColors() {
   for (const [id, g] of playerMeshes) {
     const m = meta.get(id) || npcMeta.get(id) || {};
-    // Bodies stay grey-green; only the name tag follows the team color, so it
-    // is rebuilt when the name or the team changes.
-    if (g.userData.tagName !== (m.name || '?') || g.userData.tagRole !== m.role) {
-      g.userData.upper.remove(g.userData.tag);
-      const tag = makeNameSprite(m.name || '?', TEAM_CSS[m.role] || '#ffffff');
-      tag.position.y = 1.45;
-      g.userData.upper.add(tag);
-      g.userData.tag = tag;
-      g.userData.tagName = m.name || '?';
-      g.userData.tagRole = m.role;
+    // Bodies stay grey-green; only the on-body name follows the team color,
+    // so the patches are rebuilt when the name or the team changes.
+    if (g.userData.patchName !== (m.name || '?') || g.userData.patchRole !== m.role) {
+      rebuildBodyNamePatches(id, g);
     }
   }
 }
@@ -929,6 +1090,7 @@ function renderLobby(state) {
       const tags = [];
       if (p.commander) tags.push('COMMANDER');
       if (p.host) tags.push('HOST');
+      if (p.admin) tags.push('ADMIN');
       li.textContent = p.name + (p.id === myId ? ' (you)' : '');
       if (tags.length) {
         const span = document.createElement('span');
@@ -961,15 +1123,32 @@ function renderLobby(state) {
 
   const me = state.players.find((p) => p.id === myId);
   isHost = !!me && state.hostId === myId;
+  if (me && me.cls) myClass = me.cls; // class changes (admin/solo) arrive here
   hostControls.classList.toggle('hidden', !isHost);
-  waitHost.classList.add('hidden'); // anyone can start now — no waiting
+  // Admin (Lior, 25/11/2026): the admin rules apply only once someone
+  // has entered the code. With no admin in the room, the lobby works
+  // as before — anyone may start, so the button shows to everyone and
+  // nobody waits. The code row shows to joined team players who are
+  // not the admin yet; the panel shows to the admin.
+  amAdmin = !!me && me.admin === true;
+  const adminExists = state.players.some((p) => p.admin);
+  adminLoginRow.classList.toggle('hidden', !me || me.solo || amAdmin);
+  adminPanel.classList.toggle('hidden', !amAdmin);
+  if (amAdmin) renderAdminRows(state.players.filter((p) => !p.solo));
+  grenadesAllowedState = state.grenadesAllowed !== false;
+  adminGrenadeBtn.textContent = grenadesAllowedState ? 'On' : 'Off';
+  adminGrenadeBtn.classList.toggle('activeChoice', grenadesAllowedState);
   $('atkA').classList.toggle('activeChoice', state.attackersTeam === 'A');
   $('atkB').classList.toggle('activeChoice', state.attackersTeam === 'B');
   const canStart = aCount >= 1 && bCount >= 1;
-  startBtn.disabled = !canStart;
-  startHint.textContent = canStart
-    ? 'First to 3 round wins takes the match.'
-    : 'Need at least 1 player on each team to start.';
+  startBtn.disabled = (adminExists && !amAdmin) || !canStart;
+  startBtn.classList.toggle('hidden', adminExists && !amAdmin);
+  waitHost.classList.toggle('hidden', !adminExists || amAdmin);
+  startHint.textContent = adminExists && !amAdmin
+    ? 'Only the admin can start the match.'
+    : canStart
+      ? 'First to 3 round wins takes the match.'
+      : 'Need at least 1 player on each team to start.';
 }
 
 function showScreen(name) {
@@ -1074,7 +1253,10 @@ function updateHUD() {
     timerEl.classList.remove('hidden');
     scoreBox.textContent = `${roleLabel('A')} ${game.score.A} — ${game.score.B} ${roleLabel('B')}`;
     if (game.phase === 'playing') {
-      timerEl.textContent = fmtTime(game.timeLeftMs);
+      // Defense prep time: the timer counts the prep down for everyone.
+      timerEl.textContent = game.prepActive
+        ? `התארגנות ${fmtTime(game.prepMsLeft)}`
+        : fmtTime(game.timeLeftMs);
     } else if (game.phase === 'intermission') {
       timerEl.textContent = 'Intermission';
     } else {
@@ -1094,19 +1276,14 @@ function updateHUD() {
       : '';
   }
 
-  // Health + ammo (mine). The ammo reads as a sentence — spare magazines
-  // only, no round counter (deliberate): "5 spare mags". Orange while the
-  // loaded magazine is empty (reload!), red when nothing is left at all.
-  // Health icon: green + smiling at full health, red + sad after the
+  // Health + ammo (mine). The ammo reads as magazine icons — one per spare
+  // magazine (Lior, 25/11/2026). The leftmost turns red when the loaded
+  // magazine is empty, and disappears on reload. NO AMMO when nothing
+  // is left at all. Health icon: green at full health, red after the
   // first hit (24/11/2026 — the bar and the number are gone).
   healthIcon.classList.toggle('hurt', myHealth < 100);
-  if (myInMag === 0 && myMags === 0) {
-    ammoText.textContent = 'NO AMMO';
-    ammoText.style.color = '#e53333';
-  } else {
-    ammoText.textContent = `${myMags} spare mag${myMags === 1 ? '' : 's'}`;
-    ammoText.style.color = myInMag === 0 ? '#ffb340' : '';
-  }
+  renderMagIcons();
+  renderGrenadeButtons();
 
   // Reload progress: the arrow fills right-to-left over the 3.5 s reload.
   // The arrow spans x 6..204 in its SVG viewBox; the fill rect is anchored
@@ -1114,7 +1291,7 @@ function updateHUD() {
   // the arrow is hidden (touch UI) and only RELOADING… shows.
   if (reloading) {
     reloadText.classList.remove('hidden');
-    const total = 3500;
+    const total = myReloadMs;
     const left = Math.max(0, reloadEndsAt - performance.now());
     const p = 1 - left / total; // 0..1
     reloadArrowFill.setAttribute('x', String(204 - p * 198));
@@ -1369,7 +1546,9 @@ function tryFire(now) {
   // caption at the top of the screen. (While reloading the RELOADING…
   // text already covers it, so no caption there.)
   if (myInMag <= 0) { showEmptyCaption(); return; }
-  if (now - lastFireAt < FIRE_INTERVAL) return;
+  // Per-class fire rate: the marksman fires one bullet per second.
+  const interval = myClass === 'marksman' ? 1000 : FIRE_INTERVAL;
+  if (now - lastFireAt < interval) return;
   lastFireAt = now;
 
   // Hitscan from the camera centre. Spread is wide from the hip and tight
@@ -1411,6 +1590,86 @@ function tryReload() {
   if (climbing) return; // frozen mid-climb
   if (reloading || myMags <= 0 || myInMag >= 29) return;
   socket.send({ t: 'reload' });
+}
+
+// Grenades (Lior, 25/11/2026): two per round. Pressing a grenade button
+// (or G on desktop) starts a 3 s arming — the left button fills
+// bottom-up — and the throw goes out when the fill completes. The
+// server then flies the grenade 10 m and explodes it 3 s after the throw.
+const GRENADE_ARM_MS = 3000;
+const grenadeBtnEls = [document.getElementById('grenadeBtn0'), document.getElementById('grenadeBtn1')];
+for (const btn of grenadeBtnEls) btn.addEventListener('click', () => startGrenadeArm());
+
+function startGrenadeArm() {
+  if (grenadeArming) return; // already arming one
+  if (!myAlive || (game.phase !== 'playing' && !solo)) return;
+  if (myGrenades <= 0) return;
+  grenadeArming = { endsAt: performance.now() + GRENADE_ARM_MS };
+}
+
+function throwGrenade() {
+  grenadeArming = null;
+  if (!myAlive || (game.phase !== 'playing' && !solo)) return;
+  socket.send({ t: 'throwGrenade' });
+  localThrowAt = performance.now(); // the viewmodel dip
+}
+
+// Grenade buttons, refreshed every frame from the HUD: button 0 is the
+// first grenade, button 1 the second — the left one fills and disappears
+// first, the right one remains. A death or a round end cancels the arming.
+function renderGrenadeButtons() {
+  if (!myAlive || (game.phase !== 'playing' && !solo)) grenadeArming = null;
+  const canThrow = myAlive && (game.phase === 'playing' || solo);
+  grenadeBtnEls[0].classList.toggle('hidden', !canThrow || myGrenades < 2);
+  grenadeBtnEls[1].classList.toggle('hidden', !canThrow || myGrenades < 1);
+  const filling = grenadeArming
+    ? (myGrenades >= 2 ? grenadeBtnEls[0] : grenadeBtnEls[1])
+    : null;
+  for (const btn of grenadeBtnEls) {
+    const fill = btn.querySelector('.grenadeFill');
+    if (btn === filling) {
+      const left = Math.max(0, grenadeArming.endsAt - performance.now());
+      fill.style.height = `${(1 - left / GRENADE_ARM_MS) * 100}%`;
+      if (left <= 0) throwGrenade();
+    } else {
+      fill.style.height = '0%';
+    }
+  }
+}
+
+// Grenade meshes, synced from the snapshot's live list: a small dark
+// sphere that flies the server's arc and rests where it lands.
+const grenadeGeo = new THREE.SphereGeometry(0.09, 10, 8);
+const grenadeMat = new THREE.MeshLambertMaterial({ color: 0x2a2d2a });
+function updateGrenadeMeshes(list) {
+  const seen = new Set();
+  for (const g of list) {
+    seen.add(g.id);
+    let mesh = grenadeMeshes.get(g.id);
+    if (!mesh) {
+      mesh = new THREE.Mesh(grenadeGeo, grenadeMat);
+      scene.add(mesh);
+      grenadeMeshes.set(g.id, mesh);
+    }
+    mesh.position.set(g.x, g.y, g.z);
+  }
+  for (const [id, mesh] of [...grenadeMeshes]) {
+    if (!seen.has(id)) {
+      scene.remove(mesh);
+      grenadeMeshes.delete(id);
+    }
+  }
+}
+
+// Blast visual: an orange sphere that expands to the 4 m blast radius
+// and fades over 0.6 s. Updated in the render loop.
+function showExplosion(x, y, z) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.85, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), mat);
+  mesh.position.set(x, y + 0.2, z);
+  mesh.scale.setScalar(0.3);
+  scene.add(mesh);
+  activeExplosions.push({ mesh, bornAt: performance.now() });
 }
 
 function onCanvasClick() {
@@ -1459,6 +1718,7 @@ socket.on('welcome', (msg) => {
 
 socket.on('joined', (msg) => {
   myId = msg.id;
+  myClass = msg.cls || 'rifleman';
   joined = true;
   joinBox.classList.add('hidden');
   teamsBox.classList.remove('hidden');
@@ -1466,6 +1726,7 @@ socket.on('joined', (msg) => {
 
 socket.on('soloJoined', (msg) => {
   myId = msg.id;
+  myClass = msg.cls || 'rifleman';
   joined = true;
   solo = true;
   myTeam = null;
@@ -1528,7 +1789,18 @@ socket.on('left', () => {
   showScreen('lobby');
 });
 
+socket.on('adminOk', () => {
+  // The admin panel renders from the state that follows this message.
+  adminCodeInput.value = '';
+  adminError.classList.add('hidden');
+});
+
 socket.on('error', (msg) => {
+  if (msg.message === 'Wrong admin code.') {
+    adminError.textContent = msg.message;
+    adminError.classList.remove('hidden');
+    return;
+  }
   teamHint.textContent = msg.message || 'Error';
   connectStatus.textContent = msg.message || 'Error';
   // A join error means this connection is NOT in the room (e.g. a rejoin
@@ -1575,6 +1847,54 @@ socket.on('kicked', (msg) => {
   kickNotice.classList.remove('hidden');
   showScreen('lobby');
 });
+
+// Admin panel rows (Lior, 25/11/2026): one row per team player — an
+// editable name, team buttons, class buttons. Rebuilt only when the
+// player set changes, so typing a name is not interrupted by a state
+// arriving mid-edit.
+let adminRowsSig = '';
+let grenadesAllowedState = true;
+function renderAdminRows(teamPlayers) {
+  const sig = teamPlayers.map((p) => `${p.id}:${p.name}:${p.team}:${p.cls}`).join('|');
+  if (sig === adminRowsSig) return;
+  adminRowsSig = sig;
+  adminPlayerRows.innerHTML = '';
+  for (const p of teamPlayers) {
+    const row = document.createElement('div');
+    row.className = 'adminRow';
+    const nameEl = document.createElement('input');
+    nameEl.type = 'text';
+    nameEl.maxLength = 16;
+    nameEl.value = p.name;
+    nameEl.className = 'adminNameInput';
+    nameEl.addEventListener('change', () => {
+      const name = nameEl.value.trim();
+      if (name && name !== p.name) socket.send({ t: 'rename', playerId: p.id, name });
+    });
+    row.appendChild(nameEl);
+    for (const team of ['A', 'B']) {
+      const btn = document.createElement('button');
+      btn.textContent = team === 'A' ? 'Attackers' : 'Defenders';
+      btn.className = 'classBtn' + (p.team === team ? ' activeChoice' : '');
+      btn.addEventListener('click', () => socket.send({ t: 'setTeam', playerId: p.id, team }));
+      row.appendChild(btn);
+    }
+    for (const [cls, label] of [['rifleman', 'Rifleman'], ['marksman', 'Marksman'], ['gunner', 'Gunner']]) {
+      const btn = document.createElement('button');
+      btn.textContent = label;
+      btn.className = 'classBtn' + (p.cls === cls ? ' activeChoice' : '');
+      btn.addEventListener('click', () => socket.send({ t: 'setClass', playerId: p.id, cls }));
+      row.appendChild(btn);
+    }
+    if (p.id === myId) {
+      const you = document.createElement('span');
+      you.className = 'adminYou';
+      you.textContent = '(you)';
+      row.appendChild(you);
+    }
+    adminPlayerRows.appendChild(row);
+  }
+}
 
 socket.on('state', (msg) => {
   game.phase = msg.phase;
@@ -1650,8 +1970,11 @@ socket.on('snapshot', (msg) => {
   game.round = msg.round;
   game.score = msg.score;
   game.timeLeftMs = msg.timeLeftMs;
+  game.prepActive = msg.prepActive;
+  game.prepMsLeft = msg.prepMsLeft || 0;
   game.captureProgress = msg.captureProgress || 0;
   snapPlayers = new Map(msg.players.map((p) => [p.id, p]));
+  updateGrenadeMeshes(msg.grenades || []);
   // Debug hook: the live NPC list (id, position, alive) for the
   // screenshot runs, which aim the camera at a chosen NPC.
   window.__npcs = msg.players
@@ -1676,6 +1999,7 @@ socket.on('snapshot', (msg) => {
     myHealth = me.health;
     myInMag = me.inMag;
     myMags = me.mags;
+    myGrenades = me.grenades ?? myGrenades;
     // Snap local position on round change (server-assigned spawn).
     if (msg.round !== lastRoundSeen) {
       lastRoundSeen = msg.round;
@@ -1757,10 +2081,43 @@ socket.on('shot', (msg) => {
   }
 });
 
+socket.on('npcHit', () => {
+  // Solo only: an NPC's shot landed. The screen reddens like a real hit,
+  // but there is no health loss and no elimination (Lior, 25/11/2026).
+  if (solo) showDamageFlash();
+});
+
+socket.on('grenadeThrown', (msg) => {
+  // Throw animation: the thrower's right arm swings (remote figures);
+  // my own throw dips the viewmodel rifle.
+  if (msg.throwerId === myId) {
+    localThrowAt = performance.now();
+    return;
+  }
+  const g = playerMeshes.get(msg.throwerId);
+  if (g) g.userData.throwAt = performance.now();
+});
+
+socket.on('grenadeExploded', (msg) => {
+  showExplosion(msg.x, msg.y, msg.z);
+  // A grenade teamkill adds the FRIENDLY FIRE line under YOU'RE DOWN,
+  // like a shot teamkill (the snapshot shows the death a tick later and
+  // reads this flag).
+  if (msg.victims && msg.victims.includes(myId)) {
+    const throwerMeta = meta.get(msg.throwerId);
+    const myRole = meta.get(myId)?.role;
+    if (throwerMeta && myRole && throwerMeta.role === myRole) {
+      killedByFriendlyFire = true;
+      if (downUntil) downSub.classList.remove('hidden');
+    }
+  }
+});
+
 socket.on('reloadStart', (msg) => {
   if (msg.playerId === myId) {
     reloading = true;
-    reloadEndsAt = performance.now() + msg.reloadMs;
+    myReloadMs = msg.reloadMs || 3500;
+    reloadEndsAt = performance.now() + myReloadMs;
   }
 });
 
@@ -1881,8 +2238,25 @@ $('soloBtn').addEventListener('click', () => {
   sfx.ensure();
   kickNotice.classList.add('hidden');
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
-  savedJoin = { name, solo: true };
+  savedJoin = { name, solo: true, cls: soloClass, grenades: soloGrenades };
   sendJoin(savedJoin);
+});
+document.querySelectorAll('#soloClassRow .classBtn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    soloClass = btn.dataset.cls;
+    document.querySelectorAll('#soloClassRow .classBtn').forEach((b) =>
+      b.classList.toggle('activeChoice', b === btn));
+    // Already solo: switch class immediately, no rejoin needed.
+    if (solo && joined) socket.send({ t: 'setClass', cls: soloClass });
+  });
+});
+// Solo grenade toggle (Lior, 25/11/2026): applies on the next solo
+// entry (the count is set at join time).
+$('soloGrenadeBtn').addEventListener('click', () => {
+  soloGrenades = !soloGrenades;
+  const btn = $('soloGrenadeBtn');
+  btn.textContent = soloGrenades ? 'On' : 'Off';
+  btn.classList.toggle('activeChoice', soloGrenades);
 });
 exitSoloBtn.addEventListener('click', () => socket.send({ t: 'leaveSolo' }));
 exitBtn.addEventListener('click', () => socket.send({ t: 'leave' }));
@@ -1892,6 +2266,20 @@ $('switchBtn').addEventListener('click', () => {
 $('atkA').addEventListener('click', () => socket.send({ t: 'setAttackers', team: 'A' }));
 $('atkB').addEventListener('click', () => socket.send({ t: 'setAttackers', team: 'B' }));
 $('startBtn').addEventListener('click', () => socket.send({ t: 'start' }));
+// Admin login (Lior, 25/11/2026): the code makes this player the admin.
+// The panel itself renders from the state (see the state handler).
+adminLoginBtn.addEventListener('click', () => {
+  const code = adminCodeInput.value.trim();
+  if (!code) return;
+  adminError.classList.add('hidden');
+  socket.send({ t: 'admin', code });
+});
+adminCodeInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') adminLoginBtn.click();
+});
+adminGrenadeBtn.addEventListener('click', () => {
+  socket.send({ t: 'setGrenadesAllowed', allowed: !grenadesAllowedState });
+});
 // Clear room needs two clicks: the first arms it (4s window), the second
 // sends. Kicking everyone is destructive; a stray tap must not do it.
 let clearArmed = false;
@@ -1947,8 +2335,10 @@ function loop() {
   const now = performance.now();
   // Semi-auto: consume a queued FIRE press every frame, even when the
   // player is dead or spectating — a press then is discarded, never
-  // fired late on the next round.
-  const firePressed = controls.takeFirePress();
+  // fired late on the next round. The machine gunner is full-auto:
+  // holding FIRE keeps firing (paced by tryFire's interval).
+  const firePressed = controls.takeFirePress()
+    || (myClass === 'gunner' && controls.fireHeld);
 
   // Backstop: re-sync the renderer size twice a second, so a canvas stuck
   // at a stale size (iOS rotation) heals even if no event fires.
@@ -1973,13 +2363,15 @@ function loop() {
     if (id === myId) continue;
     if (!s.alive) {
       // Fallen: the figure falls backward onto the ground over FALL_MS
-      // and lies there until revival — no name tag, no effects, just the
+      // and lies there until revival — no name, no effects, just the
       // body. The rifle drops beside it once the body is down. The joints
       // freeze in the pose the figure died in.
       const g = playerMeshes.get(id);
       if (g) {
         const u = g.userData;
-        if (u.tag) u.tag.visible = false;
+        // A fallen body shows no name.
+        if (u.headPatch) u.headPatch.visible = false;
+        if (u.backPatch) u.backPatch.visible = false;
         setMeshFade(g, 1); // a body that died mid-climb-fade is fully opaque
         if (u.fallTo !== 1) {
           u.fallFrom = u.fallT ?? 0;
@@ -2015,11 +2407,12 @@ function loop() {
     } else {
       g.rotation.x = 0;
     }
-    // Name tags are teammates-only: the enemy team sees no tag at all.
-    // (Solo players have no team, so they neither show nor see tags.)
+    // The on-body name is teammates-only: the enemy team sees no name at all.
+    // (Solo players have no team, so they neither show nor see names.)
     const m = meta.get(id) || npcMeta.get(id);
     const isTeammate = !solo && myTeam != null && !!m && !m.solo && m.team === myTeam;
-    if (g.userData.tag) g.userData.tag.visible = isTeammate;
+    if (g.userData.headPatch) g.userData.headPatch.visible = isTeammate;
+    if (g.userData.backPatch) g.userData.backPatch.visible = isTeammate;
     const k = 1 - Math.exp(-dt * 12);
     g.position.x += (s.x - g.position.x) * k;
     g.position.y += (s.y - g.position.y) * k;
@@ -2112,12 +2505,27 @@ function loop() {
       const rz = -sin;
       let vx = fx * move.z + rx * move.x;
       let vz = fz * move.z + rz * move.x;
+      // Defense prep time (Lior, 25/11/2026): attackers wait at spawn
+      // while the defenders get into position — no movement, but looking
+      // around still works (yaw is applied below, outside this block).
+      if (game.prepActive && meta.get(myId)?.role === 'attackers') { vx = 0; vz = 0; }
       const len = Math.hypot(vx, vz);
       if (len > 0) {
         // Aiming down the sights slows movement; crouching slows it more.
         const speed = SPEED * (1 - aimBlend * 0.35) * (controls.crouch ? 0.45 : 1) * Math.min(1, len);
         vx = (vx / len) * speed;
         vz = (vz / len) * speed;
+      }
+      // Crouch-walk limit: 2 continuous seconds of walking while crouched
+      // returns the player to standing (Lior, 25/11/2026).
+      if (controls.crouch && len > 0.01) {
+        crouchWalkMs += dt * 1000;
+        if (crouchWalkMs >= CROUCH_WALK_LIMIT_MS) {
+          controls.setCrouch(false);
+          crouchWalkMs = 0;
+        }
+      } else {
+        crouchWalkMs = 0;
       }
       let nx = local.x + vx * dt;
       let nz = local.z + vz * dt;
@@ -2129,7 +2537,7 @@ function loop() {
       local.y = floorHeightAt(nx, nz, local.y);
     }
 
-    camera.position.set(local.x, local.y + EYE_HEIGHT - crouchBlend * 0.35, local.z);
+    camera.position.set(local.x, local.y + EYE_HEIGHT - crouchBlend * CROUCH_EYE_DROP, local.z);
     camera.rotation.set(local.pitch, local.yaw, 0);
 
     // Semi-auto: one shot per press, never a held-down stream.
@@ -2146,7 +2554,7 @@ function loop() {
   } else if (!myAlive && downUntil) {
     // YOU'RE DOWN: frozen first-person view at the death spot, no input.
     // Takes precedence over the spectate and elevated views.
-    camera.position.set(local.x, local.y + EYE_HEIGHT - crouchBlend * 0.35, local.z);
+    camera.position.set(local.x, local.y + EYE_HEIGHT - crouchBlend * CROUCH_EYE_DROP, local.z);
     camera.rotation.set(local.pitch, local.yaw, 0);
   } else if (game.phase === 'playing' && !myAlive) {
     // Spectate: chase camera behind a living teammate.
@@ -2170,6 +2578,22 @@ function loop() {
   // where it is — the next round's spawn resets it). Runs outside the
   // movement block so a mid-climb death still clears the flag.
   if (climbing && !(myAlive && (game.phase === 'playing' || solo))) climbing = false;
+
+  // Blast visuals: expand to the 4 m radius and fade over 0.6 s.
+  for (let i = activeExplosions.length - 1; i >= 0; i--) {
+    const e = activeExplosions[i];
+    const age = now - e.bornAt;
+    if (age >= 600) {
+      scene.remove(e.mesh);
+      e.mesh.geometry.dispose();
+      e.mesh.material.dispose();
+      activeExplosions.splice(i, 1);
+    } else {
+      const t = age / 600;
+      e.mesh.scale.setScalar(0.3 + t * 3.7);
+      e.mesh.material.opacity = 0.85 * (1 - t);
+    }
+  }
 
   updateHUD();
   updateViewmodel(dt, now);
