@@ -21,13 +21,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { SPAWNS, spawnLayout, objectiveContains, HOUSES, hasLineOfSight, EYE_HEIGHT } from './public/map.js';
+import { SPAWNS, spawnLayout, objectiveContains, HOUSES, hasLineOfSight, visualBoxes, EYE_HEIGHT } from './public/map.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.PORT || 8020);
 // Tunable through env for the headless test; defaults are the game spec.
 const ROUND_MS = Number(process.env.ROUND_MS || 5 * 60 * 1000);
+// Defense prep time (Lior, 25/11/2026): at the start of every round the
+// attackers wait at spawn for PREP_MS while the defenders get into
+// position. The 5:00 round clock starts only after prep ends. No one
+// shoots during prep — otherwise defenders could rush the frozen
+// attackers before the round starts.
+const PREP_MS = Number(process.env.PREP_MS || 20000);
 // Objective capture: an attacker must hold the zone for CAPTURE_MS to win
 // the round. Reaching the zone used to end the round instantly, so a
 // straight sprint (90 m at 5 m/s) won rounds in ~20 s with no fight — and
@@ -36,8 +42,27 @@ const ROUND_MS = Number(process.env.ROUND_MS || 5 * 60 * 1000);
 const CAPTURE_MS = Number(process.env.CAPTURE_MS || 30000);
 // No intermission timer: the next round starts only when a player presses
 // CONTINUE (see the 'continue' message). The intermission lasts until then.
-const RELOAD_MS = 3500;
+// Classes (Lior, 25/11/2026). Rifleman is the default. Marksman: x3 scope
+// (ADS FOV 29), 1 shot/sec, an ADS hit kills at any range, hip fire like
+// a rifleman. Machine gunner: full-auto, 150-round mags x 3, 5 s reload;
+// standing it only hits within 15 m and takes 3 hits to kill; kneeling
+// it shoots like a rifleman (normal distance table).
+const CLASSES = {
+  rifleman: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 100, auto: false },
+  marksman: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 1000, auto: false },
+  gunner: { magSize: 150, magCount: 3, reloadMs: 5000, fireIntervalMs: 100, auto: true },
+};
+const classStats = (cls) => CLASSES[cls] || CLASSES.rifleman;
 const WIN_SCORE = 3;
+// Admin interface (Lior, 25/11/2026): whoever knows this code becomes
+// the admin — edits player names, assigns teams and classes, decides
+// whether grenades are allowed, and (once an admin exists) is the ONLY
+// one who can start the match (or continue / rematch). With no admin
+// in the room the lobby works as before — anyone may start, the host
+// assigns classes and toggles grenades. Change the code here, or set
+// the ADMIN_CODE env var. Default '1357' — change it before sharing
+// the game with strangers.
+const ADMIN_CODE = process.env.ADMIN_CODE || '1357';
 const MAX_PER_TEAM = 6;
 const FIRE_INTERVAL_MS = 90; // server-side plausibility floor (~11 shots/sec max)
 const TICK_MS = 66; // ~15 snapshots per second
@@ -56,8 +81,37 @@ function damageForDistance(d) {
   if (d <= RANGE_MEDIUM_M) return DAMAGE_MEDIUM;
   return DAMAGE_LONG;
 }
+
+// Damage for one shot, by the shooter's class and stance. Returns 0 when
+// the shot cannot hit at all (standing gunner past 15 m). Used for
+// players and for solo players shooting NPCs.
+function damageForShot(shooter, distance) {
+  if (shooter.cls === 'marksman' && shooter.aiming) return DAMAGE_CLOSE; // ADS hit kills at any range
+  if (shooter.cls === 'gunner' && !shooter.crouch) {
+    if (distance > RANGE_CLOSE_M) return 0; // standing: close range only
+    return DAMAGE_LONG; // 34 — 3 hits to kill
+  }
+  return damageForDistance(distance);
+}
 const MAG_SIZE = 29;
 const MAG_COUNT = 6; // 1 loaded + 5 spare
+
+// Grenades (Lior, 25/11/2026): 2 per player per round. Press -> 3 s
+// arming on the client (icon fills bottom-up), then the throw: a small
+// arc to 10 m. A second 3 s fuse runs from the throw until the explosion.
+// The blast eliminates everyone within 4 m who has a direct line of
+// sight from the explosion — walls block it; teammates and the thrower
+// himself are hurt too (friendly fire). Solo grenades hurt NPCs only,
+// like solo shots (they never hit players).
+const GRENADE_COUNT = 2;
+const GRENADE_RANGE_M = 10;
+const GRENADE_PEAK_M = 1.2; // arc height above the straight line
+const GRENADE_FLIGHT_MS = 1000; // 10 m arc at a steady throw
+const GRENADE_FUSE_MS = 3000; // from the throw until the explosion
+const GRENADE_BLAST_R = 4;
+let grenades = []; // live grenades: {id, throwerId, throwAt, flightMs, dist, dir, from, to, landed, exploded}
+let nextGrenadeId = 1;
+let grenadesAllowed = true; // admin switch (setGrenadesAllowed) — on by default
 
 // ---------------------------------------------------------------------------
 // Game state
@@ -92,6 +146,7 @@ let phase = 'lobby'; // 'lobby' | 'playing' | 'intermission' | 'ended'
 let round = 0;
 let score = { A: 0, B: 0 };
 let roundEndsAt = 0;
+let prepEndsAt = 0;
 let roundWinner = null; // 'A' | 'B' | null
 let roundReason = ''; // 'elimination' | 'objective' | 'timeout'
 let matchWinner = null;
@@ -115,6 +170,14 @@ function playersOf(team) {
   return [...players.values()]
     .filter((p) => p.team === team)
     .sort((a, b) => a.joinedAt - b.joinedAt);
+}
+
+// Admin (Lior, 25/11/2026): the admin rules apply only once someone
+// has entered the code. With no admin in the room, the lobby works
+// exactly as before — anyone may start, the host assigns classes and
+// toggles grenades.
+function adminPresent() {
+  return [...players.values()].some((q) => q.admin);
 }
 
 function commanderOf(team) {
@@ -180,18 +243,22 @@ function publicState() {
     roundReason,
     matchWinner,
     hostId,
+    grenadesAllowed,
     players: [...players.values()].map((p) => ({
       id: p.id,
       name: p.name,
       team: p.team,
       solo: p.solo,
+      admin: !!p.admin,
       role: p.solo ? null : roleOf(p.team),
       commander: !p.solo && commanderOf(p.team)?.id === p.id,
       host: p.id === hostId,
+      cls: p.cls || 'rifleman',
       alive: p.alive,
       health: p.health,
       inMag: p.inMag,
       mags: p.mags,
+      grenades: p.grenades ?? 0,
       reloading: Date.now() < p.reloadingUntil,
     })),
   };
@@ -219,6 +286,7 @@ function snapshotPlayerList(now) {
     health: p.health,
     inMag: p.inMag,
     mags: p.mags,
+    grenades: p.grenades ?? 0,
     reloading: now < p.reloadingUntil,
     crouch: !!p.crouch,
     aiming: !!p.aiming,
@@ -259,9 +327,117 @@ function snapshot() {
     round,
     score: { ...score },
     timeLeftMs: phase === 'playing' ? Math.max(0, roundEndsAt - now) : 0,
+    prepActive: phase === 'playing' && now < prepEndsAt,
+    prepMsLeft: phase === 'playing' ? Math.max(0, prepEndsAt - now) : 0,
     captureProgress: phase === 'playing' ? Math.min(1, captureMs / CAPTURE_MS) : 0,
     players: snapshotPlayerList(now),
+    grenades: liveGrenadeList(now),
   };
+}
+
+// Live grenade positions for the snapshot: the arc while flying, the
+// landing point once it is down. Clients render the meshes from this.
+function liveGrenadeList(now) {
+  return grenades.filter((g) => !g.exploded).map((g) => {
+    const pos = grenadePos(g, now);
+    return { id: g.id, x: pos.x, y: pos.y, z: pos.z };
+  });
+}
+
+// Where a grenade is at a moment: the arc while flying (progress t along
+// its flight), the landing point once it is down.
+function grenadePos(g, now) {
+  if (g.landed) return { x: g.to.x, y: g.to.y, z: g.to.z };
+  const t = Math.min(1, (now - g.throwAt) / g.flightMs);
+  const d = g.dist * t;
+  return {
+    x: g.from.x + g.dir.x * d,
+    y: g.from.y + (g.to.y - g.from.y) * t + 4 * GRENADE_PEAK_M * t * (1 - t),
+    z: g.from.z + g.dir.z * d,
+  };
+}
+
+function pointInBox(p, b) {
+  return p.x >= b.x0 && p.x <= b.x1 && p.y >= b.y0 && p.y <= b.y1 && p.z >= b.z0 && p.z <= b.z1;
+}
+
+// Simulate the throw's arc against the map's solid boxes (walls with
+// real window/door gaps, slabs, roofs). Returns the landing point and
+// the horizontal flight distance. A wall hit ends the arc early — the
+// grenade falls to the floor just before the wall. A window or doorway
+// gap lets it through. The landing floor is always the thrower's floor:
+// the arc cannot cross a slab.
+function simulateThrow(p) {
+  const dir = { x: -Math.sin(p.yaw), z: -Math.cos(p.yaw) };
+  const from = { x: p.pos.x, y: p.pos.y + 1.4, z: p.pos.z }; // hand height
+  const landY = p.pos.y;
+  // The thin ground-floor slabs (y 0..0.02) are floors, not walls — the
+  // arc ends exactly on them, so they must not count as a wall hit.
+  const boxes = visualBoxes().filter((b) => b.y1 - b.y0 >= 0.1);
+  const STEP = 0.25; // smaller than any wall thickness (0.3), so no crossing is skipped
+  let prev = { ...from };
+  for (let d = STEP; d <= GRENADE_RANGE_M; d += STEP) {
+    const t = d / GRENADE_RANGE_M;
+    const pt = {
+      x: from.x + dir.x * d,
+      y: from.y + (landY - from.y) * t + 4 * GRENADE_PEAK_M * t * (1 - t),
+      z: from.z + dir.z * d,
+    };
+    if (boxes.some((b) => pointInBox(pt, b))) {
+      return { to: { x: prev.x, y: landY, z: prev.z }, dist: d - STEP, dir };
+    }
+    prev = pt;
+  }
+  return {
+    to: { x: from.x + dir.x * GRENADE_RANGE_M, y: landY, z: from.z + dir.z * GRENADE_RANGE_M },
+    dist: GRENADE_RANGE_M,
+    dir,
+  };
+}
+
+// The fuse ran out: the blast eliminates everyone within 4 m who has a
+// direct line of sight from the explosion — walls block it. Teammates
+// and the thrower himself are hurt (friendly fire). A solo thrower's
+// grenade hurts NPCs only, like solo shots. After the round ends the
+// blast is visual only (no victims) — the round is already decided.
+function explodeGrenade(g) {
+  g.exploded = true;
+  const ex = { x: g.to.x, y: g.to.y + 0.2, z: g.to.z };
+  const victims = [];
+  const thrower = players.get(g.throwerId);
+  const counts = phase === 'playing' || (thrower && thrower.solo);
+  if (counts && thrower && !thrower.solo) {
+    for (const p of [...players.values()]) {
+      if (!p.alive || p.solo) continue;
+      const d = Math.hypot(p.pos.x - ex.x, p.pos.y - ex.y, p.pos.z - ex.z);
+      if (d > GRENADE_BLAST_R) continue;
+      if (!hasLineOfSight(ex.x, ex.y, ex.z, p.pos.x, p.pos.y + 1.2, p.pos.z)) continue;
+      p.health = 0;
+      p.alive = false;
+      p.reloadingUntil = 0;
+      p.stats.deaths += 1;
+      thrower.stats.kills += 1;
+      if (thrower.team && p.team === thrower.team) thrower.stats.teamkills += 1;
+      victims.push(p.id);
+    }
+  }
+  if (counts && thrower && thrower.solo) {
+    for (const n of npcs) {
+      if (n.health <= 0) continue;
+      const d = Math.hypot(n.x - ex.x, n.y - ex.y, n.z - ex.z);
+      if (d > GRENADE_BLAST_R) continue;
+      if (!hasLineOfSight(ex.x, ex.y, ex.z, n.x, n.y + 1.2, n.z)) continue;
+      n.health = 0;
+      n.aiming = false;
+      n.burstLeft = 0;
+      victims.push(n.id);
+    }
+  }
+  broadcast({ t: 'grenadeExploded', id: g.id, throwerId: g.throwerId, x: g.to.x, y: g.to.y, z: g.to.z, victims });
+  if (victims.some((id) => id > 0)) {
+    broadcastState();
+    checkElimination();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -273,10 +449,12 @@ function resetPlayerForRound(p) {
   const mates = playersOf(p.team);
   const index = mates.findIndex((m) => m.id === p.id);
   const spawn = layout[role][Math.min(index, layout[role].length - 1)];
+  const cs = classStats(p.cls);
   p.alive = true;
   p.health = 100;
-  p.inMag = MAG_SIZE;
-  p.mags = MAG_COUNT - 1; // spares; one mag is loaded
+  p.inMag = cs.magSize;
+  p.mags = cs.magCount - 1; // spares; one mag is loaded
+  p.grenades = grenadesAllowed ? GRENADE_COUNT : 0;
   p.reloadingUntil = 0;
   p.lastShotAt = 0;
   p.pos = { x: spawn.x, y: 0, z: spawn.z };
@@ -310,7 +488,7 @@ function startRound(n) {
     if (p.solo) continue; // solo players keep exploring, untouched by rounds
     resetPlayerForRound(p);
   }
-  roundEndsAt = Date.now() + ROUND_MS;
+  roundEndsAt = (prepEndsAt = Date.now() + PREP_MS) + ROUND_MS;
   broadcastState();
   broadcast({ t: 'roundStart', round, objective: { ...layout.objective }, attackersSpawn: { ...layout.attackersSpawn } });
 }
@@ -452,6 +630,7 @@ function drawNpcSet() {
     yaw: streetYaw({ x: s.x }),
     aiming: false,
     burstLeft: 0,
+    burstsFired: 0, // counts started bursts; every 3rd lands a hit (below)
     nextShotAt: 0,
     health: 100,
   }));
@@ -517,9 +696,17 @@ function updateNpcs(now) {
         mags: MAG_COUNT - 1,
       });
       if (n.burstLeft === 0) n.nextShotAt = now + NPC_BURST_PAUSE_MS;
+      // Solo NPC hits (Lior, 25/11/2026): every 3rd burst lands one hit —
+      // the middle shot of the burst. The target's screen reddens, with no
+      // health loss and no elimination. Deterministic, so it is testable.
+      if (n.hitBurst && n.burstLeft === 1) {
+        send(target.ws, { t: 'npcHit', npcId: n.id });
+      }
     } else if (n.burstLeft === 0 && now >= n.nextShotAt) {
       n.burstLeft = NPC_BURST;
       n.nextShotAt = now;
+      n.burstsFired += 1;
+      n.hitBurst = n.burstsFired % 3 === 0;
     }
   }
 }
@@ -537,7 +724,7 @@ setInterval(() => {
       p.reloadingUntil = 0;
       if (p.alive && (phase === 'playing' || p.solo) && p.mags > 0) {
         p.mags -= 1;
-        p.inMag = MAG_SIZE;
+        p.inMag = classStats(p.cls).magSize;
         broadcast({ t: 'reloaded', playerId: p.id, inMag: p.inMag, mags: p.mags });
       }
     }
@@ -570,6 +757,32 @@ setInterval(() => {
   }
 
   updateNpcs(now);
+
+  // Grenades: while a grenade is still flying, a living player in its
+  // path drops it on the spot to the floor. When the 3 s fuse runs out
+  // it explodes (visual only after the round ends).
+  for (const g of [...grenades]) {
+    if (g.exploded) continue;
+    if (!g.landed) {
+      if (now < g.throwAt + g.flightMs) {
+        const pos = grenadePos(g, now);
+        const hitPlayer = [...players.values()].find((q) => q.alive && q.id !== g.throwerId
+          && Math.hypot(q.pos.x - pos.x, q.pos.z - pos.z) < 0.5
+          && pos.y >= q.pos.y && pos.y <= q.pos.y + 1.7);
+        if (hitPlayer) {
+          g.to = { x: pos.x, y: g.to.y, z: pos.z };
+          g.landed = true;
+        }
+      } else {
+        g.landed = true;
+      }
+    }
+    if (now >= g.throwAt + GRENADE_FUSE_MS) {
+      explodeGrenade(g);
+      grenades = grenades.filter((h) => h.id !== g.id);
+    }
+  }
+
   if (players.size > 0) broadcast(snapshot());
 }, TICK_MS);
 
@@ -626,6 +839,10 @@ function takeOverDuplicates(name, team, sessionId, solo) {
 function handleJoin(ws, msg) {
   const name = String(msg.name || '').trim().slice(0, 16) || `Player${ws._pid}`;
   const sessionId = String(msg.session || '').slice(0, 64) || null;
+  // Class: the join may name one (rifleman is the default); the admin can
+  // change it later with setClass, and solo players choose their own.
+  const cls = CLASSES[msg.cls] ? msg.cls : 'rifleman';
+  const cs = classStats(cls);
   let team = msg.team;
   if (team !== 'A' && team !== 'B') {
     // Auto-assign to the smaller team (A on a tie).
@@ -675,10 +892,13 @@ function handleJoin(ws, msg) {
     solo: false,
     sessionId,
     joinedAt: Date.now(),
+    admin: false, // set by the 'admin' message (correct code)
     alive: phase !== 'playing', // late joiners spectate until the next round
     health: 100,
-    inMag: MAG_SIZE,
-    mags: MAG_COUNT - 1,
+    cls,
+    inMag: cs.magSize,
+    mags: cs.magCount - 1,
+    grenades: grenadesAllowed ? GRENADE_COUNT : 0,
     reloadingUntil: 0,
     lastShotAt: 0,
     stats: freshStats(),
@@ -696,7 +916,7 @@ function handleJoin(ws, msg) {
   p.yaw = spawn.yaw;
   players.set(p.id, p);
   if (hostId === null) hostId = p.id;
-  send(ws, { t: 'joined', id: p.id });
+  send(ws, { t: 'joined', id: p.id, cls: p.cls });
   broadcastState();
 }
 
@@ -723,6 +943,13 @@ function handleSolo(ws, msg) {
     }
   }
   const spawn = SPAWNS.attackers[0];
+  // Solo players choose their own class (Lior, 25/11/2026) — the join
+  // may name one, rifleman is the default, and setClass changes it later.
+  // They also choose whether to add grenades to their solo mode
+  // (Lior, 25/11/2026): the join may carry grenades:false, on is the
+  // default. The admin's grenades switch still governs the room.
+  const cls = CLASSES[msg.cls] ? msg.cls : 'rifleman';
+  const cs = classStats(cls);
   const p = {
     id: ws._pid,
     ws,
@@ -731,10 +958,14 @@ function handleSolo(ws, msg) {
     solo: true,
     sessionId,
     joinedAt: Date.now(),
+    admin: false, // a solo player may hold the code too, but the admin
+    // controls (start / rename / setTeam) only apply to the match
     alive: true,
     health: 100,
-    inMag: MAG_SIZE,
-    mags: MAG_COUNT - 1,
+    cls,
+    inMag: cs.magSize,
+    mags: cs.magCount - 1,
+    grenades: grenadesAllowed && msg.grenades !== false ? GRENADE_COUNT : 0,
     reloadingUntil: 0,
     lastShotAt: 0,
     stats: freshStats(),
@@ -745,7 +976,7 @@ function handleSolo(ws, msg) {
     aiming: false,
   };
   players.set(p.id, p);
-  send(ws, { t: 'soloJoined', id: p.id, spawn: { x: spawn.x, y: 0, z: spawn.z, yaw: spawn.yaw } });
+  send(ws, { t: 'soloJoined', id: p.id, cls: p.cls, spawn: { x: spawn.x, y: 0, z: spawn.z, yaw: spawn.yaw } });
   broadcastState();
 }
 
@@ -792,6 +1023,66 @@ function handleMessage(ws, msg) {
       }
       break;
     }
+    case 'admin': {
+      // Become the admin by entering the code (Lior, 25/11/2026).
+      // The admin edits names, assigns teams and classes, decides on
+      // grenades, and is the only one who can start / continue / rematch.
+      // If the admin leaves, anyone else can enter the code and take over.
+      if (msg.code !== ADMIN_CODE) {
+        send(ws, { t: 'error', message: 'Wrong admin code.' });
+        return;
+      }
+      p.admin = true;
+      send(ws, { t: 'adminOk' });
+      broadcastState();
+      break;
+    }
+    case 'rename': {
+      // Admin only, team players only: rename a player (1-16 chars).
+      // The on-body name patches rebuild from the new name.
+      if (p.solo || !p.admin) return;
+      const target = players.get(Number(msg.playerId));
+      if (!target || target.solo) return;
+      const name = String(msg.name || '').trim().slice(0, 16);
+      if (!name) return;
+      target.name = name;
+      broadcastState();
+      break;
+    }
+    case 'setTeam': {
+      // Admin only, lobby only: move a team player to the other team.
+      // Class and ammo stay; the start check (1 per team) still applies.
+      if (p.solo || !p.admin || phase !== 'lobby') return;
+      const target = players.get(Number(msg.playerId));
+      if (!target || target.solo) return;
+      if (msg.team !== 'A' && msg.team !== 'B') return;
+      target.team = msg.team;
+      broadcastState();
+      break;
+    }
+    case 'setClass': {
+      // Change a player's class (Lior, 25/11/2026). When an admin
+      // exists, only the admin assigns a team player's class; with no
+      // admin, the host does (the old rule). A solo player may always
+      // change their own. Ammo resets to the new class's loadout.
+      const cls = msg.cls;
+      if (!CLASSES[cls]) return;
+      const target = msg.playerId != null ? players.get(Number(msg.playerId)) : p;
+      if (!target) return;
+      const canAssign = adminPresent() ? p.admin : p.id === hostId;
+      if (target.id !== p.id) {
+        if (p.solo || !canAssign || target.solo) return;
+      } else if (!p.solo && !canAssign) {
+        return; // a team player may not change their own class
+      }
+      target.cls = cls;
+      const tcs = classStats(cls);
+      target.inMag = tcs.magSize;
+      target.mags = tcs.magCount - 1;
+      target.reloadingUntil = 0;
+      broadcastState();
+      break;
+    }
     case 'clearRoom': {
       // Host only, lobby only: kick every other player (teams and solo)
       // so a new game starts clean. Each kicked client gets a 'kicked'
@@ -806,9 +1097,13 @@ function handleMessage(ws, msg) {
       break;
     }
     case 'start': {
-      // Any joined player may start (1v1 is enough); only the attackers
-      // pick stays host-only.
+      // Only the admin may start — but only once an admin exists
+      // (Lior, 25/11/2026). With no admin, anyone may start, as before.
       if (p.solo || phase !== 'lobby') return;
+      if (adminPresent() && !p.admin) {
+        send(ws, { t: 'error', message: 'Only the admin can start the match.' });
+        return;
+      }
       // Asymmetric splits are allowed: at least 1 player per side.
       if (playersOf('A').length < 1 || playersOf('B').length < 1) {
         send(ws, { t: 'error', message: 'Need at least 1 player on each team to start.' });
@@ -822,10 +1117,16 @@ function handleMessage(ws, msg) {
       const z = Number(msg.z);
       const y = Number(msg.y);
       if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(y)) return;
-      // Clamp to the map so a bad client cannot teleport across the world.
-      p.pos.x = Math.max(-18, Math.min(18, x));
-      p.pos.z = Math.max(-62, Math.min(62, z));
-      p.pos.y = Math.max(0, Math.min(3, y));
+      // Defense prep time: attackers wait at spawn — their position is
+      // frozen, but they may still look around (yaw/pitch/stance apply).
+      const prepFrozen = phase === 'playing' && !p.solo
+        && roleOf(p.team) === 'attackers' && Date.now() < prepEndsAt;
+      if (!prepFrozen) {
+        // Clamp to the map so a bad client cannot teleport across the world.
+        p.pos.x = Math.max(-18, Math.min(18, x));
+        p.pos.z = Math.max(-62, Math.min(62, z));
+        p.pos.y = Math.max(0, Math.min(3, y));
+      }
       if (Number.isFinite(msg.yaw)) p.yaw = Number(msg.yaw);
       if (Number.isFinite(msg.pitch)) p.pitch = Number(msg.pitch);
       // Stance flags (pose relay): only accept real booleans.
@@ -839,9 +1140,13 @@ function handleMessage(ws, msg) {
     case 'shot': {
       const now = Date.now();
       if ((phase !== 'playing' && !p.solo) || !p.alive) return;
+      if (phase === 'playing' && !p.solo && now < prepEndsAt) return; // no shooting during prep
       if (now < p.reloadingUntil) return;
       if (p.inMag <= 0) return; // out of ammo in this mag: must reload
-      if (now - p.lastShotAt < FIRE_INTERVAL_MS) return;
+      // Per-class fire rate (marksman: 1 shot/sec) — the server enforces
+      // it, not just the client. The 90 ms floor is the plausibility
+      // floor for the fastest class.
+      if (now - p.lastShotAt < Math.max(FIRE_INTERVAL_MS, classStats(p.cls).fireIntervalMs)) return;
       p.lastShotAt = now;
       p.inMag -= 1;
       p.stats.shots += 1;
@@ -859,25 +1164,30 @@ function handleMessage(ws, msg) {
       let shotTargetId = target ? target.id : null;
       // Friendly fire is ON: any living player except yourself can be hit.
       if (target && target.alive && target.id !== p.id && !target.solo) {
-        hit = true;
         const dx = target.pos.x - p.pos.x;
         const dy = target.pos.y - p.pos.y;
         const dz = target.pos.z - p.pos.z;
         distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        damage = damageForDistance(distance);
-        p.stats.hits += 1;
-        p.stats.damage += damage;
-        target.health -= damage;
-        if (target.health <= 0) {
-          target.health = 0;
-          target.alive = false;
-          target.reloadingUntil = 0;
-          killed = true;
-          p.stats.kills += 1;
-          if (target.team === p.team) p.stats.teamkills += 1;
-          target.stats.deaths += 1;
+        damage = damageForShot(p, distance);
+        if (damage <= 0) {
+          // Class rule: the shot cannot hit at this range (standing
+          // gunner past 15 m) — a miss, no damage, no hit credit.
+        } else {
+          hit = true;
+          p.stats.hits += 1;
+          p.stats.damage += damage;
+          target.health -= damage;
+          if (target.health <= 0) {
+            target.health = 0;
+            target.alive = false;
+            target.reloadingUntil = 0;
+            killed = true;
+            p.stats.kills += 1;
+            if (target.team === p.team) p.stats.teamkills += 1;
+            target.stats.deaths += 1;
+          }
+          targetHealth = target.health;
         }
-        targetHealth = target.health;
       }
       // Solo players can shoot the NPCs: same distance damage as a
       // player. Enough hits put one down for good (no revive; the set
@@ -886,23 +1196,28 @@ function handleMessage(ws, msg) {
       // credit. An NPC hit reports its own (negative) id.
       const npcHit = p.solo ? npcs.find((n) => n.id === Number(msg.targetId)) : null;
       if (npcHit && npcHit.health > 0) {
-        hit = true;
-        shotTargetId = npcHit.id;
         const dx = npcHit.x - p.pos.x;
         const dy = npcHit.y - p.pos.y;
         const dz = npcHit.z - p.pos.z;
         distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        damage = damageForDistance(distance);
-        p.stats.hits += 1;
-        p.stats.damage += damage;
-        npcHit.health -= damage;
-        if (npcHit.health <= 0) {
-          npcHit.health = 0;
-          npcHit.aiming = false;
-          npcHit.burstLeft = 0;
-          killed = true;
+        damage = damageForShot(p, distance);
+        if (damage <= 0) {
+          // Class rule: the shot cannot hit at this range — a miss.
+          shotTargetId = npcHit.id;
+        } else {
+          hit = true;
+          shotTargetId = npcHit.id;
+          p.stats.hits += 1;
+          p.stats.damage += damage;
+          npcHit.health -= damage;
+          if (npcHit.health <= 0) {
+            npcHit.health = 0;
+            npcHit.aiming = false;
+            npcHit.burstLeft = 0;
+            killed = true;
+          }
+          targetHealth = npcHit.health;
         }
-        targetHealth = npcHit.health;
       }
       broadcast({
         t: 'shot',
@@ -928,9 +1243,49 @@ function handleMessage(ws, msg) {
       const now = Date.now();
       if ((phase !== 'playing' && !p.solo) || !p.alive) return;
       if (now < p.reloadingUntil) return;
-      if (p.mags <= 0 || p.inMag >= MAG_SIZE) return;
-      p.reloadingUntil = now + RELOAD_MS;
-      broadcast({ t: 'reloadStart', playerId: p.id, reloadMs: RELOAD_MS });
+      const cs = classStats(p.cls);
+      if (p.mags <= 0 || p.inMag >= cs.magSize) return;
+      p.reloadingUntil = now + cs.reloadMs;
+      broadcast({ t: 'reloadStart', playerId: p.id, reloadMs: cs.reloadMs });
+      break;
+    }
+    case 'throwGrenade': {
+      // The client's 3 s arming already ran (icon fill); this is the
+      // throw itself. One grenade, an arc to 10 m (or the wall before
+      // it), a 3 s fuse from here. No throwing during prep — like shots.
+      const now = Date.now();
+      if (!grenadesAllowed) return;
+      if ((phase !== 'playing' && !p.solo) || !p.alive) return;
+      if (phase === 'playing' && !p.solo && now < prepEndsAt) return;
+      if ((p.grenades ?? 0) <= 0) return;
+      p.grenades -= 1;
+      const sim = simulateThrow(p);
+      const g = {
+        id: nextGrenadeId++,
+        throwerId: p.id,
+        throwAt: now,
+        flightMs: Math.round(GRENADE_FLIGHT_MS * (sim.dist / GRENADE_RANGE_M)),
+        dist: sim.dist,
+        dir: sim.dir,
+        from: { x: p.pos.x, y: p.pos.y + 1.4, z: p.pos.z },
+        to: sim.to,
+        landed: false,
+        exploded: false,
+      };
+      grenades.push(g);
+      broadcast({ t: 'grenadeThrown', id: g.id, throwerId: p.id, from: g.from, to: g.to, flightMs: g.flightMs });
+      broadcastState(); // the grenade count changed
+      break;
+    }
+    case 'setGrenadesAllowed': {
+      // Grenades on/off for the room. When an admin exists, only the
+      // admin toggles it; with no admin, the host does (the old rule).
+      // Players keep their current counts; the throw itself is gated
+      // on the flag, and the next round reset deals none out while off.
+      if (p.solo) return;
+      if (adminPresent() ? !p.admin : p.id !== hostId) return;
+      grenadesAllowed = msg.allowed === true;
+      broadcastState();
       break;
     }
     case 'leaveSolo': {
@@ -950,15 +1305,18 @@ function handleMessage(ws, msg) {
       break;
     }
     case 'continue': {
-      // Any joined player may press CONTINUE during an intermission;
-      // the first press starts the next round. (Solo players are not
-      // part of the match, so they cannot.)
+      // Only the admin presses CONTINUE during an intermission — but
+      // only once an admin exists (Lior, 25/11/2026); with no admin,
+      // anyone may press it, as before. (Solo players are not part of
+      // the match, so they cannot.)
       if (p.solo || phase !== 'intermission') return;
+      if (adminPresent() && !p.admin) return;
       startRound(round + 1);
       break;
     }
     case 'rematch': {
       if (p.solo || phase !== 'ended') return;
+      if (adminPresent() && !p.admin) return;
       if (msg.swap) attackersTeam = attackersTeam === 'A' ? 'B' : 'A';
       startMatch();
       break;
