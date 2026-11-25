@@ -71,6 +71,35 @@
 //     face the street again; a burst that started before the player
 //     ducked behind cover runs to completion, and fire resumes once
 //     line of sight returns.
+//   Scenario 16 (solo NPC hits): every 3rd NPC burst lands one hit
+//     (its middle shot) — an 'npcHit' event to the target only, and
+//     the player's health stays 100, alive stays true.
+//   Scenario 17 (defense prep time): at the start of a round the
+//     attackers wait at spawn (moves ignored, no shooting) while the
+//     defenders move freely; after prep ends the attackers move again.
+//     PREP_MS=5000 in this test (20 s in the game).
+//   Scenario 18 (classes): marksman — ADS kills at any range, hip fire
+//     is the normal table, 1 shot/sec (server-enforced); gunner —
+//     standing, hits only within 15 m (34, 3 hits to kill); crouched,
+//     the normal table (50 at 15-50 m); reload 5 s. setClass: the host
+//     assigns any team player (ammo resets to the new loadout); a
+//     non-host team player may not change their own class; a solo join
+//     carries the chosen class and its loadout.
+//   Scenario 19 (grenades): 2 per round; the throw flies a 10 m arc;
+//     a wall stops the arc (lands before the wall, shorter flight);
+//     the blast kills within 4 m with line of sight, and a wall between
+//     the blast and the target blocks it; the count drops per throw and
+//     a third throw with none left is ignored; the live grenade rides
+//     the snapshot.
+//   Scenario 20 (grenades, continued): the arc passes through a window
+//     and kills inside the house; a throw at a nearby wall kills the
+//     thrower himself (friendly fire); the solo grenade toggle (off =
+//     0 grenades, on = 2); grenades reset to 2 on the next round.
+//   Scenario 21 (admin): with no admin in the room the lobby works as
+//     before (anyone starts, the host assigns classes); once someone
+//     enters the code, only the admin starts / continues, renames, moves
+//     teams, assigns classes, and toggles grenades; a wrong code and a
+//     non-admin attempt are rejected; setTeam is lobby-only.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -87,6 +116,17 @@ const URL = `ws://127.0.0.1:${PORT}`;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Defense prep time runs at the start of every round (PREP_MS in this
+// test): scenarios that play right after a start must wait it out first.
+// The inbox is cleared before each wait so a stale lobby snapshot (which
+// also carries prepActive === false) cannot satisfy the wait early.
+async function waitPrepEnd(c) {
+  c.inbox.length = 0;
+  await c.waitFor('snapshot', (m) => m.prepActive === true, 10000);
+  c.inbox.length = 0;
+  await c.waitFor('snapshot', (m) => m.prepActive === false, 10000);
 }
 
 // Wait until fn() returns truthy (or timeout). Returns the truthy value.
@@ -134,6 +174,14 @@ class Client {
     this.ws.send(JSON.stringify(obj));
   }
 
+  // Admin (Lior, 25/11/2026): enter the code and wait for adminOk.
+  // Only the admin can start / continue / rematch, rename, set teams,
+  // assign classes, or toggle grenades.
+  async becomeAdmin(code = 'test-code') {
+    this.send({ t: 'admin', code });
+    await this.waitFor('adminOk', () => true, 5000);
+  }
+
   find(type, pred) {
     return this.inbox.find((m) => m.t === type && (!pred || pred(m)));
   }
@@ -171,7 +219,7 @@ async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500' },
+    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', PREP_MS: '5000', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500', ADMIN_CODE: 'test-code' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -201,10 +249,12 @@ async function main() {
 
     // Host (first joiner = A1) picks attackers and starts.
     a1.send({ t: 'setAttackers', team: 'A' });
+    await a1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     a1.send({ t: 'start' });
     const r1 = await a1.waitFor('roundStart', (m) => m.round === 1);
     await a1.waitFor('state', (m) => m.phase === 'playing');
     console.log('ok - match started, round 1 playing, A attacks');
+    await waitPrepEnd(a1); // prep: attackers wait, no shooting yet
     assert.ok(r1.objective, 'roundStart should carry the objective');
     assert.ok(Math.abs(r1.objective.x) === 11 && r1.objective.z === 45,
       `objective must be a defenders spawn centre, got ${JSON.stringify(r1.objective)}`);
@@ -257,6 +307,7 @@ async function main() {
     a1.send({ t: 'continue' });
     const r2 = await a1.waitFor('roundStart', (m) => m.round === 2);
     console.log('ok - round 2 starts after CONTINUE (positions/ammo reset)');
+    await waitPrepEnd(a1); // prep runs at the start of every round
     assert.ok(r2.objective && Math.abs(r2.objective.x) === 11 && r2.objective.z === 45,
       `round 2 objective must be a defenders spawn centre, got ${JSON.stringify(r2.objective)}`);
     a2.send({ t: 'move', x: r2.objective.x, y: 0, z: r2.objective.z, yaw: 0, pitch: 0 });
@@ -267,6 +318,7 @@ async function main() {
     a1.send({ t: 'continue' });
     await a1.waitFor('roundStart', (m) => m.round === 3);
     console.log('ok - round 3 started after CONTINUE');
+    await waitPrepEnd(a1); // prep runs at the start of every round
 
     // Long range (>50 m): A1 shoots B1 from spawn to spawn (~110 m).
     // 3 hits of 34 damage to kill.
@@ -332,6 +384,7 @@ async function main() {
     c1.send({ t: 'join', name: 'C1', team: 'A' });
     await c1.waitFor('joined');
     // Starting with an empty enemy team must fail.
+    await c1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     c1.send({ t: 'start' });
     const err = await c1.waitFor('error', (m) => /each team/.test(m.message));
     assert.ok(err, 'expected an error when starting with an empty team');
@@ -343,7 +396,8 @@ async function main() {
     d1.send({ t: 'join', name: 'D1', team: 'B' });
     d2.send({ t: 'join', name: 'D2', team: 'B' });
     await c1.waitFor('state', (m) => m.players.length === 3);
-    d1.send({ t: 'start' }); // D1 is not the host; any player may start
+    await d1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
+    d1.send({ t: 'start' }); // D1 is not the host — the admin (not the host) starts
     await c1.waitFor('roundStart', (m) => m.round === 1);
     console.log('ok - asymmetric 1v2 match starts fine (non-host start)');
 
@@ -384,9 +438,11 @@ async function main() {
     j1.send({ t: 'join', name: 'J1', team: 'A' });
     k1.send({ t: 'join', name: 'K1', team: 'B' });
     await j1.waitFor('state', (m) => m.players.length === 3);
+    await j1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     j1.send({ t: 'start' });
     await j1.waitFor('roundStart', (m) => m.round === 1);
     console.log('ok - match starts with a solo player in the room (solo is never host)');
+    await waitPrepEnd(j1); // prep: no shooting yet
     j1.send({ t: 'shot', targetId: s.id });
     const missOnSolo = await j1.waitFor('shot', (m) => m.shooterId === j1.id && m.targetId === s.id);
     assert.equal(missOnSolo.hit, false);
@@ -476,6 +532,7 @@ async function main() {
     m2.send({ t: 'join', name: 'M2', team: 'B' });
     m2b.send({ t: 'join', name: 'M2b', team: 'B' });
     await m1.waitFor('state', (m) => m.players.length === 4);
+    await m1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     m1.send({ t: 'start' });
     await m1.waitFor('state', (m) => m.phase === 'playing');
     console.log('ok - 2v2 match started for the no-mid-match-join test');
@@ -526,6 +583,7 @@ async function main() {
     g3.send({ t: 'join', name: 'G3', team: 'B' });
     g4.send({ t: 'join', name: 'G4', team: 'B' });
     await g1.waitFor('state', (m) => m.players.length === 4);
+    await g1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     g1.send({ t: 'start' });
     await g1.waitFor('state', (m) => m.phase === 'playing');
     console.log('ok - 2v2 match started for the heartbeat test');
@@ -560,10 +618,12 @@ async function main() {
     f1.send({ t: 'join', name: 'F1', team: 'B' });
     await e1.waitFor('state', (m) => m.players.length === 2);
     e1.send({ t: 'setAttackers', team: 'A' });
+    await e1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     e1.send({ t: 'start' });
     const q1 = await e1.waitFor('roundStart', (m) => m.round === 1);
     await e1.waitFor('state', (m) => m.phase === 'playing');
     console.log('ok - 1v1 match started for the capture/stats test');
+    await waitPrepEnd(e1); // prep: attackers wait, no shooting yet
 
     // Round 1: E1 kills F1 from 5 m (close range, 1 hit). E1 stands 5.8 m
     // from the objective centre — outside the zone, so no capture starts.
@@ -577,6 +637,7 @@ async function main() {
     // Round 2: entering the zone must NOT end the round instantly.
     e1.send({ t: 'continue' });
     const q2 = await e1.waitFor('roundStart', (m) => m.round === 2);
+    await waitPrepEnd(e1); // prep runs at the start of every round
     const roundEndsBefore = e1.inbox.filter((m) => m.t === 'roundEnd').length;
     e1.send({ t: 'move', x: q2.objective.x, y: 0, z: q2.objective.z, yaw: 0, pitch: 0 });
     await sleep(300); // half the 600 ms hold time
@@ -596,6 +657,7 @@ async function main() {
     // Round 3: E1 kills F1 again — match ends 3-0 with a stats board.
     e1.send({ t: 'continue' });
     const q3 = await e1.waitFor('roundStart', (m) => m.round === 3);
+    await waitPrepEnd(e1); // prep runs at the start of every round
     e1.send({ t: 'move', x: q3.objective.x - 3, y: 0, z: 40, yaw: 0, pitch: 0 });
     await sleep(150);
     e1.send({ t: 'shot', targetId: f1.id });
@@ -672,6 +734,7 @@ async function main() {
     t5.send({ t: 'join', name: 'A2', team: 'A' });
     await t5.waitFor('joined');
     await u1.waitFor('state', (m) => m.players.length === 3);
+    await t2.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     t2.send({ t: 'start' });
     await t2.waitFor('roundStart', (m) => m.round === 1);
     await t2.waitFor('state', (m) => m.phase === 'playing');
@@ -967,6 +1030,7 @@ async function main() {
     l1.send({ t: 'join', name: 'Leaver', team: 'A' });
     l2.send({ t: 'join', name: 'Stayer', team: 'B' });
     await l1.waitFor('state', (m) => m.players.length === 2);
+    await l1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     l1.send({ t: 'start' });
     await l1.waitFor('state', (m) => m.phase === 'playing');
     console.log('ok - 1v1 match started for the leave test');
@@ -1109,6 +1173,521 @@ async function main() {
     await ls1.waitFor('shot', (m) => m.shooterId === lTarget.id, 5000);
     console.log('ok - NPC resumes fire once line of sight returns');
     for (const c of [ls1, lo]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 16: solo NPC
+    // hits redden the screen without damage (Lior, 25/11/2026). Every 3rd
+    // NPC burst lands one hit (its middle shot); the server sends an
+    // 'npcHit' event to the target only. Health must stay 100, alive true.
+    const hitSolo = new Client('NpcHitSolo');
+    await hitSolo.ready();
+    hitSolo.send({ t: 'solo', name: 'NpcHitSolo' });
+    await hitSolo.waitFor('soloJoined');
+    const hitSnap = await hitSolo.waitFor('snapshot', (m) =>
+      m.players.filter((p) => p.npc === true).length === 10);
+    const hitSet = hitSnap.players.filter((p) => p.npc === true);
+    const ground = hitSet.find((p) => p.y === 0);
+    hitSolo.send({ t: 'move', x: 0, y: 0, z: ground.z, yaw: 0, pitch: 0 });
+    await sleep(300);
+    hitSolo.inbox.length = 0;
+    const hit = await hitSolo.waitFor('npcHit', (m) => m.npcId === ground.id, 20000);
+    assert.ok(hit, 'expected an npcHit from the ground-floor NPC');
+    console.log('ok - NPC hit arrives (3rd burst, middle shot)');
+    await sleep(300);
+    const afterSnap = hitSolo.findLast('snapshot', (m) =>
+      m.players.some((p) => p.id === hitSolo.id));
+    const me = afterSnap.players.find((p) => p.id === hitSolo.id);
+    assert.equal(me.health, 100, 'an NPC hit must not reduce health');
+    assert.equal(me.alive, true, 'an NPC hit must not eliminate');
+    console.log('ok - health stays 100, player stays alive after the NPC hit');
+    hitSolo.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 17: defense
+    // prep time (Lior, 25/11/2026). At the start of a round the attackers
+    // wait at spawn (moves ignored, no shooting) while the defenders move
+    // freely; after prep ends the attackers move again.
+    const p1 = new Client('PrepAtk');
+    const p2 = new Client('PrepDef');
+    for (const c of [p1, p2]) await c.ready();
+    p1.send({ t: 'join', name: 'PrepAtk', team: 'A' });
+    p2.send({ t: 'join', name: 'PrepDef', team: 'B' });
+    await p1.waitFor('state', (m) => m.players.length === 2);
+    await p1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
+    p1.send({ t: 'start' });
+    const playing = await p1.waitFor('state', (m) => m.phase === 'playing');
+    const atkTeam = playing.attackersTeam;
+    const atk = atkTeam === 'A' ? p1 : p2;
+    const def = atkTeam === 'A' ? p2 : p1;
+    const prepSnap = await atk.waitFor('snapshot', (m) => m.prepActive === true, 5000);
+    assert.ok(prepSnap.prepMsLeft > 0 && prepSnap.prepMsLeft <= 5000,
+      `prep countdown must run, got ${prepSnap.prepMsLeft}`);
+    console.log('ok - snapshot shows prepActive with a countdown');
+    const atkSpawn = prepSnap.players.find((p) => p.id === atk.id);
+    atk.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0 });
+    await sleep(400);
+    const frozen = atk.findLast('snapshot', (m) => m.players.some((p) => p.id === atk.id));
+    const atkNow = frozen.players.find((p) => p.id === atk.id);
+    assert.deepEqual([atkNow.x, atkNow.z], [atkSpawn.x, atkSpawn.z],
+      'attacker must not move during prep');
+    console.log('ok - attacker frozen at spawn during prep');
+    atk.inbox.length = 0;
+    atk.send({ t: 'shot', targetId: def.id });
+    await sleep(400);
+    assert.equal(atk.inbox.filter((m) => m.t === 'shot' && m.shooterId === atk.id).length, 0,
+      'no shooting during prep');
+    console.log('ok - attacker shot during prep is ignored');
+    const defSpawn = prepSnap.players.find((p) => p.id === def.id);
+    def.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0 });
+    await sleep(400);
+    const defMoved = def.findLast('snapshot', (m) => m.players.some((p) => p.id === def.id));
+    const defNow = defMoved.players.find((p) => p.id === def.id);
+    assert.ok(Math.hypot(defNow.x - defSpawn.x, defNow.z - defSpawn.z) > 1,
+      'defender must move freely during prep');
+    console.log('ok - defender moves freely during prep');
+    await atk.waitFor('snapshot', (m) => m.prepActive === false, 8000);
+    atk.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0 });
+    await sleep(400);
+    const freed = atk.findLast('snapshot', (m) => m.players.some((p) => p.id === atk.id));
+    const atkFree = freed.players.find((p) => p.id === atk.id);
+    assert.ok(Math.hypot(atkFree.x - atkSpawn.x, atkFree.z - atkSpawn.z) > 1,
+      'attacker must move after prep ends');
+    console.log('ok - attacker moves again after prep ends');
+    for (const c of [p1, p2]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 18: classes
+    // (Lior, 25/11/2026). Marksman: ADS kills at any range, hip fire is
+    // the normal table, 1 shot/sec. Gunner: standing, hits only within
+    // 15 m (34, 3 hits to kill); crouched, the normal table. Reload 5 s.
+    const cm = new Client('ClsMark');
+    const cg = new Client('ClsGun');
+    for (const c of [cm, cg]) await c.ready();
+    cm.send({ t: 'join', name: 'ClsMark', team: 'A' });
+    cg.send({ t: 'join', name: 'ClsGun', team: 'B' });
+    const clsBoth = await cm.waitFor('state', (m) => m.players.length === 2);
+    const st1 = clsBoth.players.find((p) => p.id === cm.id);
+    const st2 = clsBoth.players.find((p) => p.id === cg.id);
+    assert.equal(st1.cls, 'rifleman', 'team join defaults to rifleman');
+    assert.equal(st2.cls, 'rifleman', 'team join defaults to rifleman');
+    assert.equal(st1.inMag, 29, 'rifleman loads 29 in the mag');
+    assert.equal(st1.mags, 5, 'rifleman loads 5 spare mags');
+    console.log('ok - team joins default to rifleman, 29 in mag, 5 spares');
+    // The admin (not the host) assigns classes — cm enters the code first.
+    await cm.becomeAdmin();
+    // Admin assigns the gunner class to the other player.
+    cm.send({ t: 'setClass', playerId: cg.id, cls: 'gunner' });
+    await cm.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === cg.id);
+      return p && p.cls === 'gunner';
+    });
+    const gunState = cm.findLast('state', (m) => m.players.some((q) => q.id === cg.id && q.cls === 'gunner'));
+    const gunP = gunState.players.find((q) => q.id === cg.id);
+    assert.equal(gunP.inMag, 150, 'gunner loads 150 in the mag');
+    assert.equal(gunP.mags, 2, 'gunner loads 2 spare mags');
+    console.log('ok - admin setClass makes the gunner, ammo resets to 150 + 2');
+    // A non-admin team player may not change their own class.
+    cg.send({ t: 'setClass', cls: 'marksman' });
+    await sleep(400);
+    const stillGun = cm.findLast('state', (m) => m.players.some((q) => q.id === cg.id));
+    assert.equal(stillGun.players.find((q) => q.id === cg.id).cls, 'gunner',
+      'a non-admin self-setClass must be ignored');
+    console.log('ok - non-admin self-setClass is ignored');
+    // The admin changes their own class to marksman.
+    cm.send({ t: 'setClass', playerId: cm.id, cls: 'marksman' });
+    await cm.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === cm.id);
+      return p && p.cls === 'marksman';
+    });
+    console.log('ok - host changes their own class to marksman');
+    // Solo join carries the chosen class and its loadout.
+    const cs = new Client('ClsSolo');
+    await cs.ready();
+    cs.send({ t: 'solo', name: 'ClsSolo', cls: 'gunner' });
+    const sj = await cs.waitFor('soloJoined');
+    assert.equal(sj.cls, 'gunner', 'soloJoined carries the chosen class');
+    const clsSoloSnap = await cs.waitFor('snapshot', (m) => {
+      const p = m.players.find((q) => q.id === cs.id);
+      return p && p.inMag === 150;
+    });
+    const soloP = clsSoloSnap.players.find((q) => q.id === cs.id);
+    assert.equal(soloP.mags, 2, 'solo gunner loads 2 spare mags');
+    console.log('ok - solo join with cls gunner: soloJoined + 150 in mag, 2 spares');
+    cs.send({ t: 'leaveSolo' });
+    await cs.waitFor('soloLeft');
+    cs.close();
+    await sleep(300);
+    // Start the match and play the class rules at controlled distances
+    // (street centre, both at y 0 — distance is the z gap).
+    await cm.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
+    cm.send({ t: 'start' });
+    await waitPrepEnd(cm);
+    const place = async (c, x, z, extra = {}) => {
+      c.send({ t: 'move', x, y: 0, z, yaw: 0, pitch: 0, ...extra });
+    };
+    const shotBy = async (shooter, targetId) => {
+      shooter.inbox.length = 0;
+      shooter.send({ t: 'shot', targetId });
+      return shooter.waitFor('shot', (m) => m.shooterId === shooter.id, 5000);
+    };
+    // Marksman hip fire at 56 m: normal table, 34 damage — and the
+    // 1 shot/sec gate drops the second shot sent 200 ms later.
+    await place(cm, 0, -28, { aiming: false });
+    await place(cg, 0, 28);
+    await sleep(400);
+    cm.inbox.length = 0;
+    cm.send({ t: 'shot', targetId: cg.id });
+    await sleep(200);
+    cm.send({ t: 'shot', targetId: cg.id });
+    await sleep(500);
+    const hipShots = cm.inbox.filter((m) => m.t === 'shot' && m.shooterId === cm.id);
+    assert.equal(hipShots.length, 1, `marksman fire rate is 1/sec, got ${hipShots.length} shots`);
+    assert.equal(hipShots[0].hit, true, 'marksman hip fire at 56 m must hit');
+    assert.equal(hipShots[0].damage, 34, 'marksman hip fire past 50 m is 34');
+    assert.equal(hipShots[0].targetHealth, 66, 'target health 100 - 34');
+    console.log('ok - marksman hip fire at 56 m: 34 damage; 2nd shot inside 1 s dropped');
+    // Gunner standing at 30 m: out of reach, a miss — no damage.
+    await place(cm, 0, -15, { aiming: false });
+    await place(cg, 0, 15, { crouch: false });
+    await sleep(400);
+    const miss = await shotBy(cg, cm.id);
+    assert.equal(miss.hit, false, 'standing gunner past 15 m must miss');
+    assert.equal(miss.damage, 0, 'standing gunner past 15 m deals no damage');
+    // shotBy cleared the inbox; wait for a fresh snapshot before
+    // reading the target's health.
+    const stillFull = await cg.waitFor('snapshot', (m) => m.players.some((q) => q.id === cm.id), 5000);
+    assert.equal(stillFull.players.find((q) => q.id === cm.id).health, 100,
+      'a missed shot leaves health at 100');
+    console.log('ok - gunner standing at 30 m misses, no damage');
+    // Gunner standing at 10 m: 34 damage, 3 hits to kill.
+    await place(cm, 0, -5);
+    await place(cg, 0, 5);
+    await sleep(400);
+    const closeShot = await shotBy(cg, cm.id);
+    assert.equal(closeShot.hit, true, 'standing gunner within 15 m must hit');
+    assert.equal(closeShot.damage, 34, 'standing gunner within 15 m deals 34');
+    assert.equal(closeShot.targetHealth, 66, 'target health 100 - 34');
+    console.log('ok - gunner standing at 10 m: 34 damage');
+    // Gunner crouched at 30 m: normal table, 50 damage.
+    await place(cm, 0, -15);
+    await place(cg, 0, 15, { crouch: true });
+    await sleep(400);
+    const crouched = await shotBy(cg, cm.id);
+    assert.equal(crouched.hit, true, 'crouched gunner at 30 m must hit');
+    assert.equal(crouched.damage, 50, 'crouched gunner at 15-50 m deals 50');
+    assert.equal(crouched.targetHealth, 16, 'target health 66 - 50');
+    console.log('ok - gunner crouched at 30 m: 50 damage (normal table)');
+    // Gunner reload takes 5 s (reloadStart carries the class time).
+    cg.send({ t: 'reload' });
+    const rs = await cg.waitFor('reloadStart', (m) => m.playerId === cg.id, 5000);
+    assert.equal(rs.reloadMs, 5000, 'gunner reload is 5000 ms');
+    console.log('ok - gunner reloadStart carries reloadMs 5000');
+    // Marksman ADS at 56 m: one hit kills at any range.
+    await place(cm, 0, -28, { aiming: true });
+    await place(cg, 0, 28);
+    await sleep(1500); // clear of the marksman's 1 s gate
+    const ads = await shotBy(cm, cg.id);
+    assert.equal(ads.hit, true, 'marksman ADS at 56 m must hit');
+    assert.equal(ads.damage, 100, 'marksman ADS kills at any range');
+    assert.equal(ads.killed, true, 'marksman ADS at 56 m kills');
+    assert.equal(ads.targetHealth, 0, 'target health 0 after the ADS kill');
+    console.log('ok - marksman ADS at 56 m: 100 damage, kill');
+    for (const c of [cm, cg]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 19: grenades
+    // (Lior, 25/11/2026). 2 per round; a 10 m arc; a wall stops the arc
+    // (lands before the wall); the blast kills within 4 m with line of
+    // sight, a wall blocks it; the count drops per throw.
+    const gr1 = new Client('GrenA');
+    const gr2 = new Client('GrenB');
+    for (const c of [gr1, gr2]) await c.ready();
+    gr1.send({ t: 'join', name: 'GrenA', team: 'A' });
+    gr2.send({ t: 'join', name: 'GrenB', team: 'B' });
+    await gr1.waitFor('snapshot', (m) => {
+      const a = m.players.find((q) => q.id === gr1.id);
+      const b = m.players.find((q) => q.id === gr2.id);
+      return a && b && a.grenades === 2 && b.grenades === 2;
+    });
+    console.log('ok - both players start the round with 2 grenades');
+    await gr1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
+    gr1.send({ t: 'start' });
+    await waitPrepEnd(gr1);
+    const throwBy = async (shooter) => {
+      shooter.inbox.length = 0;
+      shooter.send({ t: 'throwGrenade' });
+      return shooter.waitFor('grenadeThrown', (m) => m.throwerId === shooter.id, 5000);
+    };
+    const explode = async (watcher, timeoutMs = 6000) => {
+      return watcher.waitFor('grenadeExploded', () => true, timeoutMs);
+    };
+    // Throw 1: into the wall — the arc stops before it (the house at
+    // cz 0, z -1.5 is a solid band, not a window or a door).
+    gr1.send({ t: 'move', x: 0, y: 0, z: -1.5, yaw: -Math.PI / 2, pitch: 0 });
+    await sleep(400);
+    const th1 = await throwBy(gr1);
+    assert.ok(th1.flightMs >= 400 && th1.flightMs < 1000,
+      `a wall-shortened throw flies less than 10 m, got flightMs ${th1.flightMs}`);
+    const live1 = await gr1.waitFor('snapshot', (m) => (m.grenades || []).length === 1, 5000);
+    assert.equal(live1.grenades.length, 1, 'the live grenade rides the snapshot');
+    const ex1 = await explode(gr1);
+    assert.ok(ex1.x > 4 && ex1.x < 6, `the grenade lands before the wall, got x ${ex1.x}`);
+    assert.equal(ex1.y, 0, 'the grenade lands on the ground floor');
+    assert.deepEqual(ex1.victims, [], 'nobody is near the wall throw');
+    const oneLeft = await gr1.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === gr1.id);
+      return p && p.grenades === 1;
+    });
+    assert.equal(oneLeft.players.find((q) => q.id === gr1.id).grenades, 1, 'one grenade left');
+    console.log('ok - wall stops the arc (lands before it, short flight), count 2 -> 1');
+    // Throw 2: the blast 3 m away, but the house wall stands between
+    // the explosion and the target — line of sight blocks it.
+    gr1.send({ t: 'move', x: 4, y: 0, z: 5, yaw: Math.PI, pitch: 0 });
+    gr2.send({ t: 'move', x: 7, y: 0, z: 15, yaw: 0, pitch: 0 });
+    await sleep(400);
+    await throwBy(gr1);
+    const ex2 = await explode(gr1);
+    assert.ok(Math.abs(ex2.x - 4) < 0.1 && Math.abs(ex2.z - 15) < 0.1, 'the blast lands at (4, 15)');
+    assert.deepEqual(ex2.victims, [], 'a wall between blast and target blocks the kill');
+    const g2Alive = await gr2.waitFor('snapshot', (m) => m.players.some((q) => q.id === gr2.id));
+    assert.equal(g2Alive.players.find((q) => q.id === gr2.id).health, 100, 'the sheltered player stays at 100');
+    console.log('ok - wall blocks the blast: target 3 m away survives at 100');
+    // A third throw with none left is ignored.
+    gr1.inbox.length = 0;
+    gr1.send({ t: 'throwGrenade' });
+    await sleep(600);
+    assert.equal(gr1.inbox.filter((m) => m.t === 'grenadeThrown' && m.throwerId === gr1.id).length, 0,
+      'a throw with 0 grenades must be ignored');
+    console.log('ok - a throw with 0 grenades is ignored');
+    // Throw 3: open air — the target stands on the landing point.
+    gr2.send({ t: 'move', x: 0, y: 0, z: 5, yaw: Math.PI, pitch: 0 });
+    gr1.send({ t: 'move', x: 0, y: 0, z: 15, yaw: 0, pitch: 0 });
+    await sleep(400);
+    await throwBy(gr2);
+    const ex3 = await explode(gr2);
+    assert.ok(ex3.victims.includes(gr1.id), 'the blast kills the target on the landing point');
+    const dead = await gr2.waitFor('snapshot', (m) => {
+      const p = m.players.find((q) => q.id === gr1.id);
+      return p && !p.alive;
+    });
+    assert.equal(dead.players.find((q) => q.id === gr1.id).health, 0, 'the victim is at 0 health');
+    console.log('ok - open-air blast kills the target on the landing point');
+    for (const c of [gr1, gr2]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 20: grenades,
+    // continued — window pass-through, thrower self-damage, solo toggle.
+    const sOff = new Client('GrenSoloOff');
+    await sOff.ready();
+    sOff.send({ t: 'solo', name: 'GrenSoloOff', grenades: false });
+    await sOff.waitFor('soloJoined');
+    const offSnap = await sOff.waitFor('snapshot', (m) => {
+      const p = m.players.find((q) => q.id === sOff.id);
+      return p && p.grenades === 0;
+    });
+    assert.equal(offSnap.players.find((q) => q.id === sOff.id).grenades, 0, 'solo with grenades off has 0');
+    console.log('ok - solo join with grenades off: 0 grenades');
+    sOff.send({ t: 'leaveSolo' });
+    await sOff.waitFor('soloLeft');
+    sOff.close();
+    await sleep(300);
+    const sOn = new Client('GrenSoloOn');
+    await sOn.ready();
+    sOn.send({ t: 'solo', name: 'GrenSoloOn', grenades: true });
+    await sOn.waitFor('soloJoined');
+    const onSnap = await sOn.waitFor('snapshot', (m) => {
+      const p = m.players.find((q) => q.id === sOn.id);
+      return p && p.grenades === 2;
+    });
+    assert.equal(onSnap.players.find((q) => q.id === sOn.id).grenades, 2, 'solo with grenades on has 2');
+    console.log('ok - solo join with grenades on: 2 grenades');
+    sOn.send({ t: 'leaveSolo' });
+    await sOn.waitFor('soloLeft');
+    sOn.close();
+    await sleep(300);
+    const wn1 = new Client('GrenWinA');
+    const w2 = new Client('GrenWinB');
+    for (const c of [wn1, w2]) await c.ready();
+    wn1.send({ t: 'join', name: 'GrenWinA', team: 'A' });
+    w2.send({ t: 'join', name: 'GrenWinB', team: 'B' });
+    // Wait for both joins to land before starting — sending 'start'
+    // immediately after the joins races the second join and the start
+    // is rejected (no player on team B yet).
+    await wn1.waitFor('state', (m) => m.players.length === 2);
+    await wn1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
+    wn1.send({ t: 'start' });
+    await waitPrepEnd(wn1);
+    // Window: the arc at z 3.5 passes the ground-floor window and
+    // lands inside the house; the target 2 m inside dies.
+    wn1.send({ t: 'move', x: 0, y: 0, z: 3.5, yaw: -Math.PI / 2, pitch: 0 });
+    w2.send({ t: 'move', x: 12, y: 0, z: 3.5, yaw: 0, pitch: 0 });
+    await sleep(400);
+    wn1.inbox.length = 0;
+    wn1.send({ t: 'throwGrenade' });
+    await wn1.waitFor('grenadeThrown', (m) => m.throwerId === wn1.id, 5000);
+    const exW = await wn1.waitFor('grenadeExploded', () => true, 6000);
+    assert.ok(exW.x > 6, `the grenade passes the window and lands inside, got x ${exW.x}`);
+    assert.ok(exW.victims.includes(w2.id), 'the blast kills inside the house');
+    console.log('ok - grenade through the window kills inside the house');
+    // Round 2: grenades reset to 2, and a throw at a nearby wall kills
+    // the thrower himself (friendly fire, 2.5 m from the blast).
+    wn1.send({ t: 'continue' });
+    await waitPrepEnd(wn1);
+    const reset = await wn1.waitFor('snapshot', (m) => {
+      const p = m.players.find((q) => q.id === wn1.id);
+      return p && p.grenades === 2 && p.alive;
+    });
+    assert.equal(reset.players.find((q) => q.id === wn1.id).grenades, 2, 'grenades reset to 2 on the next round');
+    console.log('ok - grenades reset to 2 on the next round');
+    wn1.send({ t: 'move', x: 3, y: 0, z: -1.5, yaw: -Math.PI / 2, pitch: 0 });
+    await sleep(400);
+    wn1.inbox.length = 0;
+    wn1.send({ t: 'throwGrenade' });
+    await wn1.waitFor('grenadeThrown', (m) => m.throwerId === wn1.id, 5000);
+    const exS = await wn1.waitFor('grenadeExploded', () => true, 6000);
+    assert.ok(exS.victims.includes(wn1.id), 'the thrower dies to his own wall throw');
+    console.log('ok - thrower dies to his own blast (friendly fire)');
+    for (const c of [wn1, w2]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 21: admin
+    // (Lior, 25/11/2026). With NO admin in the room, the lobby works as
+    // before — anyone may start, the host assigns classes. Once someone
+    // enters the code, only the admin starts / continues, renames, moves
+    // teams, assigns classes, and toggles grenades.
+    // No admin yet: the host assigns a class and anyone may start.
+    const na1 = new Client('NoAdmA');
+    const na2 = new Client('NoAdmB');
+    for (const c of [na1, na2]) await c.ready();
+    na1.send({ t: 'join', name: 'NoAdmA', team: 'A' });
+    na2.send({ t: 'join', name: 'NoAdmB', team: 'B' });
+    await na1.waitFor('state', (m) => m.players.length === 2);
+    na1.send({ t: 'setClass', playerId: na2.id, cls: 'gunner' });
+    const naGun = await na1.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === na2.id);
+      return p && p.cls === 'gunner';
+    });
+    assert.equal(naGun.players.find((q) => q.id === na2.id).inMag, 150, 'with no admin, the host assigns the gunner');
+    console.log('ok - with no admin, the host assigns a class');
+    na2.send({ t: 'setClass', playerId: na1.id, cls: 'gunner' });
+    await sleep(400);
+    const naStill = na1.findLast('state', (m) => m.players.some((q) => q.id === na1.id));
+    assert.equal(naStill.players.find((q) => q.id === na1.id).cls, 'rifleman', 'with no admin, a non-host setClass is ignored');
+    console.log('ok - with no admin, a non-host setClass is ignored');
+    na1.send({ t: 'start' });
+    await na1.waitFor('roundStart', (m) => m.round === 1, 5000);
+    console.log('ok - with no admin, anyone may start the match');
+    for (const c of [na1, na2]) c.close();
+    await sleep(600); // let the server notice the empty room and reset
+    // An admin exists now: ad1 enters the code first.
+    const ad1 = new Client('AdmA');
+    const ad2 = new Client('AdmB');
+    for (const c of [ad1, ad2]) await c.ready();
+    ad1.send({ t: 'join', name: 'AdmA', team: 'A' });
+    ad2.send({ t: 'join', name: 'AdmB', team: 'B' });
+    await ad1.waitFor('state', (m) => m.players.length === 2);
+    await ad1.becomeAdmin();
+    const adminState = await ad1.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === ad1.id);
+      return p && p.admin === true;
+    });
+    assert.equal(adminState.players.find((q) => q.id === ad1.id).admin, true, 'ad1 is the admin');
+    console.log('ok - correct code makes the admin (state shows admin true)');
+    // A non-admin start is rejected.
+    ad2.inbox.length = 0;
+    ad2.send({ t: 'start' });
+    const noAdminErr = await ad2.waitFor('error', (m) => /Only the admin/.test(m.message), 5000);
+    assert.ok(noAdminErr, 'a non-admin start must be rejected');
+    console.log('ok - non-admin start is rejected');
+    // A wrong code is rejected.
+    ad2.inbox.length = 0;
+    ad2.send({ t: 'admin', code: 'wrong-code' });
+    const wrongCodeErr = await ad2.waitFor('error', (m) => /Wrong admin code/.test(m.message), 5000);
+    assert.ok(wrongCodeErr, 'a wrong admin code must be rejected');
+    console.log('ok - wrong admin code is rejected');
+    // A non-admin cannot assign a class.
+    ad2.send({ t: 'setClass', playerId: ad1.id, cls: 'gunner' });
+    await sleep(400);
+    const stillRifle = await ad1.waitFor('state', (m) => m.players.some((q) => q.id === ad1.id));
+    assert.equal(stillRifle.players.find((q) => q.id === ad1.id).cls, 'rifleman', 'a non-admin setClass is ignored');
+    console.log('ok - non-admin setClass is ignored');
+    // The admin assigns a class, renames, and moves a team.
+    ad1.send({ t: 'setClass', playerId: ad2.id, cls: 'gunner' });
+    const gunnerState = await ad1.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === ad2.id);
+      return p && p.cls === 'gunner';
+    });
+    assert.equal(gunnerState.players.find((q) => q.id === ad2.id).inMag, 150, 'the admin-assigned gunner loads 150');
+    console.log('ok - admin setClass works (gunner, 150 in mag)');
+    ad1.send({ t: 'rename', playerId: ad2.id, name: 'RenamedB' });
+    const renamed = await ad1.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === ad2.id);
+      return p && p.name === 'RenamedB';
+    });
+    assert.equal(renamed.players.find((q) => q.id === ad2.id).name, 'RenamedB', 'the admin rename lands');
+    console.log('ok - admin rename works');
+    // An empty rename is ignored (no new state; the latest one still
+    // carries the renamed name — findLast, not the oldest state).
+    ad1.send({ t: 'rename', playerId: ad2.id, name: '   ' });
+    await sleep(400);
+    const stillNamed = ad1.findLast('state', (m) => m.players.some((q) => q.id === ad2.id));
+    assert.equal(stillNamed.players.find((q) => q.id === ad2.id).name, 'RenamedB', 'an empty rename is ignored');
+    console.log('ok - empty rename is ignored');
+    // Move ad2 to team A: now B is empty, so the start fails on teams.
+    ad1.send({ t: 'setTeam', playerId: ad2.id, team: 'A' });
+    await ad1.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === ad2.id);
+      return p && p.team === 'A';
+    });
+    console.log('ok - admin setTeam moves a player');
+    ad1.inbox.length = 0;
+    ad1.send({ t: 'start' });
+    const teamErr = await ad1.waitFor('error', (m) => /each team/.test(m.message), 5000);
+    assert.ok(teamErr, 'starting with an empty team must fail');
+    console.log('ok - start still fails with an empty team (after the move)');
+    ad1.send({ t: 'setTeam', playerId: ad2.id, team: 'B' });
+    await ad1.waitFor('state', (m) => {
+      const p = m.players.find((q) => q.id === ad2.id);
+      return p && p.team === 'B';
+    });
+    // Grenades toggle: the admin turns them off, the state shows it.
+    ad1.send({ t: 'setGrenadesAllowed', allowed: false });
+    const grenOff = await ad1.waitFor('state', (m) => m.grenadesAllowed === false);
+    assert.equal(grenOff.grenadesAllowed, false, 'grenades off in the state');
+    console.log('ok - admin grenades toggle works (state shows off)');
+    ad1.send({ t: 'setGrenadesAllowed', allowed: true });
+    // The admin starts the match.
+    ad1.send({ t: 'start' });
+    await waitPrepEnd(ad1);
+    console.log('ok - admin start works, match begins');
+    // A non-admin continue is ignored: the round ends, the intermission
+    // waits, and only the admin's continue starts round 2.
+    ad2.send({ t: 'move', x: 0, y: 0, z: 28, yaw: 0, pitch: 0 });
+    ad1.send({ t: 'move', x: 0, y: 0, z: -28, yaw: 0, pitch: 0 });
+    await sleep(400);
+    for (let i = 0; i < 3; i++) {
+      ad1.send({ t: 'shot', targetId: ad2.id });
+      await sleep(250);
+    }
+    await ad1.waitFor('snapshot', (m) => {
+      const p = m.players.find((q) => q.id === ad2.id);
+      return p && !p.alive;
+    });
+    ad2.inbox.length = 0;
+    ad2.send({ t: 'continue' });
+    await sleep(600);
+    assert.equal(ad2.inbox.filter((m) => m.t === 'roundStart').length, 0, 'a non-admin continue must not start the next round');
+    console.log('ok - non-admin continue is ignored');
+    ad1.send({ t: 'continue' });
+    await ad1.waitFor('roundStart', (m) => m.round === 2, 5000);
+    console.log('ok - admin continue starts round 2');
+    // setTeam mid-match is ignored (latest state still shows team B).
+    ad1.send({ t: 'setTeam', playerId: ad2.id, team: 'A' });
+    await sleep(400);
+    const stillB = ad1.findLast('state', (m) => m.players.some((q) => q.id === ad2.id));
+    assert.equal(stillB.players.find((q) => q.id === ad2.id).team, 'B', 'setTeam mid-match is ignored');
+    console.log('ok - setTeam mid-match is ignored');
+    for (const c of [ad1, ad2]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
