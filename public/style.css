@@ -39,6 +39,7 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #lobby h1 { font-size: 34px; letter-spacing: 4px; }
 .subtitle { color: #9aa3ad; }
 .joinRow { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.classLabel { align-self: center; color: #aaa; font-size: 14px; }
 #joinBox { display: flex; flex-direction: column; gap: 12px; align-items: center; }
 .teams { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; }
 .teamCol { min-width: 200px; background: #1a1d22; border: 1px solid #333; border-radius: 8px; padding: 12px; }
@@ -54,6 +55,18 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 .lobbyActions { margin-top: 12px; }
 #hostControls { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
 .hostLabel { font-size: 14px; color: #ffb340; }
+/* Admin panel (Lior, 25/11/2026): the code row, the player rows
+   (editable name + team + class per player) and the grenades toggle. */
+#adminLoginRow { margin-top: 14px; }
+#adminCodeInput { width: 130px; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid #444; background: #1a1d22; color: #eee; font-size: 15px; }
+.adminError { color: #e53333; font-size: 13px; align-self: center; }
+#adminPanel { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
+#adminPlayerRows { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.adminRow { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; align-items: center; }
+.adminNameInput { width: 130px; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid #444; background: #1a1d22; color: #eee; font-size: 15px; }
+.adminYou { color: #aaa; font-size: 13px; }
 #startBtn { margin-top: 4px; }
 
 /* ---------- Game / HUD ---------- */
@@ -79,6 +92,13 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #healthIcon.hurt { color: #e74c3c; }
 #bottomRight { position: absolute; right: 14px; bottom: 14px; text-align: right; }
 #ammoText { font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; }
+/* Spare-magazine icons (25/11/2026): one transparent magazine outline per
+   spare mag, white stroke; the leftmost turns solid red when the loaded
+   magazine is empty, and disappears when the reload consumes it. */
+#magIcons { display: flex; gap: 6px; justify-content: flex-end; }
+.magIcon svg { width: 15px; height: 28px; display: block; }
+.magIcon svg path { fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.magIcon.red svg path { fill: #e53333; stroke: #e53333; }
 #reloadText { color: #ffb340; font-size: 13px; font-weight: 600; margin-top: 2px; }
 #bannerWrap { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
   text-align: center; z-index: 5; pointer-events: none; }
@@ -181,8 +201,8 @@ body.touch #touchUI { display: block; }
 #fireBtn { position: absolute; left: calc(50% - 37px); bottom: 5px; width: 90px; height: 90px; border-radius: 50%;
   background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
   display: flex; align-items: center; justify-content: center; touch-action: none; }
-/* Flame button (24/11/2026, illustration v4): a transparent colourless
-   circle just left of the rifle, a white flame outline inside, no text.
+/* Fire button (bullet shape, 25/11/2026): a transparent colourless
+   circle just left of the rifle, a white bullet outline inside, no text.
    Centre (430,340) on the 844x390 reference frame — left of centre by
    half its width less the 8 px the rifle centre sits right of middle. */
 #fireBtn:active { background: rgba(255,255,255,0.16); }
@@ -210,6 +230,22 @@ body.touch #touchUI { display: block; }
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px;
   touch-action: none; }
 #crouchBtn.active { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.9); }
+/* Grenade buttons (Lior, 25/11/2026): two transparent buttons above the
+   reload arrow — one per grenade. The left one fills bottom-up over the
+   3 s arming, then disappears when thrown; the right one remains. They
+   live in #hud (not #touchUI) so desktop players can click them too
+   (G is the shortcut). z-index 5 puts them above the look zone, like
+   #bottomLeft / #fsRow; pointer-events: auto re-enables clicks inside
+   the pointer-events: none #hud. */
+#grenadeBtns { position: absolute; right: 40px; bottom: 302px; display: flex; gap: 10px; z-index: 5; }
+.grenadeBtn { position: relative; width: 60px; height: 60px; border-radius: 50%;
+  background: transparent; border: 2px solid rgba(255,255,255,0.75);
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  touch-action: none; padding: 0; pointer-events: auto; cursor: pointer; }
+.grenadeBtn svg { position: relative; z-index: 1; }
+.grenadeFill { position: absolute; left: 0; right: 0; bottom: 0; height: 0%;
+  background: rgba(255,179,64,0.55); }
+.grenadeBtn.hidden { display: none; }
 #rotateHint { display: none; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,0.7); padding: 6px 12px; border-radius: 6px; font-size: 13px; white-space: nowrap; }
 
