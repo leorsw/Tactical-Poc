@@ -5,11 +5,12 @@
 // means (moving, firing, spectating) based on the game state.
 
 export class Controls {
-  constructor({ onReload, onMap, onFullscreen, onClimb } = {}) {
+  constructor({ onReload, onMap, onFullscreen, onClimb, onGrenade } = {}) {
     this.onReload = onReload || (() => {});
     this.onMap = onMap || (() => {});
     this.onFullscreen = onFullscreen || (() => {});
     this.onClimb = onClimb || (() => {});
+    this.onGrenade = onGrenade || (() => {});
     // Coarse pointer = a phone or tablet. Touchscreen laptops report touch
     // capability too, but their primary pointer is the mouse: treating them
     // as touch devices covers the screen with touch zones that swallow mouse
@@ -17,6 +18,7 @@ export class Controls {
     this.isTouch = window.matchMedia('(pointer: coarse)').matches;
     this.keys = new Set();
     this.fireQueued = false; // a FIRE press waiting to be consumed (semi-auto: one shot per press)
+    this.fireHeld = false; // FIRE held down (full-auto for the machine gunner)
     this.aiming = false; // right mouse held (desktop) or AIM toggled (mobile)
     this.crouch = false; // C toggled (desktop) or CROUCH toggled (mobile)
     this.locked = false;
@@ -104,7 +106,7 @@ export class Controls {
 
   _onLockChange() {
     this.locked = document.pointerLockElement === this.canvas;
-    if (!this.locked) this.fireQueued = false;
+    if (!this.locked) { this.fireQueued = false; this.fireHeld = false; }
   }
 
   _onMouseMove(e) {
@@ -117,12 +119,24 @@ export class Controls {
     // Fire when locked, or on a canvas click while unlocked (the click also
     // locks the pointer, so the first click both aims and fires). Clicks on
     // HUD buttons do not fire. Semi-auto: the press queues one shot.
-    if (e.button === 0 && (this.locked || e.target === this.canvas)) this.fireQueued = true;
+    if (e.button === 0 && (this.locked || e.target === this.canvas)) {
+      this.fireQueued = true;
+      this.fireHeld = true; // held for the gunner's full-auto
+    }
     if (e.button === 2) this.aiming = true;
   }
 
   _onMouseUp(e) {
+    if (e.button === 0) this.fireHeld = false;
     if (e.button === 2) this.aiming = false;
+  }
+
+  // Sets the crouch state from anywhere (key, button, or the crouch-walk
+  // limit in main.js) and keeps the CROUCH button's visual state in sync.
+  setCrouch(v) {
+    this.crouch = !!v;
+    const { crouchBtn } = this.els;
+    if (crouchBtn) crouchBtn.classList.toggle('active', this.crouch);
   }
 
   _onKeyDown(e) {
@@ -131,10 +145,11 @@ export class Controls {
       e.preventDefault();
     }
     if (e.code === 'KeyR' && !e.repeat) this.onReload();
+    if (e.code === 'KeyG' && !e.repeat) this.onGrenade(); // grenade: 3 s arm, then the throw
     if (e.code === 'KeyM' && !e.repeat) this.onMap();
     if (e.code === 'KeyF' && !e.repeat) this.onFullscreen();
     if (e.code === 'KeyE' && !e.repeat) this.onClimb();
-    if (e.code === 'KeyC' && !e.repeat) this.crouch = !this.crouch;
+    if (e.code === 'KeyC' && !e.repeat) this.setCrouch(!this.crouch);
     this.keys.add(e.code);
   }
 
@@ -160,11 +175,28 @@ export class Controls {
       const t = e.changedTouches[0];
       this.joyActive = true;
       this.joyId = t.identifier;
-      this.joyBaseX = t.clientX;
-      this.joyBaseY = t.clientY;
+      // Joystick boundary (Lior, 25/11/2026): the 120 px base opens at the
+      // touch point and could overlap the FIRE button (its disc reaches 60 px
+      // past the touch). Clamp the base centre so the two discs never touch:
+      // base radius 60 + FIRE radius + a small margin from FIRE's centre.
+      let bx = t.clientX;
+      let by = t.clientY;
+      const fr = fireBtn.getBoundingClientRect();
+      const fcx = fr.left + fr.width / 2;
+      const fcy = fr.top + fr.height / 2;
+      const minDist = 60 + fr.width / 2 + 4;
+      const ddx = bx - fcx;
+      const ddy = by - fcy;
+      const dd = Math.hypot(ddx, ddy);
+      if (dd < minDist) {
+        if (dd > 0) { bx = fcx + (ddx / dd) * minDist; by = fcy + (ddy / dd) * minDist; }
+        else { bx = fcx - minDist; by = fcy; }
+      }
+      this.joyBaseX = bx;
+      this.joyBaseY = by;
       joyBase.style.display = 'block';
-      joyBase.style.left = `${t.clientX - 60}px`;
-      joyBase.style.top = `${t.clientY - 60}px`;
+      joyBase.style.left = `${bx - 60}px`;
+      joyBase.style.top = `${by - 60}px`;
       setKnob(0, 0);
     }, { passive: false });
 
@@ -235,7 +267,7 @@ export class Controls {
       el.addEventListener('touchend', (e) => { e.preventDefault(); off(); }, { passive: false });
       el.addEventListener('touchcancel', off);
     };
-    bindHold(fireBtn, () => { this.fireQueued = true; }, () => {}); // semi-auto: press queues one shot
+    bindHold(fireBtn, () => { this.fireQueued = true; this.fireHeld = true; }, () => { this.fireHeld = false; }); // semi-auto: press queues one shot; the gunner holds for full-auto
     // Reload arrow: swipe right-to-left along it to reload. The swipe
     // fires once the finger has travelled half the arrow's width
     // (105 px); a plain tap does nothing, so the reload can't fire by
@@ -284,8 +316,7 @@ export class Controls {
       crouchBtn.addEventListener('touchstart', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.crouch = !this.crouch;
-        crouchBtn.classList.toggle('active', this.crouch);
+        this.setCrouch(!this.crouch);
       }, { passive: false });
     }
   }
