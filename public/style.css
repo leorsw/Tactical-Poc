@@ -34,8 +34,15 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 .status { color: #9aa3ad; font-size: 14px; margin: 12px 0; }
 
 /* ---------- Lobby ---------- */
-#lobby { display: flex; flex-direction: column; align-items: center; justify-content: center;
+#lobby { display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
   gap: 14px; padding: 20px; text-align: center; overflow-y: auto; }
+/* Centred when the content fits, top-aligned when it overflows:
+   plain "center" pushes the top (incl. the admin login row) above the
+   viewport where it cannot be scrolled to — on a 390px-tall phone
+   landscape the admin code row was unclickable (26/11/2026). */
+@supports (justify-content: safe center) {
+  #lobby { justify-content: safe center; }
+}
 #lobby h1 { font-size: 34px; letter-spacing: 4px; }
 .subtitle { color: #9aa3ad; }
 .joinRow { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
@@ -59,6 +66,10 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
    (editable name + team + class per player) and the grenades toggle. */
 #adminLoginRow { margin-top: 14px; }
 #adminCodeInput { width: 130px; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid #444; background: #1a1d22; color: #eee; font-size: 15px; }
+/* Round-length field (Lior, 26/11/2026): a short number box — the global
+   input rule would make it 220 px wide. */
+#roundDurationInput { width: 70px; padding: 8px 10px; border-radius: 6px;
   border: 1px solid #444; background: #1a1d22; color: #eee; font-size: 15px; }
 .adminError { color: #e53333; font-size: 13px; align-self: center; }
 #adminPanel { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
@@ -90,15 +101,13 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 #healthIcon { width: 72px; height: 72px; opacity: 0.6; color: #2ecc71;
   filter: drop-shadow(0 1px 3px rgba(0,0,0,0.35)); }
 #healthIcon.hurt { color: #e74c3c; }
-#bottomRight { position: absolute; right: 14px; bottom: 14px; text-align: right; }
+#bottomRight { position: absolute; right: 14px; bottom: 14px; display: flex; align-items: center; gap: 8px; }
 #ammoText { font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; }
 /* Spare-magazine icons (25/11/2026): one transparent magazine outline per
    spare mag, white stroke; the leftmost turns solid red when the loaded
    magazine is empty, and disappears when the reload consumes it. */
 #magIcons { display: flex; gap: 6px; justify-content: flex-end; }
-.magIcon svg { width: 15px; height: 28px; display: block; }
-.magIcon svg path { fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.magIcon.red svg path { fill: #e53333; stroke: #e53333; }
+.magIcon img { width: 21px; height: 28px; display: block; }
 #reloadText { color: #ffb340; font-size: 13px; font-weight: 600; margin-top: 2px; }
 #bannerWrap { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
   text-align: center; z-index: 5; pointer-events: none; }
@@ -132,6 +141,25 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 /* EXIT sits above the match-end overlay (z-index 20) so a team player
    can leave from the final screen too; same corner as EXIT SOLO. */
 #exitBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; z-index: 25; }
+/* Spectator controls (bird's-eye admin view, 26/11/2026): EXIT SPECTATE
+   in the same corner as EXIT; the START / CONTINUE action sits centred
+   just below the top bar and only shows when the match needs it. */
+#specExitBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; z-index: 25; }
+/* REC (Lior, 26/11/2026): under EXIT SPECTATE in the same top-left
+   column — the centred action button never reaches this far left.
+   While recording the button goes red with a blinking dot + timer. */
+#specRecBtn { position: absolute; top: 56px; left: 10px; pointer-events: auto; z-index: 25; }
+#specRecBtn.recording { background: #e53333; border-color: #ff8080; color: #fff; }
+#specRecBtn .recDot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  background: #fff; margin-right: 6px; animation: recBlink 1s steps(2, start) infinite; }
+@keyframes recBlink { 50% { opacity: 0; } }
+/* Recording-done panel: the same full-screen dim as the end screen. */
+#recPanel { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px;
+  align-items: center; justify-content: center; background: rgba(0,0,0,0.72); text-align: center; z-index: 30; }
+#recPanel h2 { font-size: 26px; }
+#recBtns { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+#specActionBtn { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); pointer-events: auto; z-index: 25;
+  font-size: 18px; padding: 12px 28px; }
 /* Transparent buttons (UI redesign, 23/11/2026): a faint fill + a light
    border, so the buttons read without covering the scene. EXIT SOLO keeps
    its solid style. */
@@ -208,15 +236,18 @@ body.touch #touchUI { display: block; }
 #fireBtn:active { background: rgba(255,255,255,0.16); }
 /* Reload arrow: transparent left-pointing arrow above FIRE/AIM/CROUCH.
    Swipe right-to-left along it to reload; it fills right-to-left during
-   the 3.5 s reload (see main.js updateHUD). */
-#reloadArrow { position: absolute; right: 40px; bottom: 214px; width: 210px; height: 76px;
+   the 3.5 s reload (see main.js updateHUD). Moved down 30 px on
+   26/11/2026 to make room for the ? button and the grenade buttons
+   above it (Lior: ? on top, grenades below it). */
+#reloadArrow { position: absolute; right: 40px; bottom: 184px; width: 210px; height: 76px;
   touch-action: none; }
 #reloadArrow svg { display: block; }
 /* AIM as a transparent sight: a light ring + white crosshairs (SVG),
    no label, no red dot (24/11/2026, illustration v4). The active state
-   (aiming) brightens the ring. Centre (705,220) on the 844x390 frame
-   (moved 45px left, 24/11/2026, mockup v5). */
-#aimBtn { position: absolute; right: 104px; bottom: 135px; width: 70px; height: 70px; border-radius: 50%;
+   (aiming) brightens the ring. Centre (705,247) on the 844x390 frame
+   (moved down 27 px on 26/11/2026, with the reload arrow, to make room
+   for the ? button and the grenade buttons above it). */
+#aimBtn { position: absolute; right: 104px; bottom: 108px; width: 70px; height: 70px; border-radius: 50%;
   background: transparent; border: 2px solid rgba(255,255,255,0.75);
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0;
   touch-action: none; }
@@ -230,19 +261,20 @@ body.touch #touchUI { display: block; }
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px;
   touch-action: none; }
 #crouchBtn.active { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.9); }
-/* Grenade buttons (Lior, 25/11/2026): two transparent buttons above the
-   reload arrow — one per grenade. The left one fills bottom-up over the
-   3 s arming, then disappears when thrown; the right one remains. They
+/* Grenade buttons (Lior, 25/11/2026): two transparent buttons below the
+   "?" button at the top-right (Lior, 26/11/2026: ? on top, grenades
+   under it) — one per grenade. The left one fills bottom-up over the
+   1.5 s arming, then disappears when thrown; the right one remains. They
    live in #hud (not #touchUI) so desktop players can click them too
    (G is the shortcut). z-index 5 puts them above the look zone, like
    #bottomLeft / #fsRow; pointer-events: auto re-enables clicks inside
    the pointer-events: none #hud. */
-#grenadeBtns { position: absolute; right: 40px; bottom: 302px; display: flex; gap: 10px; z-index: 5; }
+#grenadeBtns { position: absolute; right: 40px; top: 64px; display: flex; gap: 10px; z-index: 5; }
 .grenadeBtn { position: relative; width: 60px; height: 60px; border-radius: 50%;
   background: transparent; border: 2px solid rgba(255,255,255,0.75);
   display: flex; align-items: center; justify-content: center; overflow: hidden;
   touch-action: none; padding: 0; pointer-events: auto; cursor: pointer; }
-.grenadeBtn svg { position: relative; z-index: 1; }
+.grenadeBtn img { position: relative; z-index: 1; display: block; margin: 0 auto; }
 .grenadeFill { position: absolute; left: 0; right: 0; bottom: 0; height: 0%;
   background: rgba(255,179,64,0.55); }
 .grenadeBtn.hidden { display: none; }
@@ -271,7 +303,11 @@ body.touch #touchUI { display: block; }
   font-size: 24px; font-weight: bold; display: flex;
   align-items: center; justify-content: center; text-shadow: 0 1px 3px #000;
   z-index: 5; padding: 0; }
-#helpBtn { position: absolute; top: 14px; right: 14px; width: 44px; height: 44px;
+/* "?" button (Lior, 26/11/2026): topmost in the top-right column, with
+   the grenade buttons below it. It sat at top:100px for a day (26/11)
+   because the grenades were above it; the whole column moved so the
+   order is ? first, grenades second, reload arrow third. */
+#helpBtn { position: absolute; top: 12px; right: 14px; width: 44px; height: 44px;
   border-radius: 50%; background: rgba(255,255,255,0.06);
   border: 1.5px solid rgba(255,255,255,0.55); color: #fff;
   font-size: 24px; font-weight: bold; pointer-events: auto; display: flex;
@@ -286,3 +322,25 @@ body.touch #touchUI { display: block; }
   transition: opacity 0.35s ease-out;
   background: radial-gradient(ellipse at center, rgba(200,0,0,0.12) 30%, rgba(200,0,0,0.55) 100%); }
 #damageFlash.on { opacity: 1; transition: opacity 0.05s ease-in; }
+
+/* ---------- Spectator mode (bird's-eye admin view, 26/11/2026) ---------- */
+/* The spectator has no figure and no weapon: the touch controls, the
+   health icon, the ammo and the grenade buttons all hide. These rules sit
+   last so they win over the body.touch #touchUI rule above. */
+body.spectating #touchUI { display: none; }
+body.spectating #bottomLeft { display: none; }
+body.spectating #bottomRight { display: none; }
+body.spectating #grenadeBtns { display: none; }
+body.spectating #reloadArrow { display: none; }
+/* The eliminated-player spectate bar, the YOU'RE DOWN overlay and the
+   CLICK TO AIM hint belong to playing, not to watching. */
+body.spectating #spectateBar { display: none; }
+body.spectating #downOverlay { display: none; }
+body.spectating #lockHint { display: none; }
+
+/* ---------- Expiring invite links (26/11/2026) ---------- */
+#inviteExpired { background: rgba(180, 30, 30, 0.25); border: 1px solid rgba(229, 51, 51, 0.6);
+  border-radius: 8px; padding: 10px 16px; max-width: 420px; }
+#inviteExpired p { margin: 0; color: #ffb0b0; font-size: 15px; }
+#inviteLinkInput { width: 280px; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid #444; background: #1a1d22; color: #eee; font-size: 14px; }
