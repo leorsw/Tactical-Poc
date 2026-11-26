@@ -242,7 +242,7 @@ export function objectiveContains(x, z, zone = OBJECTIVE) {
 // Colors are plain numbers so this stays Three.js free; the client turns
 // them into materials.
 
-const WALL_COLOR = 0x9a9a9a;
+export const WALL_COLOR = 0x9a9a9a;
 const FLOOR_COLOR = 0x7a7a7a; // grey floor inside each house
 const SLAB_COLOR = 0x8f8f8f;
 const ROOF_COLOR = 0x7d7d7d;
