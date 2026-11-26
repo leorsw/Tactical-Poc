@@ -50,6 +50,16 @@
     <h1>TACTICAL POC</h1>
     <p class="subtitle">Team combat test — no respawn, limited ammo</p>
 
+    <div id="adminLoginRow" class="joinRow hidden">
+      <input id="adminCodeInput" type="password" maxlength="16" placeholder="Admin code" autocomplete="off">
+      <button id="adminLoginBtn" class="secondary">Admin login</button>
+      <span id="adminError" class="adminError hidden"></span>
+    </div>
+
+    <div id="inviteExpired" class="hidden">
+      <p>This invite link has expired — ask the admin for a new one.</p>
+    </div>
+
     <div id="connectStatus" class="status">Connecting to server…</div>
     <p id="kickNotice" class="hidden"></p>
 
@@ -76,7 +86,7 @@
         <span class="classLabel">Solo grenades:</span>
         <button id="soloGrenadeBtn" class="classBtn activeChoice">On</button>
       </div>
-      <p class="hint">Marksman: x3 scope, one shot a second, an aimed hit kills at any range.<br>Machine gunner: full-auto, 150-round mags, deadly up close standing, like a rifleman kneeling.<br>Grenades: two per round — press a button, it fills for 3 seconds, then the grenade flies 10 m and explodes 3 seconds later. The toggle applies on the next solo entry.</p>
+      <p class="hint">Marksman: x4 scope, one shot a second, an aimed hit kills at any range.<br>Machine gunner: full-auto, 120-round mags, deadly up close standing, like a rifleman kneeling.<br>Grenades: two per round — press a button, it fills for 1.5 seconds, then the grenade flies 10 m and explodes 3 seconds later. The toggle applies on the next solo entry.</p>
     </div>
 
     <div id="teamsBox" class="hidden">
@@ -104,11 +114,6 @@
           <button id="clearRoomBtn" class="danger">Clear room — kick everyone else</button>
         </div>
       </div>
-      <div id="adminLoginRow" class="joinRow hidden">
-        <input id="adminCodeInput" type="password" maxlength="16" placeholder="Admin code" autocomplete="off">
-        <button id="adminLoginBtn" class="secondary">Admin login</button>
-        <span id="adminError" class="adminError hidden"></span>
-      </div>
       <div id="adminPanel" class="hidden">
         <p class="hostLabel">You are the admin — set up the match:</p>
         <div id="adminPlayerRows"></div>
@@ -116,6 +121,28 @@
           <span class="classLabel">Grenades:</span>
           <button id="adminGrenadeBtn" class="classBtn activeChoice">On</button>
         </div>
+        <div class="joinRow">
+          <span class="classLabel">Round length (min):</span>
+          <input id="roundDurationInput" type="number" min="1" max="30" step="1" value="5">
+          <button id="roundDurationBtn" class="classBtn">Set</button>
+        </div>
+        <div class="joinRow">
+          <span class="classLabel">Watch:</span>
+          <button id="spectateBtn" class="classBtn">Spectate (bird's-eye)</button>
+        </div>
+        <div class="joinRow">
+          <span class="classLabel">Invite link:</span>
+          <button id="createInviteBtn" class="classBtn">Create (1 hour)</button>
+        </div>
+        <div id="inviteOut" class="joinRow hidden">
+          <input id="inviteLinkInput" readonly>
+          <button id="copyInviteBtn" class="classBtn">Copy</button>
+          <span id="inviteExpiry" class="classLabel"></span>
+        </div>
+      </div>
+      <div class="joinRow">
+        <span class="classLabel">Prep time:</span>
+        <button id="prepToggleBtn" class="classBtn">Off</button>
       </div>
       <div class="lobbyActions">
         <button id="startBtn" class="primary">Start match</button>
@@ -142,6 +169,9 @@
       <div id="connBanner" class="hidden">Connection lost — reconnecting…</div>
       <button id="exitSoloBtn" class="hidden">EXIT SOLO</button>
       <button id="exitBtn" class="hidden">EXIT</button>
+      <button id="specExitBtn" class="hidden">EXIT SPECTATE</button>
+      <button id="specRecBtn" class="hidden">● REC</button>
+      <button id="specActionBtn" class="hidden primary">START</button>
       <button id="mapBtn">MAP</button>
       <div id="fsRow">
         <button id="fsBtn">FULLSCREEN</button>
@@ -155,7 +185,7 @@
         </svg>
       </div>
       <div id="bottomRight">
-        <div id="magIcons" aria-label="Spare magazines"></div>
+        <div id="magIcons" aria-label="Magazines"></div>
         <div id="ammoText" class="hidden">NO AMMO</div>
         <div id="reloadText" class="hidden">RELOADING…</div>
       </div>
@@ -165,8 +195,8 @@
            the right one remains. They live in #hud (not #touchUI) so
            desktop players can click them too (G is the shortcut). -->
       <div id="grenadeBtns">
-        <button class="grenadeBtn" id="grenadeBtn0" aria-label="Grenade 1"><span class="grenadeFill"></span><svg width="34" height="34" viewBox="0 0 24 24"><path d="M12 9.5 C8.8 9.5 6.8 12 6.8 14.8 C6.8 17.9 9.2 20.5 12 20.5 C14.8 20.5 17.2 17.9 17.2 14.8 C17.2 12 15.2 9.5 12 9.5 Z M10.2 9.5 L10.2 6.8 L13.8 6.8 L13.8 9.5 M13.8 6.8 L17.5 3" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18.8" cy="2.4" r="1.5" fill="none" stroke="#fff" stroke-width="1.6"/></svg></button>
-        <button class="grenadeBtn" id="grenadeBtn1" aria-label="Grenade 2"><span class="grenadeFill"></span><svg width="34" height="34" viewBox="0 0 24 24"><path d="M12 9.5 C8.8 9.5 6.8 12 6.8 14.8 C6.8 17.9 9.2 20.5 12 20.5 C14.8 20.5 17.2 17.9 17.2 14.8 C17.2 12 15.2 9.5 12 9.5 Z M10.2 9.5 L10.2 6.8 L13.8 6.8 L13.8 9.5 M13.8 6.8 L17.5 3" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18.8" cy="2.4" r="1.5" fill="none" stroke="#fff" stroke-width="1.6"/></svg></button>
+        <button class="grenadeBtn" id="grenadeBtn0" aria-label="Grenade 1"><span class="grenadeFill"></span><img src="data:image/png;base64,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" alt="" width="28" height="42"></button>
+        <button class="grenadeBtn" id="grenadeBtn1" aria-label="Grenade 2"><span class="grenadeFill"></span><img src="data:image/png;base64,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" alt="" width="28" height="42"></button>
       </div>
       <div id="bannerWrap">
         <div id="banner" class="hidden"></div>
@@ -211,12 +241,26 @@
       <p id="endWait" class="hint hidden">Waiting for the host…</p>
     </div>
 
+    <!-- Bird's-eye recording done (admin spectator, Lior 26/11/2026):
+         the finished file downloads to the admin's device, or goes out
+         through the OS share sheet (Mail, Drive, WhatsApp…). -->
+    <div id="recPanel" class="hidden">
+      <h2>Recording ready</h2>
+      <p id="recInfo"></p>
+      <div id="recBtns">
+        <button id="recDownloadBtn" class="primary">Download</button>
+        <button id="recShareBtn" class="primary">Share…</button>
+        <button id="recCloseBtn" class="secondary">Close</button>
+      </div>
+      <p id="recShareNote" class="hint hidden"></p>
+    </div>
+
     <!-- Touch controls (shown only on touch devices) -->
     <div id="touchUI">
       <div id="joyZone"></div>
       <div id="lookZone"></div>
       <div id="joyBase"><div id="joyKnob"></div></div>
-      <div id="fireBtn" aria-label="Fire"><svg width="56" height="56" viewBox="0 0 24 24"><path d="M12 2.5 C13.8 4.8 15 6.6 15 8.5 L15 18 L16.2 18 L16.2 20.5 L7.8 20.5 L7.8 18 L9 18 L9 8.5 C9 6.6 10.2 4.8 12 2.5 Z" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div id="fireBtn" aria-label="Fire"><img src="data:image/png;base64,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" alt="" width="20" height="56"></div>
       <!-- Reload arrow: swipe right-to-left along it to reload. During a
            reload it fills right-to-left over 3.5 s (the fill rect grows
            from the arrow's right edge; the clip keeps it inside the
