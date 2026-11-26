@@ -19,6 +19,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { SPAWNS, spawnLayout, objectiveContains, HOUSES, hasLineOfSight, visualBoxes, EYE_HEIGHT } from './public/map.js';
@@ -28,6 +29,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8020);
 // Tunable through env for the headless test; defaults are the game spec.
 const ROUND_MS = Number(process.env.ROUND_MS || 5 * 60 * 1000);
+// Round length the admin set in the lobby (setRoundDuration, minutes,
+// 1–30); starts at the env default and applies from the next round.
+let roundDurationMs = ROUND_MS;
 // Defense prep time (Lior, 25/11/2026): at the start of every round the
 // attackers wait at spawn for PREP_MS while the defenders get into
 // position. The 5:00 round clock starts only after prep ends. No one
@@ -44,13 +48,13 @@ const CAPTURE_MS = Number(process.env.CAPTURE_MS || 30000);
 // CONTINUE (see the 'continue' message). The intermission lasts until then.
 // Classes (Lior, 25/11/2026). Rifleman is the default. Marksman: x3 scope
 // (ADS FOV 29), 1 shot/sec, an ADS hit kills at any range, hip fire like
-// a rifleman. Machine gunner: full-auto, 150-round mags x 3, 5 s reload;
+// a rifleman. Machine gunner: full-auto, 120-round mags x 3, 5 s reload;
 // standing it only hits within 15 m and takes 3 hits to kill; kneeling
 // it shoots like a rifleman (normal distance table).
 const CLASSES = {
   rifleman: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 100, auto: false },
   marksman: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 1000, auto: false },
-  gunner: { magSize: 150, magCount: 3, reloadMs: 5000, fireIntervalMs: 100, auto: true },
+  gunner: { magSize: 120, magCount: 3, reloadMs: 5000, fireIntervalMs: 100, auto: true },
 };
 const classStats = (cls) => CLASSES[cls] || CLASSES.rifleman;
 const WIN_SCORE = 3;
@@ -113,6 +117,15 @@ let grenades = []; // live grenades: {id, throwerId, throwAt, flightMs, dist, di
 let nextGrenadeId = 1;
 let grenadesAllowed = true; // admin switch (setGrenadesAllowed) — on by default
 
+// Expiring invite links (Lior, 26/11/2026 — for the testing period):
+// the admin creates a shareable link that admits entry for one hour.
+// INVITE_TTL_MS is a test hook (the headless suite shortens it to prove
+// expiry); production is 1 hour. Direct entry without a link stays open
+// (Lior is still deliberating about the existing link) — the expiry
+// controls the shared link, not the plain URL.
+const INVITE_TTL_MS = Number(process.env.INVITE_TTL_MS || 3600000);
+const invites = new Map(); // code -> { code, expiresAt, createdBy }
+
 // ---------------------------------------------------------------------------
 // Game state
 // ---------------------------------------------------------------------------
@@ -120,6 +133,11 @@ let grenadesAllowed = true; // admin switch (setGrenadesAllowed) — on by defau
 // roles stay fixed for the whole match. Score is tracked per team.
 
 const players = new Map(); // id -> player object
+// Bird's-eye spectators (Lior, 26/11/2026): the admin watches from above
+// with no figure. Negative ids, far from player ids (>= 1) and NPC ids
+// (-1..-10), so a spectator is never mistaken for a player.
+const spectators = new Map(); // id -> { id, ws, name, admin }
+let nextSpectatorId = -1000;
 // Every connected socket, joined or just waiting in the lobby: state
 // snapshots go to all of them, so a player waiting for a match to end
 // sees the phase change and the join buttons re-enable. Game events
@@ -147,6 +165,7 @@ let round = 0;
 let score = { A: 0, B: 0 };
 let roundEndsAt = 0;
 let prepEndsAt = 0;
+let prepEnabled = false; // prep time is off by default (Lior, 26/11/2026) — the admin or any team player can enable it (setPrepEnabled)
 let roundWinner = null; // 'A' | 'B' | null
 let roundReason = ''; // 'elimination' | 'objective' | 'timeout'
 let matchWinner = null;
@@ -177,7 +196,10 @@ function playersOf(team) {
 // exactly as before — anyone may start, the host assigns classes and
 // toggles grenades.
 function adminPresent() {
-  return [...players.values()].some((q) => q.admin);
+  // A spectating admin still counts: while they watch from above, the
+  // lobby must not fall back to "anyone may start".
+  return [...players.values()].some((q) => q.admin)
+    || [...spectators.values()].some((q) => q.admin);
 }
 
 function commanderOf(team) {
@@ -225,6 +247,10 @@ function broadcast(obj) {
   for (const p of players.values()) {
     if (p.ws.readyState === 1) p.ws.send(text);
   }
+  // Spectators watch the match too (shots, grenades, round events).
+  for (const s of spectators.values()) {
+    if (s.ws.readyState === 1) s.ws.send(text);
+  }
 }
 
 // Full state snapshot: everything except live positions (those come in the
@@ -244,6 +270,9 @@ function publicState() {
     matchWinner,
     hostId,
     grenadesAllowed,
+    prepEnabled,
+    roundDurationMin: roundDurationMs / 60000,
+    adminSpectating: [...spectators.values()].some((q) => q.admin),
     players: [...players.values()].map((p) => ({
       id: p.id,
       name: p.name,
@@ -488,7 +517,10 @@ function startRound(n) {
     if (p.solo) continue; // solo players keep exploring, untouched by rounds
     resetPlayerForRound(p);
   }
-  roundEndsAt = (prepEndsAt = Date.now() + PREP_MS) + ROUND_MS;
+  // With prep off the round clock starts now, not at prepEndsAt (0) —
+  // roundEndsAt is an epoch timestamp, and 0 + ROUND_MS is long past.
+  prepEndsAt = prepEnabled ? Date.now() + PREP_MS : 0;
+  roundEndsAt = (prepEndsAt || Date.now()) + roundDurationMs;
   broadcastState();
   broadcast({ t: 'roundStart', round, objective: { ...layout.objective }, attackersSpawn: { ...layout.attackersSpawn } });
 }
@@ -993,8 +1025,57 @@ function handleMessage(ws, msg) {
       handleSolo(ws, msg);
       return;
     }
+    case 'checkInvite': {
+      // Anyone may ask whether an invite link is still good (it arrives
+      // with the page load, before joining). Expired codes are pruned.
+      const code = String(msg.code || '');
+      const rec = invites.get(code);
+      const valid = !!rec && Date.now() < rec.expiresAt;
+      if (rec && !valid) invites.delete(code);
+      send(ws, { t: 'inviteStatus', code, valid, expiresAt: valid ? rec.expiresAt : null });
+      return;
+    }
     default:
       break;
+  }
+  // Spectators (bird's-eye admin view): no figure, no shots, no moves —
+  // only the admin controls (start / continue / rematch) and leaving.
+  // Only an admin can hold a spectator record (see case 'spectate'), so
+  // no admin gate is needed here.
+  const spec = spectators.get(ws._pid);
+  if (spec && !p) {
+    switch (msg.t) {
+      case 'ping':
+        break;
+      case 'leaveSpectate': {
+        spectators.delete(ws._pid);
+        send(ws, { t: 'spectateLeft' });
+        broadcastState();
+        break;
+      }
+      case 'start': {
+        if (phase !== 'lobby') return;
+        if (playersOf('A').length < 1 || playersOf('B').length < 1) {
+          send(ws, { t: 'error', message: 'Need at least 1 player on each team to start.' });
+          return;
+        }
+        startMatch();
+        break;
+      }
+      case 'continue': {
+        if (phase !== 'intermission') return;
+        startRound(round + 1);
+        break;
+      }
+      case 'rematch': {
+        if (phase !== 'ended') return;
+        startMatch();
+        break;
+      }
+      default:
+        break; // spectators cannot shoot, move, or throw
+    }
+    return;
   }
   if (!p) return; // must join first
   switch (msg.t) {
@@ -1035,6 +1116,35 @@ function handleMessage(ws, msg) {
       p.admin = true;
       send(ws, { t: 'adminOk' });
       broadcastState();
+      break;
+    }
+    case 'spectate': {
+      // The admin leaves the match and watches from above (Lior,
+      // 26/11/2026): no figure, no weapon, no shots — bird's-eye view.
+      // The player record goes through the normal leave path (grace,
+      // host migration, elimination check); the spectator record keeps
+      // the admin flag, so the lobby still knows an admin exists.
+      if (p.solo || !p.admin) return;
+      const name = p.name;
+      removePlayer(p);
+      const id = nextSpectatorId--;
+      spectators.set(id, { id, ws, name, admin: true });
+      ws._pid = id;
+      send(ws, { t: 'spectateJoined', id });
+      broadcastState();
+      break;
+    }
+    case 'createInvite': {
+      // The admin makes a shareable link that admits entry for one hour
+      // (Lior, 26/11/2026 — for the testing period). The code is random
+      // (8 URL-safe chars); the link is origin/?invite=<code>. Expired
+      // codes are pruned on creation so the map never grows.
+      if (p.solo || !p.admin) return;
+      for (const [c, r] of invites) if (Date.now() >= r.expiresAt) invites.delete(c);
+      const code = randomBytes(6).toString('base64url');
+      const expiresAt = Date.now() + INVITE_TTL_MS;
+      invites.set(code, { code, expiresAt, createdBy: p.id });
+      send(ws, { t: 'inviteCreated', code, expiresAt });
       break;
     }
     case 'rename': {
@@ -1143,10 +1253,18 @@ function handleMessage(ws, msg) {
       if (phase === 'playing' && !p.solo && now < prepEndsAt) return; // no shooting during prep
       if (now < p.reloadingUntil) return;
       if (p.inMag <= 0) return; // out of ammo in this mag: must reload
-      // Per-class fire rate (marksman: 1 shot/sec) — the server enforces
-      // it, not just the client. The 90 ms floor is the plausibility
-      // floor for the fastest class.
-      if (now - p.lastShotAt < Math.max(FIRE_INTERVAL_MS, classStats(p.cls).fireIntervalMs)) return;
+      // The shot carries the shooter's aiming state (the client sends
+      // it with every shot); the move handler keeps it fresh between
+      // shots. Aiming matters twice: the marksman's 1 shot/sec gate
+      // applies only while aiming — from the hip he fires at the
+      // rifleman's rate (Lior, 26/11/2026) — and ADS damage (below).
+      if (typeof msg.aiming === 'boolean') p.aiming = msg.aiming;
+      // Per-class fire rate — the server enforces it, not just the
+      // client. The 90 ms floor is the plausibility floor for the
+      // fastest class.
+      let intervalMs = classStats(p.cls).fireIntervalMs;
+      if (p.cls === 'marksman' && !p.aiming) intervalMs = classStats('rifleman').fireIntervalMs;
+      if (now - p.lastShotAt < Math.max(FIRE_INTERVAL_MS, intervalMs)) return;
       p.lastShotAt = now;
       p.inMag -= 1;
       p.stats.shots += 1;
@@ -1219,6 +1337,17 @@ function handleMessage(ws, msg) {
           targetHealth = npcHit.health;
         }
       }
+      // The wall/floor impact point is the shooter's raycast result —
+      // trusted like positions. It is echoed so other players see the
+      // hit (26/11/2026) and hear it when it lands near them.
+      let impact = null;
+      if (msg.impact && Number.isFinite(msg.impact.x) && Number.isFinite(msg.impact.y) && Number.isFinite(msg.impact.z)) {
+        impact = {
+          x: Math.round(msg.impact.x * 10) / 10,
+          y: Math.round(msg.impact.y * 10) / 10,
+          z: Math.round(msg.impact.z * 10) / 10,
+        };
+      }
       broadcast({
         t: 'shot',
         shooterId: p.id,
@@ -1231,6 +1360,7 @@ function handleMessage(ws, msg) {
         killed,
         inMag: p.inMag,
         mags: p.mags,
+        impact,
       });
       // A real player kill can end the round; an NPC down cannot.
       if (killed && target) {
@@ -1285,6 +1415,30 @@ function handleMessage(ws, msg) {
       if (p.solo) return;
       if (adminPresent() ? !p.admin : p.id !== hostId) return;
       grenadesAllowed = msg.allowed === true;
+      broadcastState();
+      break;
+    }
+    case 'setPrepEnabled': {
+      // Prep time on/off for the room. Off by default; the admin or ANY
+      // team player can toggle it (Lior, 26/11/2026) — unlike grenades,
+      // this one is not gated on the admin/host. Applies from the next
+      // round (a running round keeps its own prepEndsAt).
+      if (p.solo) return;
+      prepEnabled = msg.enabled === true;
+      broadcastState();
+      break;
+    }
+    case 'setRoundDuration': {
+      // Round length in minutes, set by the admin in the lobby
+      // (Lior, 26/11/2026). Applies from the next round — a running
+      // round keeps its own roundEndsAt. When an admin exists, only
+      // the admin sets it; with no admin, the host does (the grenades
+      // rule). Clamped to 1–30 minutes.
+      if (p.solo) return;
+      if (adminPresent() ? !p.admin : p.id !== hostId) return;
+      const mins = Number(msg.minutes);
+      if (!Number.isFinite(mins)) return;
+      roundDurationMs = Math.min(30, Math.max(1, Math.round(mins))) * 60 * 1000;
       broadcastState();
       break;
     }
@@ -1369,6 +1523,14 @@ function removePlayer(p) {
 }
 
 function handleDisconnect(ws) {
+  // A spectator leaving (tab closed, socket dead) just disappears from
+  // the watch list; the lobby's admin flag follows via broadcastState.
+  const spec = spectators.get(ws._pid);
+  if (spec) {
+    spectators.delete(ws._pid);
+    broadcastState();
+    return;
+  }
   const p = players.get(ws._pid);
   if (!p) return;
   // A team player who drops mid-match may rejoin within the grace
