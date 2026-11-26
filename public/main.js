@@ -14,6 +14,7 @@ import {
   floorHeightAt,
   resolveCollision,
   EYE_HEIGHT,
+  WALL_COLOR,
 } from './map.js';
 import { Controls } from './controls.js';
 import { GameSocket } from './net.js';
@@ -56,6 +57,8 @@ const adminError = $('adminError');
 const adminPanel = $('adminPanel');
 const adminPlayerRows = $('adminPlayerRows');
 const adminGrenadeBtn = $('adminGrenadeBtn');
+const prepToggleBtn = $('prepToggleBtn');
+const roundDurationInput = $('roundDurationInput');
 const scoreBox = $('scoreBox');
 const timerEl = $('timer');
 const aliveBox = $('aliveBox');
@@ -67,30 +70,38 @@ const roundInfo = $('roundInfo');
 const healthIcon = $('healthIcon');
 const ammoText = $('ammoText');
 const magIcons = $('magIcons');
-// One spare-magazine icon: a magazine outline with a baseplate, white
+// One magazine icon: a magazine outline with a baseplate, white
 // stroke on transparent (the red state is applied by CSS, see style.css).
-const MAG_SVG = '<svg viewBox="0 0 24 24"><path d="M9 2 H15 V6 H16.5 V19 A1.5 1.5 0 0 1 15 20.5 H9 A1.5 1.5 0 0 1 7.5 19 V6 H9 Z"/></svg>';
+// Magazine icons are Lior's own images, inlined as data URLs (26/11/2026:
+// the GitHub push route cannot carry binary files — a base64 push
+// arrives double-encoded — so the PNGs live in the code, not in
+// public/icons/. mag-red is the same outline recoloured #e53333 for the
+// loaded mag when it is empty). (26/11/2026, changes list item 8.)
+const MAG_IMG = '<img src="data:image/png;base64,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" alt="">';
+const MAG_IMG_RED = '<img src="data:image/png;base64,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" alt="">';
 function renderMagIcons() {
-  // One icon per spare magazine. When the loaded magazine is empty, the
-  // leftmost icon turns red (reload!); the reload consumes it and it
-  // disappears. Nothing left at all: the icons hide, NO AMMO shows.
-  // Rebuilds only when the count/red state changed (this runs every frame).
-  if (myInMag === 0 && myMags === 0) {
-    magIcons.classList.add('hidden');
+  // One icon per magazine, spares + the loaded one: rifleman/marksman start
+  // with 6, gunner with 3. The LAST icon is the loaded magazine — it turns
+  // red when it empties, until a reload; the reload consumes a spare icon
+  // and the red clears. When the last magazine empties it simply stays red
+  // (and NO AMMO shows next to it). Rebuilds only when the count/red state
+  // changed (this runs every frame). (Lior, 25/11/2026.)
+  const total = myMags + 1; // spares + loaded
+  const red = myInMag === 0;
+  const out = red && myMags === 0; // last magazine empty: red icon + NO AMMO
+  const key = `${total}:${red}:${out}`;
+  if (magIcons.dataset.key === key) return;
+  magIcons.dataset.key = key;
+  magIcons.classList.remove('hidden');
+  magIcons.innerHTML = Array.from({ length: total }, (_, i) =>
+    `<span class="magIcon${red && i === total - 1 ? ' red' : ''}">${red && i === total - 1 ? MAG_IMG_RED : MAG_IMG}</span>`).join('');
+  if (out) {
     ammoText.classList.remove('hidden');
     ammoText.textContent = 'NO AMMO';
     ammoText.style.color = '#e53333';
-    magIcons.dataset.key = '';
-    return;
+  } else {
+    ammoText.classList.add('hidden');
   }
-  ammoText.classList.add('hidden');
-  magIcons.classList.remove('hidden');
-  const red = myInMag === 0;
-  const key = `${myMags}:${red}`;
-  if (magIcons.dataset.key === key) return;
-  magIcons.dataset.key = key;
-  magIcons.innerHTML = Array.from({ length: myMags }, (_, i) =>
-    `<span class="magIcon${red && i === 0 ? ' red' : ''}">${MAG_SVG}</span>`).join('');
 }
 const reloadArrowFill = $('reloadArrowFill'); // SVG rect inside the reload arrow
 const reloadText = $('reloadText');
@@ -103,6 +114,15 @@ const spectateBar = $('spectateBar');
 const lockHint = $('lockHint');
 const exitSoloBtn = $('exitSoloBtn');
 const exitBtn = $('exitBtn');
+const specExitBtn = $('specExitBtn');
+const specRecBtn = $('specRecBtn');
+const specActionBtn = $('specActionBtn');
+const recPanel = $('recPanel');
+const recInfo = $('recInfo');
+const recDownloadBtn = $('recDownloadBtn');
+const recShareBtn = $('recShareBtn');
+const recShareNote = $('recShareNote');
+const recCloseBtn = $('recCloseBtn');
 const endScreen = $('endScreen');
 const endTitle = $('endTitle');
 const endScore = $('endScore');
@@ -137,6 +157,9 @@ let myId = null;
 let myClass = 'rifleman'; // my class: rifleman | marksman | gunner
 let joined = false;
 let solo = false;
+let spectating = false; // bird's-eye admin view: no figure, no weapon (Lior, 26/11/2026)
+let specX = 0; // bird's-eye pan target (drag pans the view along the street)
+let specZ = 0;
 let myTeam = null;
 let isHost = false;
 let amAdmin = false; // set from the state (me.admin) — the admin runs the match
@@ -185,7 +208,7 @@ let myInMag = 29;
 let myMags = 5;
 let myGrenades = 2; // grenades left this round (Lior, 25/11/2026)
 let soloGrenades = true; // solo toggle: add grenades to my solo mode
-let grenadeArming = null; // { endsAt } while a grenade button fills (3 s)
+let grenadeArming = null; // { endsAt } while a grenade button fills (1.5 s)
 let localThrowAt = 0; // my own throw, for the viewmodel dip
 const grenadeMeshes = new Map(); // id -> flying/landed grenade mesh
 const activeExplosions = []; // { mesh, bornAt } expanding blast visuals
@@ -249,7 +272,220 @@ let threeReady = false;
 // First-person rifle viewmodel (a child of the camera) + muzzle flash.
 let rifle = null;
 let flashMesh = null;
+let sightReflex = null; // rounded-square housing + red dot (rifleman/gunner)
+let sightScope = null; // circular housing + thin red cross (marksman)
+let rifleBody = null; // first-person standard rifle body
+let lmgBody = null; // first-person LMG body (gunner)
 let impactMarker = null;
+
+// ---------------------------------------------------------------------------
+// Texture atlas (Lior, 26/11/2026): one canvas holds the wall look — grey
+// concrete blocks with peeling beige plaster and weathering — so houses
+// read as detailed without adding a single draw call. One tile covers
+// 4 m x 4 m in the world; the pattern is seamless, so it can repeat
+// across any wall segment. (The approved look, illustration v4: the grey
+// design stays, only texture is added — no door, the game has none.)
+// ---------------------------------------------------------------------------
+const WALL_TILE_M = 4;
+function makeWallAtlasTexture() {
+  const S = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = S; cv.height = S;
+  const ctx = cv.getContext('2d');
+  // Base: the same grey as the flat walls (the look stays grey).
+  ctx.fillStyle = '#9a9a9a';
+  ctx.fillRect(0, 0, S, S);
+  // Concrete block courses (0.25 m rows, 0.5 m blocks, running bond).
+  const course = S / 16; // 64 px = 0.25 m
+  const block = S / 8;   // 128 px = 0.5 m
+  ctx.strokeStyle = 'rgba(70,70,70,0.7)';
+  ctx.lineWidth = 3;
+  for (let r = 0; r < 16; r++) {
+    const y = r * course;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(S, y); ctx.stroke();
+    const off = (r % 2) * block / 2;
+    for (let c = -1; c < 9; c++) {
+      const x = c * block + off;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + course); ctx.stroke();
+    }
+  }
+  // Speckle noise (concrete grain).
+  for (let i = 0; i < 5000; i++) {
+    const v = 120 + Math.floor(Math.random() * 60);
+    ctx.fillStyle = `rgba(${v},${v},${v},${0.04 + Math.random() * 0.05})`;
+    ctx.fillRect(Math.random() * S, Math.random() * S, 1 + Math.random() * 2, 1 + Math.random() * 2);
+  }
+  // Peeling beige plaster: small irregular torn-edge blobs (a few per
+  // tile — the grey blocks stay dominant, as in illustration v4). The
+  // edge wobbles smoothly (low-frequency sine + tiny noise) so the patch
+  // reads as torn plaster, not a star. Each blob is drawn at 9 wrapped
+  // offsets so the tile stays seamless.
+  const blob = (cx, cy, rx, ry) => {
+    const pts = [];
+    const n = 24;
+    const ph1 = Math.random() * Math.PI * 2;
+    const ph2 = Math.random() * Math.PI * 2;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const rr = 0.8 + 0.18 * Math.sin(2 * a + ph1) + 0.12 * Math.sin(3 * a + ph2) + (Math.random() - 0.5) * 0.08;
+      pts.push([cx + Math.cos(a) * rx * rr, cy + Math.sin(a) * ry * rr]);
+    }
+    for (const dx of [-S, 0, S]) for (const dy of [-S, 0, S]) {
+      ctx.beginPath();
+      pts.forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x + dx, y + dy); else ctx.lineTo(x + dx, y + dy); });
+      ctx.closePath();
+      ctx.fillStyle = '#c8b490';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(140,120,80,0.7)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  };
+  blob(220, 260, 150, 115);
+  blob(700, 180, 130, 100);
+  blob(480, 620, 160, 120);
+  blob(830, 720, 120, 130);
+  blob(120, 820, 100, 85);
+  // Weathering: vertical streaks, full height (seamless).
+  for (let i = 0; i < 26; i++) {
+    const x = Math.random() * S;
+    const w = 6 + Math.random() * 22;
+    const grad = ctx.createLinearGradient(x, 0, x + w, 0);
+    grad.addColorStop(0, 'rgba(50,50,50,0)');
+    grad.addColorStop(0.5, `rgba(50,50,50,${0.05 + Math.random() * 0.09})`);
+    grad.addColorStop(1, 'rgba(50,50,50,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, 0, w, S);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return tex;
+}
+
+// Road texture (Lior, 26/11/2026 — approved after a player-view preview):
+// procedural asphalt, full road width (12.6 m) x 4 m, tiled along the
+// street. Same approach as the wall atlas: one canvas texture, no new
+// draw calls. No markings on the road, so it can't be confused with
+// game markers (the red/blue X).
+function makeRoadTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 1024; cv.height = 324;
+  const x = cv.getContext('2d');
+  const W = 1024, H = 324;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  x.fillStyle = '#232323';
+  x.fillRect(0, 0, W, H);
+  // Soft blotches — kept in the middle band so none is cut by the
+  // top/bottom tile edge (a cut blotch would show the seam).
+  for (let i = 0; i < 46; i++) {
+    const gx = rnd(0, W), gy = rnd(110, H - 110), r = rnd(30, 100);
+    const g = x.createRadialGradient(gx, gy, 0, gx, gy, r);
+    const light = Math.random() < 0.5;
+    g.addColorStop(0, light ? 'rgba(255,255,255,0.045)' : 'rgba(0,0,0,0.07)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g;
+    x.fillRect(gx - r, gy - r, r * 2, r * 2);
+  }
+  // Wheel-wear bands: two lanes (centres x=256 / 768), two tracks each.
+  for (const bx of [191, 321, 703, 833]) {
+    for (let k = 0; k < 3; k++) {
+      x.fillStyle = 'rgba(0,0,0,0.05)';
+      x.fillRect(bx - 23 + rnd(-6, 6), 0, 46, H);
+    }
+    x.fillStyle = 'rgba(255,255,255,0.025)';
+    x.fillRect(bx - 23, 0, 46, H);
+  }
+  // Patches: jittered polygons, fully inside the tile.
+  function patch(cx, cy, w, h, fill) {
+    x.beginPath();
+    const n = 12;
+    for (let i = 0; i <= n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const px = cx + Math.cos(a) * w / 2 * rnd(0.7, 1.25);
+      const py = cy + Math.sin(a) * h / 2 * rnd(0.7, 1.25);
+      if (i === 0) x.moveTo(px, py); else x.lineTo(px, py);
+    }
+    x.closePath();
+    x.fillStyle = fill;
+    x.fill();
+    x.strokeStyle = 'rgba(0,0,0,0.35)';
+    x.lineWidth = 2;
+    x.stroke();
+  }
+  patch(300, 90, 260, 90, 'rgba(28,28,28,0.55)');
+  patch(760, 240, 200, 80, 'rgba(43,43,43,0.5)');
+  // Cracks: random walks, kept 20 px from the top/bottom edges.
+  function crack(sx, sy) {
+    x.beginPath();
+    x.moveTo(sx, sy);
+    let px = sx, py = sy;
+    for (let i = 0; i < 14; i++) {
+      px += rnd(-26, 26);
+      py += rnd(4, 18);
+      if (py > H - 20) break;
+      x.lineTo(px, py);
+    }
+    x.strokeStyle = 'rgba(0,0,0,0.5)';
+    x.lineWidth = 2;
+    x.stroke();
+  }
+  crack(120, 30);
+  crack(620, 24);
+  crack(900, 40);
+  // Speckle, wrapped top-to-bottom so the tile seams are invisible.
+  for (let i = 0; i < 6000; i++) {
+    const dx = rnd(0, W), dy = rnd(0, H);
+    const light = Math.random() < 0.5;
+    x.fillStyle = light ? `rgba(255,255,255,${rnd(0.05, 0.16)})` : `rgba(0,0,0,${rnd(0.08, 0.2)})`;
+    const s = rnd(0.6, 1.8);
+    x.fillRect(dx, dy, s, s);
+    if (dy < 3) x.fillRect(dx, dy + H, s, s);
+    if (dy > H - 3) x.fillRect(dx, dy - H, s, s);
+  }
+  // Worn darker edges where the road meets the dirt.
+  let eg = x.createLinearGradient(0, 0, 40, 0);
+  eg.addColorStop(0, 'rgba(0,0,0,0.28)');
+  eg.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = eg;
+  x.fillRect(0, 0, 40, H);
+  eg = x.createLinearGradient(W, 0, W - 40, 0);
+  eg.addColorStop(0, 'rgba(0,0,0,0.28)');
+  eg.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = eg;
+  x.fillRect(W - 40, 0, 40, H);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, 32); // one tile per 4 m along the 126 m street
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return tex;
+}
+
+// Scale a BoxGeometry's UVs so the atlas tiles every WALL_TILE_M metres
+// in the world (consistent pattern scale on every wall segment, whatever
+// its size). BoxGeometry lays its 6 faces out as 4 vertices each, in the
+// order +x, -x, +y, -y, +z, -z.
+function scaleBoxUVs(geo, w, h, d) {
+  const uv = geo.attributes.uv;
+  const faces = [
+    [d, h], [d, h], // +x, -x: width = depth, height = height
+    [w, d], [w, d], // +y, -y: width = width, height = depth
+    [w, h], [w, h], // +z, -z: width = width, height = height
+  ];
+  for (let f = 0; f < 6; f++) {
+    const su = faces[f][0] / WALL_TILE_M;
+    const sv = faces[f][1] / WALL_TILE_M;
+    for (let v = 0; v < 4; v++) {
+      const i = f * 4 + v;
+      uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv);
+    }
+  }
+  uv.needsUpdate = true;
+}
 
 function initThree() {
   if (threeReady) return;
@@ -288,23 +524,33 @@ function initThree() {
 
   const street = new THREE.Mesh(
     new THREE.PlaneGeometry(12.6, 126),
-    new THREE.MeshLambertMaterial({ color: 0x1e1e1e })
+    new THREE.MeshLambertMaterial({ map: makeRoadTexture() })
   );
   street.rotation.x = -Math.PI / 2;
   street.position.y = 0;
   scene.add(street);
   shootTargets.push(street);
 
-  // Houses (walls with door/window gaps, slabs, roofs).
+  // Houses (walls with door/window gaps, slabs, roofs). Walls use the
+  // atlas texture (plaster + blocks + weathering, 26/11/2026); slabs,
+  // floors and roofs stay flat colours.
+  const wallMat = new THREE.MeshLambertMaterial({ map: makeWallAtlasTexture() });
   const materials = {};
   for (const b of visualBoxes()) {
-    if (!materials[b.color]) {
-      materials[b.color] = new THREE.MeshLambertMaterial({ color: b.color });
-    }
     const w = b.x1 - b.x0;
     const h = b.y1 - b.y0;
     const d = b.z1 - b.z0;
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), materials[b.color]);
+    let mesh;
+    if (b.color === WALL_COLOR) {
+      const geo = new THREE.BoxGeometry(w, h, d);
+      scaleBoxUVs(geo, w, h, d);
+      mesh = new THREE.Mesh(geo, wallMat);
+    } else {
+      if (!materials[b.color]) {
+        materials[b.color] = new THREE.MeshLambertMaterial({ color: b.color });
+      }
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), materials[b.color]);
+    }
     mesh.position.set((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
     scene.add(mesh);
     shootTargets.push(mesh);
@@ -392,6 +638,7 @@ function initThree() {
   window.addEventListener('blur', () => {
     controls.keys.clear();
     controls.fireQueued = false;
+    controls.fireHeld = false; // a gunner holding FIRE must not resume firing on his own after a blur
   });
 
   requestAnimationFrame(loop);
@@ -404,25 +651,61 @@ function buildViewmodel() {
   const gunmetal = new THREE.MeshLambertMaterial({ color: 0x414741 });
   const gripMat = new THREE.MeshLambertMaterial({ color: 0x3a332a });
   const g = new THREE.Group();
-  const add = (w, h, d, x, y, z, mat, rx = 0) => {
+  // Two rifle bodies, switched by class in updateViewmodel (like the
+  // sights): the standard rifle and the gunner's LMG (Lior, 26/11/2026).
+  rifleBody = new THREE.Group();
+  lmgBody = new THREE.Group();
+  const add = (w, h, d, x, y, z, mat, rx = 0, target = rifleBody) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat || gunmetal);
     m.position.set(x, y, z);
     if (rx) m.rotation.x = rx;
-    g.add(m);
+    target.add(m);
     return m;
   };
+  // Standard rifle body.
   add(0.07, 0.11, 0.42, 0, 0, 0); // receiver
   add(0.05, 0.05, 0.34, 0, 0.01, -0.36); // handguard
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.22, 8), gunmetal);
   barrel.rotation.x = Math.PI / 2;
   barrel.position.set(0, 0.01, -0.6);
-  g.add(barrel);
+  rifleBody.add(barrel);
   add(0.06, 0.16, 0.09, 0, -0.12, -0.05, gripMat, 0.15); // magazine
   add(0.06, 0.09, 0.14, 0, -0.01, 0.24); // stock (short: stays in front of the near plane)
   add(0.05, 0.12, 0.07, 0, -0.11, 0.14, gripMat, -0.3); // pistol grip
-  // Reflex sight: a rounded-square housing with a red dot. The dot sits on
-  // the sight line (local y = 0.13), so it lands on the screen centre when
-  // aiming. The iron sights are gone.
+  // Gunner's LMG body: thicker receiver and barrel, big box magazine,
+  // carry handle, short bipod legs under the barrel. (The full deployed
+  // bipod lives on the third-person figure; in first person the legs
+  // stay short so they never block the sight picture.)
+  add(0.09, 0.12, 0.5, 0, 0, 0, gunmetal, 0, lmgBody); // receiver
+  const lmgBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.3, 8), gunmetal);
+  lmgBarrel.rotation.x = Math.PI / 2;
+  lmgBarrel.position.set(0, 0.01, -0.62);
+  lmgBody.add(lmgBarrel);
+  add(0.1, 0.17, 0.13, 0, -0.12, -0.05, gripMat, 0.15, lmgBody); // box magazine
+  add(0.04, 0.035, 0.28, 0, 0.078, -0.02, gunmetal, 0, lmgBody); // carry handle
+  add(0.07, 0.09, 0.14, 0, -0.01, 0.24, gunmetal, 0, lmgBody); // stock
+  add(0.05, 0.12, 0.07, 0, -0.11, 0.14, gripMat, -0.3, lmgBody); // pistol grip
+  {
+    // Short bipod legs under the barrel (mount at y -0.06, z -0.32).
+    const mount = new THREE.Vector3(0, -0.06, -0.32);
+    const leg = (foot) => {
+      const dir = new THREE.Vector3().subVectors(foot, mount);
+      const len = dir.length();
+      const legMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, len, 6), gunmetal);
+      legMesh.position.copy(mount).addScaledVector(dir, 0.5);
+      legMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+      lmgBody.add(legMesh);
+    };
+    leg(new THREE.Vector3(-0.1, -0.24, -0.4));
+    leg(new THREE.Vector3(0.1, -0.24, -0.4));
+  }
+  g.add(rifleBody);
+  g.add(lmgBody);
+  // Sights — two variants, switched by class in updateViewmodel:
+  // rifleman/gunner: rounded-square reflex housing with a red dot;
+  // marksman: circular housing with a thin red cross (Lior, 26/11/2026).
+  // Both sit on the sight line (local y = 0.13), so they land on the screen
+  // centre when aiming. The iron sights are gone.
   add(0.03, 0.035, 0.05, 0, 0.07, -0.08, gunmetal); // riser mount
   const roundedRect = (w, r) => {
     const s = new THREE.Path();
@@ -437,6 +720,8 @@ function buildViewmodel() {
     s.absarc(-w + r, -w + r, r, Math.PI, Math.PI * 1.5, false);
     return s;
   };
+  // --- reflex sight (rifleman / gunner) ---
+  sightReflex = new THREE.Group();
   const sightShape = new THREE.Shape(roundedRect(0.05, 0.02).getPoints(24));
   sightShape.holes.push(roundedRect(0.035, 0.012));
   const housing = new THREE.Mesh(
@@ -444,20 +729,48 @@ function buildViewmodel() {
     gunmetal
   );
   housing.position.set(0, 0.13, -0.095);
-  g.add(housing);
+  sightReflex.add(housing);
   // Glass pane (subtle) + the red dot at the centre of the window.
   const glass = new THREE.Mesh(
     new THREE.PlaneGeometry(0.07, 0.07),
     new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })
   );
   glass.position.set(0, 0.13, -0.082);
-  g.add(glass);
+  sightReflex.add(glass);
   const dot = new THREE.Mesh(
     new THREE.CircleGeometry(0.008, 16),
     new THREE.MeshBasicMaterial({ color: 0xff2222 })
   );
   dot.position.set(0, 0.13, -0.08);
-  g.add(dot);
+  sightReflex.add(dot);
+  g.add(sightReflex);
+  // --- marksman scope: circular housing + thin red cross ---
+  sightScope = new THREE.Group();
+  const scopeShape = new THREE.Shape();
+  scopeShape.absarc(0, 0, 0.05, 0, Math.PI * 2, false);
+  const scopeHole = new THREE.Path();
+  scopeHole.absarc(0, 0, 0.035, 0, Math.PI * 2, true);
+  scopeShape.holes.push(scopeHole);
+  const scopeHousing = new THREE.Mesh(
+    new THREE.ExtrudeGeometry(scopeShape, { depth: 0.025, bevelEnabled: false }),
+    gunmetal
+  );
+  scopeHousing.position.set(0, 0.13, -0.095);
+  sightScope.add(scopeHousing);
+  const scopeGlass = new THREE.Mesh(
+    new THREE.CircleGeometry(0.035, 24),
+    new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })
+  );
+  scopeGlass.position.set(0, 0.13, -0.082);
+  sightScope.add(scopeGlass);
+  const crossMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
+  const crossV = new THREE.Mesh(new THREE.PlaneGeometry(0.0025, 0.03), crossMat);
+  crossV.position.set(0, 0.13, -0.08);
+  sightScope.add(crossV);
+  const crossH = new THREE.Mesh(new THREE.PlaneGeometry(0.03, 0.0025), crossMat);
+  crossH.position.set(0, 0.13, -0.08);
+  sightScope.add(crossH);
+  g.add(sightScope);
   // Muzzle flash: two crossed additive planes at the barrel tip.
   const flashMat = new THREE.MeshBasicMaterial({
     color: 0xffc933, transparent: true, opacity: 0.95,
@@ -506,6 +819,15 @@ function updateViewmodel(dt, now) {
     }
     return;
   }
+  // The sight follows the class: the marksman gets the circular scope with
+  // the thin red cross, the other classes keep the reflex dot (26/11/2026).
+  if (sightReflex) sightReflex.visible = myClass !== 'marksman';
+  if (sightScope) sightScope.visible = myClass === 'marksman';
+  // The rifle body follows the class too: the gunner carries an LMG
+  // (26/11/2026) — and the flash moves to its longer muzzle.
+  if (rifleBody) rifleBody.visible = myClass !== 'gunner';
+  if (lmgBody) lmgBody.visible = myClass === 'gunner';
+  if (flashMesh) flashMesh.position.z = myClass === 'gunner' ? -0.8 : -0.74;
   const wantAim = controls.aiming && !reloading ? 1 : 0;
   aimBlend += (wantAim - aimBlend) * (1 - Math.exp(-dt * 10));
   recoil *= Math.exp(-dt * 9);
@@ -530,8 +852,8 @@ function updateViewmodel(dt, now) {
     localThrowAt = 0;
   }
   // Aiming narrows the field of view slightly — the marksman's scope
-  // magnifies x3 (FOV 29 at full aim, vs 55 for the other classes).
-  const adsFov = myClass === 'marksman' ? 29 : 55;
+  // magnifies x4 (FOV 22 at full aim, vs 55 for the other classes).
+  const adsFov = myClass === 'marksman' ? 22 : 55;
   const targetFov = 75 - aimBlend * (75 - adsFov);
   if (Math.abs(camera.fov - targetFov) > 0.05) {
     camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-dt * 10));
@@ -737,6 +1059,82 @@ const POSES = {
 };
 const POSE_KEYS = Object.keys(POSES.ready);
 
+// The rifle a figure carries — rifleman/marksman get the standard rifle;
+// the gunner gets an LMG (Lior, 26/11/2026, illustration v3): thicker
+// receiver and barrel, big box magazine, carry handle, and a deployed
+// bipod mounted under the barrel where the front grip was. The stock
+// stays short so its rear end sits inside the shoulder, never sticking
+// out behind it. Returns the group and the muzzle z (for the flash).
+function makeRifleMesh(cls, gunmetal, darker) {
+  const mesh = new THREE.Group();
+  const add = (w, h, d, x, y, z, mat) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    mesh.add(m);
+    return m;
+  };
+  let muzzleZ = -0.47;
+  if (cls === 'gunner') {
+    add(0.09, 0.12, 0.5, 0, 0, 0, gunmetal); // receiver, thicker
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.3, 8), gunmetal);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.set(0, 0.01, -0.4);
+    mesh.add(barrel);
+    add(0.045, 0.045, 0.06, 0, 0.01, -0.56, darker); // muzzle brake
+    add(0.1, 0.17, 0.13, 0, -0.12, -0.02, darker); // box magazine (120 rounds)
+    add(0.04, 0.035, 0.28, 0, 0.078, -0.02, gunmetal); // carry handle
+    add(0.07, 0.09, 0.14, 0, 0, 0.27, darker); // stock (short: rear stays inside the shoulder)
+    // Deployed bipod: mount under the barrel, legs splayed down-forward.
+    const mount = new THREE.Vector3(0, -0.06, -0.32);
+    const leg = (foot) => {
+      const dir = new THREE.Vector3().subVectors(foot, mount);
+      const len = dir.length();
+      const legMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, len, 6), gunmetal);
+      legMesh.position.copy(mount).addScaledVector(dir, 0.5);
+      legMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+      mesh.add(legMesh);
+    };
+    leg(new THREE.Vector3(-0.14, -0.3, -0.42));
+    leg(new THREE.Vector3(0.14, -0.3, -0.42));
+    muzzleZ = -0.58;
+  } else {
+    add(0.07, 0.1, 0.45, 0, 0, 0, gunmetal); // receiver
+    // Barrel (0.225, half of the 0.45 tried before — Lior found the long
+    // barrel too prominent): total rifle length ~0.83 with stock+receiver.
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.225, 8), gunmetal);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.set(0, 0.01, -0.3225);
+    mesh.add(barrel);
+    add(0.05, 0.16, 0.08, 0, -0.11, -0.02, darker); // magazine
+    add(0.06, 0.09, 0.16, 0, 0, 0.28, darker); // stock
+  }
+  return { mesh, muzzleZ };
+}
+
+// Rebuild a figure's rifle when its class changes (admin/solo setClass):
+// the gunner carries an LMG, everyone else the standard rifle. The flash
+// survives the rebuild (it moves to the new rifle); only geometries are
+// disposed — the materials are shared across figures.
+function rebuildRifle(id, g) {
+  const m = meta.get(id) || npcMeta.get(id) || {};
+  const cls = m.cls || 'rifleman';
+  if (g.userData.rifleCls === cls) return;
+  const old = g.userData.rifle;
+  const flash = g.userData.flash;
+  if (old) {
+    if (flash) old.remove(flash);
+    old.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    if (old.parent) old.parent.remove(old); // also covers a dropped rifle lying in the scene
+  }
+  const { mesh, muzzleZ } = makeRifleMesh(cls, g.userData.gunmetalMat, g.userData.darkerMat);
+  mesh.position.set(0.08, g.userData.poseCur.rifleY, g.userData.poseCur.rifleZ);
+  mesh.rotation.x = g.userData.poseCur.rifleRX;
+  if (flash) { flash.position.set(0, 0.01, muzzleZ); mesh.add(flash); }
+  g.userData.upper.add(mesh);
+  g.userData.rifle = mesh;
+  g.userData.rifleCls = cls;
+}
+
 function getPlayerMesh(id) {
   if (playerMeshes.has(id)) return playerMeshes.get(id);
   const m = meta.get(id) || npcMeta.get(id) || {};
@@ -839,22 +1237,7 @@ function getPlayerMesh(id) {
   // Rifle: receiver, barrel, magazine, stock — held forward, stock at the
   // shoulder, muzzle ahead. A child of the upper body so it follows the
   // lean; each pose sets its exact height.
-  const rifleMesh = new THREE.Group();
-  const rAdd = (w, h, d, x, y, z, mat) => {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    mesh.position.set(x, y, z);
-    rifleMesh.add(mesh);
-    return mesh;
-  };
-  rAdd(0.07, 0.1, 0.45, 0, 0, 0, gunmetal); // receiver
-  // Barrel (0.225, half of the 0.45 tried before — Lior found the long
-  // barrel too prominent): total rifle length ~0.83 with stock+receiver.
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.225, 8), gunmetal);
-  barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 0.01, -0.3225);
-  rifleMesh.add(barrel);
-  rAdd(0.05, 0.16, 0.08, 0, -0.11, -0.02, darker); // magazine
-  rAdd(0.06, 0.09, 0.16, 0, 0, 0.28, darker); // stock
+  const { mesh: rifleMesh, muzzleZ } = makeRifleMesh(m.cls || 'rifleman', gunmetal, darker);
   rifleMesh.position.set(0.08, 0.47, -0.3);
   rifleMesh.rotation.x = 0.3;
   upper.add(rifleMesh);
@@ -876,7 +1259,7 @@ function getPlayerMesh(id) {
   // Lior, 24/11.)
   pf2.rotation.y = Math.PI / 2;
   pFlash.add(pf1, pf2);
-  pFlash.position.set(0, 0.01, -0.47);
+  pFlash.position.set(0, 0.01, muzzleZ);
   pFlash.visible = false;
   rifleMesh.add(pFlash);
 
@@ -898,10 +1281,23 @@ function getPlayerMesh(id) {
   group.userData.armR = armR;
   group.userData.neck = neck;
   group.userData.rifle = rifleMesh;
+  group.userData.rifleCls = m.cls || 'rifleman'; // rebuilt on class change (LMG for the gunner)
   group.userData.poseCur = { ...POSES.ready };
   group.userData.walkPhase = 0; // advances with distance travelled
   group.userData.walkAmp = 0;   // eases in/out so the legs never snap
   rebuildBodyNamePatches(id, group);
+  // Spectator disc (26/11/2026): a team-coloured ring under the figure,
+  // visible only to a bird's-eye spectator. Hidden by default.
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.8, 20),
+    new THREE.MeshBasicMaterial({ color: TEAM_CSS[m.role] || '#ffffff', transparent: true, opacity: 0.75, depthWrite: false })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.03;
+  disc.visible = false;
+  group.add(disc);
+  group.userData.disc = disc;
+  group.userData.discRole = m.role;
   scene.add(group);
   playerMeshes.set(id, group);
   shootTargets.push(torso, head);
@@ -1050,6 +1446,15 @@ function refreshMeshColors() {
     if (g.userData.patchName !== (m.name || '?') || g.userData.patchRole !== m.role) {
       rebuildBodyNamePatches(id, g);
     }
+    // The spectator disc follows the role too (attackers/defenders swap).
+    if (g.userData.disc && g.userData.discRole !== m.role) {
+      g.userData.disc.material.color.set(TEAM_CSS[m.role] || '#ffffff');
+      g.userData.discRole = m.role;
+    }
+    // The rifle follows the class: a gunner carries an LMG.
+    if (g.userData.rifleCls !== (m.cls || 'rifleman')) {
+      rebuildRifle(id, g);
+    }
   }
 }
 
@@ -1131,19 +1536,36 @@ function renderLobby(state) {
   // nobody waits. The code row shows to joined team players who are
   // not the admin yet; the panel shows to the admin.
   amAdmin = !!me && me.admin === true;
-  const adminExists = state.players.some((p) => p.admin);
+  // A spectating admin still counts: while they watch from above, the
+  // lobby must not fall back to "anyone may start" (26/11/2026).
+  const adminExists = state.players.some((p) => p.admin) || state.adminSpectating === true;
   adminLoginRow.classList.toggle('hidden', !me || me.solo || amAdmin);
   adminPanel.classList.toggle('hidden', !amAdmin);
   if (amAdmin) renderAdminRows(state.players.filter((p) => !p.solo));
   grenadesAllowedState = state.grenadesAllowed !== false;
   adminGrenadeBtn.textContent = grenadesAllowedState ? 'On' : 'Off';
   adminGrenadeBtn.classList.toggle('activeChoice', grenadesAllowedState);
+  // Prep time toggle — any team player may flip it (Lior, 26/11/2026).
+  prepEnabledState = state.prepEnabled === true;
+  prepToggleBtn.textContent = prepEnabledState ? 'On' : 'Off';
+  prepToggleBtn.classList.toggle('activeChoice', prepEnabledState);
+  // Round length (admin field, Lior 26/11/2026): show the server's
+  // current value, but never clobber a number the admin is typing.
+  if (state.roundDurationMin != null && document.activeElement !== roundDurationInput) {
+    roundDurationInput.value = String(state.roundDurationMin);
+  }
   $('atkA').classList.toggle('activeChoice', state.attackersTeam === 'A');
   $('atkB').classList.toggle('activeChoice', state.attackersTeam === 'B');
   const canStart = aCount >= 1 && bCount >= 1;
   startBtn.disabled = (adminExists && !amAdmin) || !canStart;
   startBtn.classList.toggle('hidden', adminExists && !amAdmin);
   waitHost.classList.toggle('hidden', !adminExists || amAdmin);
+  // The spectating admin runs the match from above: START in the lobby,
+  // CONTINUE during an intermission (hidden otherwise).
+  const specAction = spectating
+    && ((game.phase === 'lobby' && canStart) || game.phase === 'intermission');
+  specActionBtn.classList.toggle('hidden', !specAction);
+  if (specAction) specActionBtn.textContent = game.phase === 'intermission' ? 'CONTINUE' : 'START';
   startHint.textContent = adminExists && !amAdmin
     ? 'Only the admin can start the match.'
     : canStart
@@ -1546,8 +1968,10 @@ function tryFire(now) {
   // caption at the top of the screen. (While reloading the RELOADING…
   // text already covers it, so no caption there.)
   if (myInMag <= 0) { showEmptyCaption(); return; }
-  // Per-class fire rate: the marksman fires one bullet per second.
-  const interval = myClass === 'marksman' ? 1000 : FIRE_INTERVAL;
+  // Per-class fire rate: the marksman fires one bullet per second only
+  // while aiming down the sights; from the hip he fires like a
+  // rifleman (Lior, 26/11/2026). The server enforces the same rule.
+  const interval = myClass === 'marksman' && controls.aiming ? 1000 : FIRE_INTERVAL;
   if (now - lastFireAt < interval) return;
   lastFireAt = now;
 
@@ -1560,19 +1984,27 @@ function tryFire(now) {
   );
   const hits = raycaster.intersectObjects(shootTargets, false);
   let targetId = null;
+  // The wall/floor impact point travels with the shot (26/11/2026):
+  // other players see the hit and hear it when it lands near them.
+  let impact = null;
   if (hits.length > 0) {
     const first = hits[0].object;
     if (first.userData.playerId != null) {
       targetId = first.userData.playerId;
     } else {
       // Visible impact where the bullet lands.
+      impact = {
+        x: Math.round(hits[0].point.x * 10) / 10,
+        y: Math.round(hits[0].point.y * 10) / 10,
+        z: Math.round(hits[0].point.z * 10) / 10,
+      };
       impactMarker.position.copy(hits[0].point);
       impactMarker.visible = true;
       impactMarker.material.opacity = 0.95;
       impactMarker.userData.bornAt = now;
     }
   }
-  socket.send({ t: 'shot', targetId });
+  socket.send({ t: 'shot', targetId, impact, aiming: controls.aiming });
   sfx.shoot();
   // Firing feedback: the rifle kicks and the muzzle flashes.
   recoil = 1;
@@ -1596,7 +2028,7 @@ function tryReload() {
 // (or G on desktop) starts a 3 s arming — the left button fills
 // bottom-up — and the throw goes out when the fill completes. The
 // server then flies the grenade 10 m and explodes it 3 s after the throw.
-const GRENADE_ARM_MS = 3000;
+const GRENADE_ARM_MS = 1500;
 const grenadeBtnEls = [document.getElementById('grenadeBtn0'), document.getElementById('grenadeBtn1')];
 for (const btn of grenadeBtnEls) btn.addEventListener('click', () => startGrenadeArm());
 
@@ -1694,6 +2126,12 @@ socket.onOpen = () => {
   connectStatus.textContent = 'Connected.';
   joinBox.classList.remove('hidden');
   connBanner.classList.add('hidden');
+  // Expiring invite link (Lior, 26/11/2026): a visitor who opened a
+  // shared ?invite=<code> link asks the server whether it is still good.
+  // (A returning player reconnects with savedJoin regardless — the link
+  // gates new entry, not reconnection.)
+  const inviteCode = new URLSearchParams(location.search).get('invite');
+  if (inviteCode) socket.send({ t: 'checkInvite', code: inviteCode });
   // Reconnect: the server dropped the old player entry when the socket
   // closed, so rejoin with the same callsign/team.
   if (savedJoin) sendJoin(savedJoin);
@@ -1789,6 +2227,62 @@ socket.on('left', () => {
   showScreen('lobby');
 });
 
+// Bird's-eye spectator (Lior, 26/11/2026): the admin watches from above
+// with no figure and no weapon. myAlive stays false so the viewmodel,
+// fire, grenades and the chase camera all stay off; the render loop
+// switches the camera to the top-down view while spectating is set.
+socket.on('spectateJoined', (msg) => {
+  myId = msg.id;
+  joined = true;
+  solo = false;
+  spectating = true;
+  specX = 0; // centre the bird's-eye view on the street
+  specZ = 0;
+  myTeam = null;
+  myAlive = false;
+  savedJoin = null;
+  document.body.classList.add('spectating');
+  joinBox.classList.add('hidden');
+  teamsBox.classList.add('hidden');
+  exitSoloBtn.classList.add('hidden');
+  exitBtn.classList.add('hidden');
+  specExitBtn.classList.remove('hidden');
+  hideHelpUI();
+  showScreen('game');
+  // The REC button shows only to the bird's-eye admin — and only
+  // where this browser can actually record (MediaRecorder + a
+  // capturable canvas). Checked after showScreen('game'): initThree
+  // creates the renderer/canvas there, so before it there is no
+  // canvas to capture.
+  const canRecord = typeof MediaRecorder !== 'undefined'
+    && !!renderer && !!renderer.domElement.captureStream;
+  specRecBtn.classList.toggle('hidden', !canRecord);
+});
+
+socket.on('spectateLeft', () => {
+  spectating = false;
+  joined = false;
+  myId = null;
+  myAlive = true;
+  myHealth = 100;
+  myInMag = 29;
+  myMags = 5;
+  document.body.classList.remove('spectating');
+  specExitBtn.classList.add('hidden');
+  specActionBtn.classList.add('hidden');
+  // Leaving mid-recording finalizes what was captured — the done
+  // panel opens when the recorder stops. Otherwise hide the panel.
+  if (specRecorder) stopSpecRecording();
+  else recPanel.classList.add('hidden');
+  specRecBtn.classList.add('hidden');
+  exitBtn.classList.add('hidden');
+  endScreen.classList.add('hidden');
+  teamsBox.classList.add('hidden');
+  joinBox.classList.remove('hidden');
+  hideHelpUI();
+  showScreen('lobby');
+});
+
 socket.on('adminOk', () => {
   // The admin panel renders from the state that follows this message.
   adminCodeInput.value = '';
@@ -1854,6 +2348,7 @@ socket.on('kicked', (msg) => {
 // arriving mid-edit.
 let adminRowsSig = '';
 let grenadesAllowedState = true;
+let prepEnabledState = false; // prep time toggle, off by default (26/11/2026)
 function renderAdminRows(teamPlayers) {
   const sig = teamPlayers.map((p) => `${p.id}:${p.name}:${p.team}:${p.cls}`).join('|');
   if (sig === adminRowsSig) return;
@@ -1939,6 +2434,11 @@ socket.on('state', (msg) => {
   }
   if (solo) return; // stay in the solo game view; the room may be in lobby phase
   renderLobby(msg);
+  // A bird's-eye spectator stays in the game view too — the lobby-phase
+  // branch below would otherwise yank them back to the lobby screen on
+  // every state (26/11/2026). renderLobby still runs above so the
+  // spectator's START / CONTINUE button updates.
+  if (spectating) return;
   if (msg.phase === 'lobby') {
     showScreen('lobby');
     endScreen.classList.add('hidden');
@@ -1996,6 +2496,9 @@ socket.on('snapshot', (msg) => {
   if (me) {
     const wasAlive = myAlive;
     myAlive = me.alive;
+    // A gunner who dies while holding FIRE must not resume firing on his
+    // own next round (stuck-fire bug): clear the held flag on death.
+    if (wasAlive && !myAlive) controls.fireHeld = false;
     myHealth = me.health;
     myInMag = me.inMag;
     myMags = me.mags;
@@ -2063,6 +2566,21 @@ socket.on('shot', (msg) => {
     let vol = 0.5;
     if (s) vol = Math.max(0.12, 1 - Math.hypot(s.x - local.x, s.z - local.z) / 60);
     sfx.shoot(vol);
+    // Wall/floor hits are visible to everyone now (Lior, 26/11/2026):
+    // the same yellow marker the shooter sees, at the broadcast point.
+    // My own shots already showed the marker locally when I fired.
+    if (msg.impact) {
+      impactMarker.position.set(msg.impact.x, msg.impact.y, msg.impact.z);
+      impactMarker.visible = true;
+      impactMarker.material.opacity = 0.95;
+      impactMarker.userData.bornAt = performance.now();
+      // Near-miss: an impact within 1 m of my body cracks in my ears.
+      if (myAlive) {
+        const dy = Math.max(local.y - msg.impact.y, 0, msg.impact.y - (local.y + 1.8));
+        const d = Math.hypot(msg.impact.x - local.x, dy, msg.impact.z - local.z);
+        if (d < 1) sfx.impact();
+      }
+    }
   }
   if (solo) {
     // No killfeed, no hitmarker, no hit sound — in solo or in a match
@@ -2183,6 +2701,8 @@ function escapeHtml(s) {
 
 socket.on('roundStart', (msg) => {
   if (solo) return;
+  // A new round never starts with a held trigger (stuck-fire bug).
+  controls.fireHeld = false;
   if (msg.objective) currentObjective = msg.objective;
   if (msg.attackersSpawn) currentAttackersSpawn = msg.attackersSpawn;
   continueBtn.classList.add('hidden');
@@ -2260,6 +2780,202 @@ $('soloGrenadeBtn').addEventListener('click', () => {
 });
 exitSoloBtn.addEventListener('click', () => socket.send({ t: 'leaveSolo' }));
 exitBtn.addEventListener('click', () => socket.send({ t: 'leave' }));
+// Bird's-eye spectator (admin only, from the admin panel).
+$('spectateBtn').addEventListener('click', () => socket.send({ t: 'spectate' }));
+specExitBtn.addEventListener('click', () => socket.send({ t: 'leaveSpectate' }));
+specActionBtn.addEventListener('click', () => {
+  socket.send({ t: game.phase === 'intermission' ? 'continue' : 'start' });
+});
+// Bird's-eye recording (Lior, 26/11/2026): the admin spectator records
+// exactly what they see from above — the WebGL canvas, plus the game
+// audio — with MediaRecorder. The file downloads to the admin's device,
+// or goes out through the OS share sheet (Mail, Drive, WhatsApp…),
+// which is how a recording reaches email or Drive: a mailto: link
+// cannot carry an attachment, and the game server holds no mail or
+// Drive credentials. The tab must stay in the foreground while
+// recording — a background tab stops drawing frames.
+let specRecorder = null; // MediaRecorder while recording
+let specRecChunks = [];
+let specRecStart = 0;
+let specRecTimer = 0;
+let specRecStream = null;
+let specRecBlob = null;
+let specRecBlobUrl = null;
+let specRecMime = '';
+let specRecExt = 'webm';
+let specRecName = '';
+
+function pickRecMime() {
+  if (typeof MediaRecorder === 'undefined') return null;
+  for (const [mime, ext] of [
+    ['video/webm;codecs=vp9,opus', 'webm'],
+    ['video/webm;codecs=vp8,opus', 'webm'],
+    ['video/webm', 'webm'],
+    ['video/mp4', 'mp4'],
+  ]) {
+    if (MediaRecorder.isTypeSupported(mime)) return { mime, ext };
+  }
+  return { mime: '', ext: 'webm' }; // no preference matched — let the browser pick
+}
+
+function fmtRecTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function fmtRecSize(bytes) {
+  return bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function updateRecBtn() {
+  if (!specRecorder) {
+    specRecBtn.classList.remove('recording');
+    specRecBtn.textContent = '● REC';
+    return;
+  }
+  specRecBtn.classList.add('recording');
+  specRecBtn.innerHTML = `<span class="recDot"></span>REC ${fmtRecTime(Date.now() - specRecStart)}`;
+}
+
+function startSpecRecording() {
+  if (specRecorder || !renderer) return;
+  const picked = pickRecMime();
+  if (!picked || !renderer.domElement.captureStream) return; // cannot record here
+  specRecMime = picked.mime;
+  specRecExt = picked.ext;
+  // The REC tap is a user gesture, so the AudioContext may start now.
+  sfx.ensure();
+  specRecStream = renderer.domElement.captureStream(30);
+  const audioStream = sfx.recordingStream();
+  if (audioStream) {
+    const track = audioStream.getAudioTracks()[0];
+    if (track && track.readyState === 'live') specRecStream.addTrack(track);
+  }
+  specRecChunks = [];
+  try {
+    specRecorder = new MediaRecorder(specRecStream,
+      { mimeType: specRecMime || undefined, videoBitsPerSecond: 5_000_000 });
+  } catch {
+    specRecorder = null;
+    return;
+  }
+  specRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) specRecChunks.push(e.data); };
+  specRecorder.onstop = finishSpecRecording;
+  specRecStart = Date.now();
+  try {
+    specRecorder.start(500);
+  } catch {
+    specRecorder = null;
+    return;
+  }
+  updateRecBtn();
+  specRecTimer = setInterval(updateRecBtn, 1000);
+}
+
+function stopSpecRecording() {
+  if (!specRecorder) return;
+  clearInterval(specRecTimer);
+  specRecTimer = 0;
+  const rec = specRecorder;
+  specRecorder = null;
+  updateRecBtn();
+  try { rec.stop(); } catch { /* already stopped */ }
+  // End the capture stream's tracks; the audio track belongs to the
+  // game's shared recording destination — a fresh one is built on the
+  // next recording if this track ended (see audio.js).
+  if (specRecStream) {
+    specRecStream.getTracks().forEach((t) => { try { t.stop(); } catch { /* already ended */ } });
+  }
+  specRecStream = null;
+}
+
+function finishSpecRecording() {
+  const durationMs = Date.now() - specRecStart;
+  const blob = new Blob(specRecChunks, { type: specRecMime || 'video/webm' });
+  specRecChunks = [];
+  if (specRecBlobUrl) URL.revokeObjectURL(specRecBlobUrl);
+  specRecBlob = blob;
+  specRecBlobUrl = URL.createObjectURL(blob);
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  specRecName = `tactical-poc-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.${specRecExt}`;
+  recInfo.textContent = `${specRecName} · ${fmtRecTime(durationMs)} · ${fmtRecSize(blob.size)}`;
+  // The OS share sheet is the route to email and Drive: Mail and the
+  // Drive app both accept a video file from it. Long recordings are
+  // big (about 40 MB a minute at this bitrate) — past email's usual
+  // 25 MB cap, so for a long one Drive is the reliable route.
+  const file = new File([blob], specRecName, { type: blob.type });
+  const canShare = typeof navigator.canShare === 'function'
+    && navigator.canShare({ files: [file] });
+  recShareBtn.classList.toggle('hidden', !canShare);
+  recShareNote.classList.toggle('hidden', canShare);
+  if (!canShare) {
+    recShareNote.textContent = 'Sharing is not available in this browser — use Download, then attach or upload the file yourself.';
+  }
+  recPanel.classList.remove('hidden');
+  // Test hook: the browser run reads the finished recording.
+  window.__lastRecording = { name: specRecName, size: blob.size, mimeType: blob.type, durationMs, canShare };
+}
+
+specRecBtn.addEventListener('click', () => {
+  if (specRecorder) stopSpecRecording();
+  else startSpecRecording();
+});
+recDownloadBtn.addEventListener('click', () => {
+  if (!specRecBlobUrl) return;
+  const a = document.createElement('a');
+  a.href = specRecBlobUrl;
+  a.download = specRecName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+recShareBtn.addEventListener('click', async () => {
+  if (!specRecBlob) return;
+  const file = new File([specRecBlob], specRecName, { type: specRecBlob.type });
+  try {
+    await navigator.share({ files: [file], title: specRecName });
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // the user dismissed the sheet
+    recShareNote.classList.remove('hidden');
+    recShareNote.textContent = 'Sharing failed — try Download instead.';
+  }
+});
+recCloseBtn.addEventListener('click', () => {
+  recPanel.classList.add('hidden');
+});
+// Expiring invite links (admin only, 1 hour — Lior, 26/11/2026).
+$('createInviteBtn').addEventListener('click', () => socket.send({ t: 'createInvite' }));
+$('copyInviteBtn').addEventListener('click', async () => {
+  const input = $('inviteLinkInput');
+  const btn = $('copyInviteBtn');
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch {
+    input.select();
+    document.execCommand('copy');
+  }
+  btn.textContent = 'Copied';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+});
+
+socket.on('inviteCreated', (msg) => {
+  $('inviteLinkInput').value = `${location.origin}/?invite=${msg.code}`;
+  $('inviteExpiry').textContent = `valid until ${new Date(msg.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  $('inviteOut').classList.remove('hidden');
+});
+
+socket.on('inviteStatus', (msg) => {
+  // An expired (or bogus) shared link: show the notice and hide the join
+  // UI, so a new visitor cannot enter through it. Direct entry without
+  // a link stays open (Lior is still deliberating about that).
+  if (msg.valid) return;
+  $('inviteExpired').classList.remove('hidden');
+  joinBox.classList.add('hidden');
+  teamsBox.classList.add('hidden');
+});
 $('switchBtn').addEventListener('click', () => {
   socket.send({ t: 'switchTeam', team: myTeam === 'A' ? 'B' : 'A' });
 });
@@ -2279,6 +2995,13 @@ adminCodeInput.addEventListener('keydown', (e) => {
 });
 adminGrenadeBtn.addEventListener('click', () => {
   socket.send({ t: 'setGrenadesAllowed', allowed: !grenadesAllowedState });
+});
+$('roundDurationBtn').addEventListener('click', () => {
+  const mins = Number(roundDurationInput.value);
+  if (Number.isFinite(mins)) socket.send({ t: 'setRoundDuration', minutes: mins });
+});
+prepToggleBtn.addEventListener('click', () => {
+  socket.send({ t: 'setPrepEnabled', enabled: !prepEnabledState });
 });
 // Clear room needs two clicks: the first arms it (4s window), the second
 // sends. Kicking everyone is destructive; a stray tap must not do it.
@@ -2372,6 +3095,7 @@ function loop() {
         // A fallen body shows no name.
         if (u.headPatch) u.headPatch.visible = false;
         if (u.backPatch) u.backPatch.visible = false;
+        if (u.disc) u.disc.visible = false;
         setMeshFade(g, 1); // a body that died mid-climb-fade is fully opaque
         if (u.fallTo !== 1) {
           u.fallFrom = u.fallT ?? 0;
@@ -2413,6 +3137,10 @@ function loop() {
     const isTeammate = !solo && myTeam != null && !!m && !m.solo && m.team === myTeam;
     if (g.userData.headPatch) g.userData.headPatch.visible = isTeammate;
     if (g.userData.backPatch) g.userData.backPatch.visible = isTeammate;
+    // Bird's-eye spectator: a team-coloured disc under each living figure
+    // (26/11/2026) — dark figures on the black street are nearly invisible
+    // from above without it. Only the spectator's client shows it.
+    if (g.userData.disc) g.userData.disc.visible = spectating;
     const k = 1 - Math.exp(-dt * 12);
     g.position.x += (s.x - g.position.x) * k;
     g.position.y += (s.y - g.position.y) * k;
@@ -2476,7 +3204,16 @@ function loop() {
     }
   }
 
-  if ((game.phase === 'playing' || solo) && myAlive) {
+  if (spectating) {
+    // Bird's-eye admin view: 55 m up (figures read as small dots, ~8 px),
+    // drag pans the view along the street. The look deltas are consumed
+    // here so they never leak into the yaw when spectating ends.
+    const look = controls.takeLook();
+    specX = Math.max(-18, Math.min(18, specX - look.dx * 0.05));
+    specZ = Math.max(-62, Math.min(62, specZ - look.dy * 0.05));
+    camera.position.set(specX, 55, specZ);
+    camera.rotation.set(-Math.PI / 2, 0, 0);
+  } else if ((game.phase === 'playing' || solo) && myAlive) {
     // Crouch blends the eye height down smoothly (no snap on toggle).
     crouchBlend += ((controls.crouch ? 1 : 0) - crouchBlend) * (1 - Math.exp(-dt * 10));
     // Look still works mid-climb (the camera crosses the wall with the
