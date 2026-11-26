@@ -78,8 +78,9 @@
 //     attackers wait at spawn (moves ignored, no shooting) while the
 //     defenders move freely; after prep ends the attackers move again.
 //     PREP_MS=5000 in this test (20 s in the game).
-//   Scenario 18 (classes): marksman — ADS kills at any range, hip fire
-//     is the normal table, 1 shot/sec (server-enforced); gunner —
+//   Scenario 18 (classes): marksman — ADS kills at any range and fires
+//     1 shot/sec while aiming; from the hip he fires at the rifleman's
+//     rate (Lior, 26/11/2026) and hip fire is the normal table; gunner —
 //     standing, hits only within 15 m (34, 3 hits to kill); crouched,
 //     the normal table (50 at 15-50 m); reload 5 s. setClass: the host
 //     assigns any team player (ammo resets to the new loadout); a
@@ -100,6 +101,23 @@
 //     enters the code, only the admin starts / continues, renames, moves
 //     teams, assigns classes, and toggles grenades; a wrong code and a
 //     non-admin attempt are rejected; setTeam is lobby-only.
+//   Scenario 22 (wall impacts): a shot carrying an impact point has it
+//     echoed in the broadcast (rounded to 1 decimal); a shot without
+//     one broadcasts impact null; a malformed impact is dropped, not
+//     echoed.
+//   Scenario 23 (admin spectator): only the admin may spectate; the
+//     spectator leaves the player list (no figure for anyone), keeps the
+//     admin flag (state.adminSpectating), can start the match from above
+//     while a non-admin start stays rejected, receives snapshots, cannot
+//     shoot, and returns to the lobby on leaveSpectate.
+//   Scenario 24 (expiring invite links): only the admin creates one
+//     (random 8-char code, expires ~INVITE_TTL_MS out); checkInvite says
+//     valid for a live code and invalid for a bogus one; after the TTL
+//     passes the same code reports invalid.
+//   Scenario 25 (round duration): the admin sets the round length in
+//     minutes from the lobby (state.roundDurationMin); a non-admin set
+//     is ignored; the next round runs the new clock (2 min here, the
+//     test env runs ROUND_MS=60000).
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -118,11 +136,14 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Defense prep time runs at the start of every round (PREP_MS in this
-// test): scenarios that play right after a start must wait it out first.
-// The inbox is cleared before each wait so a stale lobby snapshot (which
-// also carries prepActive === false) cannot satisfy the wait early.
+// Defense prep time is a toggle, off by default (26/11/2026): scenarios
+// that play right after a start must wait it out first — but only when it
+// is enabled. The inbox is cleared before each wait so a stale lobby
+// snapshot (which also carries prepActive === false) cannot satisfy the
+// wait early.
 async function waitPrepEnd(c) {
+  const st = c.findLast('state', () => true);
+  if (st && st.prepEnabled === false) return; // prep off: nothing to wait out
   c.inbox.length = 0;
   await c.waitFor('snapshot', (m) => m.prepActive === true, 10000);
   c.inbox.length = 0;
@@ -219,7 +240,7 @@ async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', PREP_MS: '5000', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500', ADMIN_CODE: 'test-code' },
+    env: { ...process.env, PORT: String(PORT), ROUND_MS: '60000', CAPTURE_MS: '600', PREP_MS: '5000', HEARTBEAT_TIMEOUT_MS: '3000', HEARTBEAT_SWEEP_MS: '1000', GHOST_SILENCE_MS: '1500', ADMIN_CODE: 'test-code', INVITE_TTL_MS: '1500' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -1204,15 +1225,23 @@ async function main() {
     await sleep(300);
 
     // ------------------------------------------------ scenario 17: defense
-    // prep time (Lior, 25/11/2026). At the start of a round the attackers
-    // wait at spawn (moves ignored, no shooting) while the defenders move
-    // freely; after prep ends the attackers move again.
+    // prep time (Lior, 25/11/2026; toggle, off by default, 26/11/2026).
+    // At the start of a round the attackers wait at spawn (moves ignored,
+    // no shooting) while the defenders move freely; after prep ends the
+    // attackers move again. First the toggle itself: off by default, any
+    // team player may enable it.
     const p1 = new Client('PrepAtk');
     const p2 = new Client('PrepDef');
     for (const c of [p1, p2]) await c.ready();
     p1.send({ t: 'join', name: 'PrepAtk', team: 'A' });
     p2.send({ t: 'join', name: 'PrepDef', team: 'B' });
-    await p1.waitFor('state', (m) => m.players.length === 2);
+    const prepSt0 = await p1.waitFor('state', (m) => m.players.length === 2);
+    assert.equal(prepSt0.prepEnabled, false, 'prep time is off by default');
+    console.log('ok - prep time is off by default');
+    p2.send({ t: 'setPrepEnabled', enabled: true }); // a non-admin player enables it
+    const prepSt1 = await p1.waitFor('state', (m) => m.prepEnabled === true, 5000);
+    assert.equal(prepSt1.prepEnabled, true, 'any team player may enable prep time');
+    console.log('ok - any team player may enable prep time');
     await p1.becomeAdmin(); // only the admin starts (Lior, 25/11/2026)
     p1.send({ t: 'start' });
     const playing = await p1.waitFor('state', (m) => m.phase === 'playing');
@@ -1283,9 +1312,9 @@ async function main() {
     });
     const gunState = cm.findLast('state', (m) => m.players.some((q) => q.id === cg.id && q.cls === 'gunner'));
     const gunP = gunState.players.find((q) => q.id === cg.id);
-    assert.equal(gunP.inMag, 150, 'gunner loads 150 in the mag');
+    assert.equal(gunP.inMag, 120, 'gunner loads 120 in the mag');
     assert.equal(gunP.mags, 2, 'gunner loads 2 spare mags');
-    console.log('ok - admin setClass makes the gunner, ammo resets to 150 + 2');
+    console.log('ok - admin setClass makes the gunner, ammo resets to 120 + 2');
     // A non-admin team player may not change their own class.
     cg.send({ t: 'setClass', cls: 'marksman' });
     await sleep(400);
@@ -1308,11 +1337,11 @@ async function main() {
     assert.equal(sj.cls, 'gunner', 'soloJoined carries the chosen class');
     const clsSoloSnap = await cs.waitFor('snapshot', (m) => {
       const p = m.players.find((q) => q.id === cs.id);
-      return p && p.inMag === 150;
+      return p && p.inMag === 120;
     });
     const soloP = clsSoloSnap.players.find((q) => q.id === cs.id);
     assert.equal(soloP.mags, 2, 'solo gunner loads 2 spare mags');
-    console.log('ok - solo join with cls gunner: soloJoined + 150 in mag, 2 spares');
+    console.log('ok - solo join with cls gunner: soloJoined + 120 in mag, 2 spares');
     cs.send({ t: 'leaveSolo' });
     await cs.waitFor('soloLeft');
     cs.close();
@@ -1330,8 +1359,9 @@ async function main() {
       shooter.send({ t: 'shot', targetId });
       return shooter.waitFor('shot', (m) => m.shooterId === shooter.id, 5000);
     };
-    // Marksman hip fire at 56 m: normal table, 34 damage — and the
-    // 1 shot/sec gate drops the second shot sent 200 ms later.
+    // Marksman hip fire at 56 m: normal table, 34 damage — and from
+    // the hip he fires at the rifleman's rate, so two shots 200 ms
+    // apart both land (Lior, 26/11/2026).
     await place(cm, 0, -28, { aiming: false });
     await place(cg, 0, 28);
     await sleep(400);
@@ -1341,11 +1371,13 @@ async function main() {
     cm.send({ t: 'shot', targetId: cg.id });
     await sleep(500);
     const hipShots = cm.inbox.filter((m) => m.t === 'shot' && m.shooterId === cm.id);
-    assert.equal(hipShots.length, 1, `marksman fire rate is 1/sec, got ${hipShots.length} shots`);
+    assert.equal(hipShots.length, 2, `marksman hip fire rate is the rifleman's, got ${hipShots.length} shots`);
     assert.equal(hipShots[0].hit, true, 'marksman hip fire at 56 m must hit');
     assert.equal(hipShots[0].damage, 34, 'marksman hip fire past 50 m is 34');
     assert.equal(hipShots[0].targetHealth, 66, 'target health 100 - 34');
-    console.log('ok - marksman hip fire at 56 m: 34 damage; 2nd shot inside 1 s dropped');
+    assert.equal(hipShots[1].damage, 34, 'marksman 2nd hip shot at 56 m is 34');
+    assert.equal(hipShots[1].targetHealth, 32, 'target health 66 - 34');
+    console.log('ok - marksman hip fire at 56 m: 34 damage, twice in 200 ms');
     // Gunner standing at 30 m: out of reach, a miss — no damage.
     await place(cm, 0, -15, { aiming: false });
     await place(cg, 0, 15, { crouch: false });
@@ -1382,16 +1414,25 @@ async function main() {
     const rs = await cg.waitFor('reloadStart', (m) => m.playerId === cg.id, 5000);
     assert.equal(rs.reloadMs, 5000, 'gunner reload is 5000 ms');
     console.log('ok - gunner reloadStart carries reloadMs 5000');
-    // Marksman ADS at 56 m: one hit kills at any range.
+    // Marksman ADS at 56 m: one hit kills at any range — and the
+    // 1 shot/sec gate still holds while aiming, so a second shot
+    // 200 ms later is dropped.
     await place(cm, 0, -28, { aiming: true });
     await place(cg, 0, 28);
     await sleep(1500); // clear of the marksman's 1 s gate
-    const ads = await shotBy(cm, cg.id);
+    cm.inbox.length = 0;
+    cm.send({ t: 'shot', targetId: cg.id });
+    await sleep(200);
+    cm.send({ t: 'shot', targetId: cg.id });
+    await sleep(500);
+    const adsShots = cm.inbox.filter((m) => m.t === 'shot' && m.shooterId === cm.id);
+    assert.equal(adsShots.length, 1, `marksman ADS fire rate is 1/sec, got ${adsShots.length} shots`);
+    const ads = adsShots[0];
     assert.equal(ads.hit, true, 'marksman ADS at 56 m must hit');
     assert.equal(ads.damage, 100, 'marksman ADS kills at any range');
     assert.equal(ads.killed, true, 'marksman ADS at 56 m kills');
     assert.equal(ads.targetHealth, 0, 'target health 0 after the ADS kill');
-    console.log('ok - marksman ADS at 56 m: 100 damage, kill');
+    console.log('ok - marksman ADS at 56 m: 100 damage, kill; 2nd shot inside 1 s dropped');
     for (const c of [cm, cg]) c.close();
     await sleep(300);
 
@@ -1567,7 +1608,7 @@ async function main() {
       const p = m.players.find((q) => q.id === na2.id);
       return p && p.cls === 'gunner';
     });
-    assert.equal(naGun.players.find((q) => q.id === na2.id).inMag, 150, 'with no admin, the host assigns the gunner');
+    assert.equal(naGun.players.find((q) => q.id === na2.id).inMag, 120, 'with no admin, the host assigns the gunner');
     console.log('ok - with no admin, the host assigns a class');
     na2.send({ t: 'setClass', playerId: na1.id, cls: 'gunner' });
     await sleep(400);
@@ -1617,8 +1658,8 @@ async function main() {
       const p = m.players.find((q) => q.id === ad2.id);
       return p && p.cls === 'gunner';
     });
-    assert.equal(gunnerState.players.find((q) => q.id === ad2.id).inMag, 150, 'the admin-assigned gunner loads 150');
-    console.log('ok - admin setClass works (gunner, 150 in mag)');
+    assert.equal(gunnerState.players.find((q) => q.id === ad2.id).inMag, 120, 'the admin-assigned gunner loads 120');
+    console.log('ok - admin setClass works (gunner, 120 in mag)');
     ad1.send({ t: 'rename', playerId: ad2.id, name: 'RenamedB' });
     const renamed = await ad1.waitFor('state', (m) => {
       const p = m.players.find((q) => q.id === ad2.id);
@@ -1688,6 +1729,169 @@ async function main() {
     assert.equal(stillB.players.find((q) => q.id === ad2.id).team, 'B', 'setTeam mid-match is ignored');
     console.log('ok - setTeam mid-match is ignored');
     for (const c of [ad1, ad2]) c.close();
+    await sleep(300);
+
+    // Scenario 22 (wall impacts): the impact point rides the shot.
+    const im1 = new Client('ImpOne');
+    const im2 = new Client('ImpTwo');
+    for (const c of [im1, im2]) await c.ready();
+    im1.send({ t: 'join', name: 'ImpOne', team: 'A' });
+    im2.send({ t: 'join', name: 'ImpTwo', team: 'B' });
+    await im1.waitFor('state', (m) => m.players.length === 2);
+    await im1.becomeAdmin();
+    im1.send({ t: 'start' });
+    await waitPrepEnd(im1);
+    im2.inbox.length = 0;
+    im1.send({ t: 'shot', targetId: null, impact: { x: 1.24, y: 0.87, z: -3.33 } });
+    const echo = await im2.waitFor('shot', (m) => m.shooterId === im1.id && m.impact != null);
+    assert.deepEqual(echo.impact, { x: 1.2, y: 0.9, z: -3.3 }, 'impact is echoed, rounded to 1 decimal');
+    console.log('ok - impact point is echoed in the shot broadcast');
+    await sleep(200);
+    im2.inbox.length = 0;
+    im1.send({ t: 'shot', targetId: null });
+    const noImpact = await im2.waitFor('shot', (m) => m.shooterId === im1.id);
+    assert.equal(noImpact.impact, null, 'a shot without an impact broadcasts null');
+    console.log('ok - shot without impact broadcasts null');
+    await sleep(200);
+    im2.inbox.length = 0;
+    im1.send({ t: 'shot', targetId: null, impact: { x: 'a', y: null, z: {} } });
+    const badImpact = await im2.waitFor('shot', (m) => m.shooterId === im1.id);
+    assert.equal(badImpact.impact, null, 'a malformed impact is dropped');
+    console.log('ok - malformed impact is dropped');
+    for (const c of [im1, im2]) c.close();
+    await sleep(300);
+
+    // Scenario 23 (admin spectator, bird's-eye).
+    const sp1 = new Client('SpecAdmin');
+    const sp2 = new Client('SpecMate');
+    const sp3 = new Client('SpecFoe');
+    for (const c of [sp1, sp2, sp3]) await c.ready();
+    sp1.send({ t: 'join', name: 'SpecAdmin', team: 'A' });
+    sp2.send({ t: 'join', name: 'SpecMate', team: 'A' });
+    sp3.send({ t: 'join', name: 'SpecFoe', team: 'B' });
+    await sp1.waitFor('state', (m) => m.players.length === 3);
+    await sp1.becomeAdmin();
+    // A non-admin cannot spectate.
+    sp2.inbox.length = 0;
+    sp2.send({ t: 'spectate' });
+    await sleep(500);
+    assert.equal(sp2.inbox.filter((m) => m.t === 'spectateJoined').length, 0, 'a non-admin spectate is ignored');
+    console.log('ok - non-admin spectate is ignored');
+    // The admin spectates: leaves the player list, keeps the admin flag.
+    sp1.send({ t: 'spectate' });
+    const joined = await sp1.waitFor('spectateJoined', () => true);
+    assert.ok(joined.id < 0, 'the spectator id is negative (not a player id)');
+    const specState = await sp1.waitFor('state', (m) => m.adminSpectating === true);
+    assert.equal(specState.players.length, 2, 'the spectator is no longer a player');
+    assert.ok(!specState.players.some((q) => q.name === 'SpecAdmin'), 'no figure for the spectator');
+    console.log('ok - admin spectates, leaves the player list, keeps the admin flag');
+    // A non-admin start stays rejected while the admin spectates.
+    sp3.inbox.length = 0;
+    sp3.send({ t: 'start' });
+    await sleep(400);
+    assert.ok(sp3.inbox.some((m) => m.t === 'error' && /Only the admin/.test(m.message)), 'start is still admin-only');
+    console.log('ok - start stays admin-only while the admin spectates');
+    // The spectating admin starts the match from above.
+    sp1.send({ t: 'start' });
+    await sp2.waitFor('roundStart', (m) => m.round === 1, 5000);
+    console.log('ok - spectating admin starts the match');
+    // The spectator receives snapshots (bird's-eye view data).
+    await sp1.waitFor('snapshot', (m) => m.players.length === 2, 5000);
+    console.log('ok - spectator receives snapshots');
+    // The spectator cannot shoot.
+    sp2.inbox.length = 0;
+    sp1.send({ t: 'shot', targetId: sp3.id });
+    await sleep(500);
+    assert.equal(sp2.inbox.filter((m) => m.t === 'shot' && m.shooterId === joined.id).length, 0, 'a spectator shot is ignored');
+    console.log('ok - spectator cannot shoot');
+    // Leaving spectator mode returns to the lobby, admin flag clears.
+    // (Clear the inbox first: waitFor returns the OLDEST match, and an
+    // old pre-spectate state also has adminSpectating false.)
+    sp1.inbox.length = 0;
+    sp1.send({ t: 'leaveSpectate' });
+    await sp1.waitFor('spectateLeft', () => true);
+    const afterLeave = await sp1.waitFor('state', (m) => m.adminSpectating === false);
+    assert.equal(afterLeave.players.length, 2, 'the room still has its two players');
+    console.log('ok - leaveSpectate returns to the lobby');
+    for (const c of [sp1, sp2, sp3]) c.close();
+    await sleep(300);
+
+    // Scenario 24 (expiring invite links).
+    const iv1 = new Client('InvAdmin');
+    const iv2 = new Client('InvGuest');
+    for (const c of [iv1, iv2]) await c.ready();
+    iv1.send({ t: 'join', name: 'InvAdmin', team: 'A' });
+    iv2.send({ t: 'join', name: 'InvGuest', team: 'B' });
+    await iv1.waitFor('state', (m) => m.players.length === 2);
+    await iv1.becomeAdmin();
+    // A non-admin cannot create an invite.
+    iv2.inbox.length = 0;
+    iv2.send({ t: 'createInvite' });
+    await sleep(500);
+    assert.equal(iv2.inbox.filter((m) => m.t === 'inviteCreated').length, 0, 'a non-admin createInvite is ignored');
+    console.log('ok - non-admin createInvite is ignored');
+    // The admin creates one: random 8-char code, expiry ~TTL out.
+    iv1.send({ t: 'createInvite' });
+    const created = await iv1.waitFor('inviteCreated', () => true);
+    assert.equal(typeof created.code, 'string', 'an invite code is returned');
+    assert.equal(created.code.length, 8, 'the code is 8 chars');
+    assert.ok(created.expiresAt > Date.now() && created.expiresAt <= Date.now() + 1500, 'the invite expires ~TTL out');
+    console.log('ok - admin creates an invite link');
+    // A live code checks valid; a bogus one does not.
+    iv1.send({ t: 'checkInvite', code: created.code });
+    const live = await iv1.waitFor('inviteStatus', (m) => m.code === created.code);
+    assert.equal(live.valid, true, 'a live invite checks valid');
+    console.log('ok - live invite checks valid');
+    iv2.send({ t: 'checkInvite', code: 'bogus123' });
+    const bogus = await iv2.waitFor('inviteStatus', (m) => m.code === 'bogus123');
+    assert.equal(bogus.valid, false, 'a bogus invite checks invalid');
+    console.log('ok - bogus invite checks invalid');
+    // After the TTL passes, the same code reports invalid.
+    await sleep(1800);
+    iv1.send({ t: 'checkInvite', code: created.code });
+    const stale = await iv1.waitFor('inviteStatus', (m) => m.code === created.code && m.valid === false);
+    assert.equal(stale.valid, false, 'an expired invite checks invalid');
+    console.log('ok - expired invite checks invalid');
+    for (const c of [iv1, iv2]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 25: round duration
+    // (Lior, 26/11/2026). The admin sets the round length in minutes
+    // from the lobby; it applies from the next round. A non-admin's
+    // set is ignored. The test env runs ROUND_MS=60000 (1 min), so
+    // setting 2 must stretch the clock to ~120 s.
+    const rd1 = new Client('RdAdmin');
+    const rd2 = new Client('RdMate');
+    for (const c of [rd1, rd2]) await c.ready();
+    rd1.send({ t: 'join', name: 'RdAdmin', team: 'A' });
+    rd2.send({ t: 'join', name: 'RdMate', team: 'B' });
+    await rd1.waitFor('state', (m) => m.players.length === 2);
+    await rd1.becomeAdmin();
+    const rdDefault = await rd1.waitFor('state', (m) => m.roundDurationMin != null);
+    assert.equal(rdDefault.roundDurationMin, 1, 'default round length is the env ROUND_MS (1 min)');
+    console.log('ok - default round length is 1 min (env)');
+    rd2.send({ t: 'setRoundDuration', minutes: 5 });
+    await sleep(400);
+    const rdStill = rd1.findLast('state', (m) => m.roundDurationMin != null);
+    assert.equal(rdStill.roundDurationMin, 1, 'a non-admin setRoundDuration is ignored');
+    console.log('ok - non-admin setRoundDuration is ignored');
+    rd1.send({ t: 'setRoundDuration', minutes: 2 });
+    const rdSet = await rd1.waitFor('state', (m) => m.roundDurationMin === 2);
+    assert.equal(rdSet.roundDurationMin, 2, 'admin setRoundDuration to 2 min');
+    console.log('ok - admin sets the round length to 2 min');
+    // Prep is a shared toggle — an earlier scenario may have left it
+    // on, which would put the 2 min clock after a 5 s prep. Turn it
+    // off so the clock reads ~120 s from the start.
+    rd1.send({ t: 'setPrepEnabled', enabled: false });
+    await rd1.waitFor('state', (m) => m.prepEnabled === false);
+    rd1.send({ t: 'start' });
+    await rd1.waitFor('roundStart', (m) => m.round === 1, 5000);
+    await waitPrepEnd(rd1);
+    const rdSnap = await rd1.waitFor('snapshot', (m) => m.phase === 'playing' && m.timeLeftMs > 0, 5000);
+    assert.ok(rdSnap.timeLeftMs > 115000 && rdSnap.timeLeftMs <= 120000,
+      `round clock is ~120 s, got ${rdSnap.timeLeftMs} ms`);
+    console.log('ok - round with admin-set 2 min runs a ~120 s clock');
+    for (const c of [rd1, rd2]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
