@@ -121,10 +121,23 @@ check('floor height inside a house follows the current floor', () => {
 });
 
 check('stairs interpolate from 0 to 3', () => {
-  // West house cz=0: stair strip x -15.5..-13.5, z -4..+2.
-  assert.equal(floorHeightAt(-14.5, -4, 0), 0);
-  assert.equal(floorHeightAt(-14.5, -1, 0), 1.5);
-  assert.equal(floorHeightAt(-14.5, 2, 0), 3);
+  // West house cz=0: stair strip x -15.5..-13.5, z -2.5..+1 (27/11/2026,
+  // post-v41 item 9: was z -4..+2 — a 3.5 m flight, not a 6 m ramp).
+  assert.equal(floorHeightAt(-14.5, -2.5, 0), 0);
+  assert.equal(floorHeightAt(-14.5, -0.75, 0), 1.5);
+  assert.equal(floorHeightAt(-14.5, 1, 0), 3);
+});
+
+check('stairs are steep flights, not ramps', () => {
+  // Post-v41 item 9: 3.5 m run for a 3 m rise (~40.6°, was 26.6°).
+  for (const s of stairRamps()) {
+    assert.equal(s.run, 3.5, `flight run is 3.5 m, got ${s.run}`);
+    assert.equal(s.rise, 3, `flight rise is 3 m, got ${s.rise}`);
+  }
+  for (const s of stairRamps(LAYOUTS.large)) {
+    assert.equal(s.run, 3.5, `large flight run is 3.5 m, got ${s.run}`);
+    assert.equal(s.rise, 3, `large flight rise is 3 m, got ${s.rise}`);
+  }
 });
 
 check('open street has no collision push', () => {
@@ -314,9 +327,9 @@ check('tall houses #8/#13: 3 floors, second stair flight, 9 m walls', () => {
     assert.ok(h.stair2, `house ${n} has a second flight`);
   }
   // #8 (west): stair1 x -15.5..-13.5, stair2 the adjacent strip -13.5..-11.5.
-  assert.deepEqual(byNumber.get(8).stair2, { x0: -13.5, x1: -11.5, z0: -20, z1: -14 });
+  assert.deepEqual(byNumber.get(8).stair2, { x0: -13.5, x1: -11.5, z0: -18.5, z1: -15 });
   // #13 (east): stair1 x 13.5..15.5, stair2 11.5..13.5.
-  assert.deepEqual(byNumber.get(13).stair2, { x0: 11.5, x1: 13.5, z0: 12, z1: 18 });
+  assert.deepEqual(byNumber.get(13).stair2, { x0: 11.5, x1: 13.5, z0: 13.5, z1: 17 });
   // Every other large house is 2 floors with no second flight.
   for (const h of LAYOUTS.large.houses) {
     if (h.number !== 8 && h.number !== 13) {
@@ -329,9 +342,9 @@ check('tall houses #8/#13: 3 floors, second stair flight, 9 m walls', () => {
   assert.equal(floorHeightAt(-11, -16, 0, L), 0);
   assert.equal(floorHeightAt(-11, -16, 3, L), 3);
   assert.equal(floorHeightAt(-11, -16, 5, L), 6, 'above 4.5 m: floor 3');
-  assert.equal(floorHeightAt(-12.5, -20, 3, L), 3, 'stair2 bottom');
-  assert.equal(floorHeightAt(-12.5, -17, 3, L), 4.5, 'stair2 middle');
-  assert.equal(floorHeightAt(-12.5, -14, 3, L), 6, 'stair2 top');
+  assert.equal(floorHeightAt(-12.5, -18.5, 3, L), 3, 'stair2 bottom');
+  assert.equal(floorHeightAt(-12.5, -16.75, 3, L), 4.5, 'stair2 middle');
+  assert.equal(floorHeightAt(-12.5, -15, 3, L), 6, 'stair2 top');
   // 2-floor houses are unaffected by the 4.5 m rule.
   assert.equal(floorHeightAt(-11, -32, 5, L), 3, '2-floor house caps at 3');
   // Roof at y 9 on tall houses, y 6 elsewhere (visual boxes).
@@ -466,9 +479,9 @@ check('large layout: E-W house doors, floors, stairs, line of sight', () => {
   // Floor height inside #4 follows the current floor; stairs run along x.
   assert.equal(floorHeightAt(22, -11.3, 0, L), 0);
   assert.equal(floorHeightAt(22, -11.3, 3, L), 3);
-  assert.equal(floorHeightAt(19, -15.3, 0, L), 0, 'E-W stair bottom');
+  assert.equal(floorHeightAt(20.25, -15.3, 0, L), 0, 'E-W stair bottom');
   assert.equal(floorHeightAt(22, -15.3, 0, L), 1.5, 'E-W stair middle');
-  assert.equal(floorHeightAt(25, -15.3, 0, L), 3, 'E-W stair top');
+  assert.equal(floorHeightAt(23.75, -15.3, 0, L), 3, 'E-W stair top');
   // Line of sight: out of #4's door onto the E-W road, and blocked
   // through the solid band next to the door.
   assert.equal(hasLineOfSight(22, 1.6, -11.3, 22, 1.2, 0, L), true, 'through the E-W door');
