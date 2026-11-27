@@ -56,6 +56,19 @@
       <span id="adminError" class="adminError hidden"></span>
     </div>
 
+    <!-- Invite link (27/11/2026, v41): right below the admin login row,
+         visible as soon as the admin logs in — even before joining a
+         team (the admin code can be entered first now). -->
+    <div id="inviteRow" class="joinRow hidden">
+      <span class="classLabel">Invite link:</span>
+      <button id="createInviteBtn" class="classBtn">Create (1 hour)</button>
+    </div>
+    <div id="inviteOut" class="joinRow hidden">
+      <input id="inviteLinkInput" readonly>
+      <button id="copyInviteBtn" class="classBtn">Copy</button>
+      <span id="inviteExpiry" class="classLabel"></span>
+    </div>
+
     <div id="inviteExpired" class="hidden">
       <p>This invite link has expired — ask the admin for a new one.</p>
     </div>
@@ -81,12 +94,13 @@
         <button class="classBtn activeChoice" data-cls="rifleman">Rifleman</button>
         <button class="classBtn" data-cls="marksman">Marksman</button>
         <button class="classBtn" data-cls="gunner">Machine gunner</button>
+        <button class="classBtn" data-cls="missile">טילן</button>
       </div>
       <div class="joinRow" id="soloGrenadeRow">
         <span class="classLabel">Solo grenades:</span>
         <button id="soloGrenadeBtn" class="classBtn activeChoice">On</button>
       </div>
-      <p class="hint">Marksman: x4 scope, one shot a second, an aimed hit kills at any range.<br>Machine gunner: full-auto, 120-round mags, deadly up close standing, like a rifleman kneeling.<br>Grenades: two per round — press a button, it fills for 1.5 seconds, then the grenade flies 10 m and explodes 3 seconds later. The toggle applies on the next solo entry.</p>
+      <p class="hint">Marksman: x4 scope, one shot a second, an aimed hit kills at any range.<br>Machine gunner: full-auto, 120-round mags, deadly up close standing, like a rifleman kneeling.<br>Missile soldier (טילן): a shoulder missile instead of grenades — 2 per round; hold the button 3 s to charge, it flies straight and hits even behind a wall.<br>Grenades: two per round — press a button, it fills for 1.5 seconds, then the grenade flies 10 m and explodes 3 seconds later. The toggle applies on the next solo entry.</p>
     </div>
 
     <div id="teamsBox" class="hidden">
@@ -127,17 +141,19 @@
           <button id="roundDurationBtn" class="classBtn">Set</button>
         </div>
         <div class="joinRow">
-          <span class="classLabel">Watch:</span>
-          <button id="spectateBtn" class="classBtn">Spectate (bird's-eye)</button>
+          <span class="classLabel">Map:</span>
+          <button id="mapSmallBtn" class="classBtn activeChoice">Small (10 houses)</button>
+          <button id="mapLargeBtn" class="classBtn">Large (20 houses)</button>
+        </div>
+        <div class="joinRow hidden" id="tallSpawnRow">
+          <span class="classLabel">Tall building:</span>
+          <button id="tallOffBtn" class="classBtn activeChoice">Off</button>
+          <button id="tall8Btn" class="classBtn">#8 NW</button>
+          <button id="tall13Btn" class="classBtn">#13 SE</button>
         </div>
         <div class="joinRow">
-          <span class="classLabel">Invite link:</span>
-          <button id="createInviteBtn" class="classBtn">Create (1 hour)</button>
-        </div>
-        <div id="inviteOut" class="joinRow hidden">
-          <input id="inviteLinkInput" readonly>
-          <button id="copyInviteBtn" class="classBtn">Copy</button>
-          <span id="inviteExpiry" class="classLabel"></span>
+          <span class="classLabel">Watch:</span>
+          <button id="spectateBtn" class="classBtn">Spectate (bird's-eye)</button>
         </div>
       </div>
       <div class="joinRow">
@@ -167,10 +183,15 @@
       <div id="emptyCaption">EMPTY</div>
       <div id="captureBar" class="hidden"><span id="captureLabel"></span><div class="capture-track"><div id="captureFill"></div></div></div>
       <div id="connBanner" class="hidden">Connection lost — reconnecting…</div>
-      <button id="exitSoloBtn" class="hidden">EXIT SOLO</button>
-      <button id="exitBtn" class="hidden">EXIT</button>
-      <button id="specExitBtn" class="hidden">EXIT SPECTATE</button>
+      <!-- One universal back button (27/11/2026, v41): the same ↩ in the
+           top-left corner for every player in every game state — it
+           sends the leave matching the mode (leave / leaveSolo /
+           leaveSpectate). Replaces EXIT / EXIT SOLO / EXIT SPECTATE. -->
+      <button id="backBtn" class="hidden" aria-label="Back to lobby">↩</button>
+      <button id="midSpectateBtn" class="hidden">👁 SPECTATE</button>
       <button id="specRecBtn" class="hidden">● REC</button>
+      <button id="specRejoinBtn" class="hidden">↩ REJOIN TEAM</button>
+      <button id="ghostToggleBtn" class="hidden" aria-label="Toggle ghost view"></button>
       <button id="specActionBtn" class="hidden primary">START</button>
       <button id="mapBtn">MAP</button>
       <div id="fsRow">
@@ -295,7 +316,8 @@
             <line x1="62" y1="158" x2="70" y2="153"/><circle cx="71" cy="152" r="3" stroke="none"/>
             <g id="helpLeaderClimb"><line x1="197" y1="158" x2="197" y2="152"/><circle cx="197" cy="150" r="3" stroke="none"/></g>
             <line x1="262" y1="300" x2="242" y2="300"/><circle cx="240" cy="300" r="3" stroke="none"/>
-            <line x1="715" y1="108" x2="715" y2="113"/><circle cx="715" cy="115" r="3" stroke="none"/>
+            <line x1="632" y1="94" x2="670" y2="94"/><circle cx="672" cy="94" r="3" stroke="none"/>
+            <line x1="720" y1="112" x2="706" y2="160"/><circle cx="705" cy="162" r="3" stroke="none"/>
             <line x1="794" y1="307" x2="794" y2="302"/><circle cx="794" cy="300" r="3" stroke="none"/>
             <line x1="705" y1="262" x2="705" y2="257"/><circle cx="705" cy="255" r="3" stroke="none"/>
             <line x1="405" y1="276" x2="428" y2="293"/><circle cx="430" cy="295" r="3" stroke="none"/>
@@ -314,6 +336,7 @@
         <div class="help-callout" style="left:10px; top:158px;">מסך מלא</div>
         <div class="help-callout" id="helpCoClimb" style="left:150px; top:158px;">טיפוס דרך חלון</div>
         <div class="help-callout" style="left:262px; top:285px;">תנועה</div>
+        <div class="help-callout" style="left:440px; top:78px;">רימון / טיל — לחיצה והחזקה</div>
         <div class="help-callout" style="left:660px; top:82px;">החלקה לטעינה</div>
         <div class="help-callout" style="left:764px; top:307px;">כריעה</div>
         <div class="help-callout" style="left:675px; top:262px;">כוונת</div>
@@ -321,6 +344,27 @@
         <div class="help-callout" style="left:422px; top:182px; transform:translateX(-50%);">תזיז את הרובה כדי להזיז את המבט</div>
         <div id="helpTitle">איך משחקים?</div>
         <button id="helpCloseBtn" aria-label="Close help">✕</button>
+      </div>
+      <!-- Desktop help slide (27/11/2026, v41): the same "?" button, but
+           a keyboard/mouse key list instead of the touch callouts —
+           shown when the device has no coarse pointer. -->
+      <div id="helpSlideDesktop" class="hidden" dir="rtl">
+        <div class="helpDesktopPanel">
+          <div class="helpDesktopTitle">איך משחקים? — מחשב</div>
+          <div class="helpKeys">
+            <div><kbd>W A S D</kbd><span>תנועה</span></div>
+            <div><kbd>עכבר</kbd><span>מבט — לחיצה על המסך נועלת את העכבר (CLICK TO AIM)</span></div>
+            <div><kbd>קליק שמאלי</kbd><span>ירי</span></div>
+            <div><kbd>קליק ימני</kbd><span>כוונת</span></div>
+            <div><kbd>R</kbd><span>טעינה</span></div>
+            <div><kbd>C</kbd><span>כריעה</span></div>
+            <div><kbd>G</kbd><span>רימון / טיל (טילן: החזק 3 שניות לטעינה)</span></div>
+            <div><kbd>M</kbd><span>מפה</span></div>
+            <div><kbd>F</kbd><span>מסך מלא</span></div>
+            <div><kbd>E</kbd><span>טיפוס דרך חלון (ליד חלון קומת קרקע)</span></div>
+          </div>
+          <button id="helpCloseBtnDesktop" aria-label="Close help">✕</button>
+        </div>
       </div>
       <button id="helpBtn" class="hidden" aria-label="Show help">?</button>
     </div>
