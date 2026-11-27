@@ -62,12 +62,17 @@ function nsHouse(cx, cz, side, number, tall = false) {
     z0: cz - 2.5,
     z1: cz + 1,
   };
-  // Second flight (tall houses only): the adjacent 2 m strip towards the
-  // house centre, same z range, ascending +z from y=3 to y=6.
+  // Second flight (tall houses only, 27/11/2026 post-v41 item 11):
+  // the 2 m strip along the OPPOSITE (front/street-facing) wall, same
+  // z range, ascending +z from y=3 to y=6 — so the player must cross
+  // floor 2 to climb on. (Was the adjacent strip towards the centre;
+  // the two flights sat side by side.) pushSlab reads h.stair2, so
+  // the floor-3 opening moves with it; defender spawns and NPC window
+  // spots avoid both strips — see map-test.mjs.
   const stair2 = tall
     ? {
-        x0: side < 0 ? cx - 2.5 : cx + 0.5,
-        x1: side < 0 ? cx - 0.5 : cx + 2.5,
+        x0: side < 0 ? cx + 2.5 : cx - 4.5,
+        x1: side < 0 ? cx + 4.5 : cx - 2.5,
         z0: cz - 2.5,
         z1: cz + 1,
       }
@@ -581,9 +586,15 @@ const ROOF_COLOR = 0x7d7d7d;
 // wide: centre +/- 0.8) and an optional 1.2 m door at `doorCenter`.
 // Window openings are y 1.0..2.2 (ground), 4.0..5.2 (floor 2),
 // 7.0..8.2 (floor 3); solid bands fill below, between and above them.
-// topY is the wall height (6, or 9 for tall houses).
-function pushWall(boxes, axis, plane, from, to, winCenters, doorCenter, topY, floors) {
+// topY is the wall height (6, or 9 for tall houses). `center` is the
+// house-centre coordinate along the wall's normal axis (cx for 'x'
+// walls, cz for 'z' walls): every box it emits is tagged `inward`
+// ('px'/'nx'/'pz'/'nz') = the face whose outward normal points INTO
+// the house. The client renders a plain-plaster lining on those faces
+// only (27/11/2026 post-v41 item 12) — the exterior keeps the v7 atlas.
+function pushWall(boxes, axis, plane, from, to, winCenters, doorCenter, topY, floors, center) {
   const T = 0.15;
+  const inward = axis === 'x' ? (plane < center ? 'px' : 'nx') : (plane < center ? 'pz' : 'nz');
   const cuts = [from, to];
   for (const c of winCenters) cuts.push(c - 0.8, c + 0.8);
   if (doorCenter != null) cuts.push(doorCenter - 0.6, doorCenter + 0.6);
@@ -597,8 +608,8 @@ function pushWall(boxes, axis, plane, from, to, winCenters, doorCenter, topY, fl
     for (const c of winCenters) if (Math.abs(mid - c) < 0.8) kind = 'window';
     if (doorCenter != null && Math.abs(mid - doorCenter) < 0.6) kind = 'door';
     const box = (y0, y1) => (axis === 'x'
-      ? { x0: plane - T, x1: plane + T, z0: a, z1: b, y0, y1, color: WALL_COLOR }
-      : { x0: a, x1: b, z0: plane - T, z1: plane + T, y0, y1, color: WALL_COLOR });
+      ? { x0: plane - T, x1: plane + T, z0: a, z1: b, y0, y1, color: WALL_COLOR, inward }
+      : { x0: a, x1: b, z0: plane - T, z1: plane + T, y0, y1, color: WALL_COLOR, inward });
     if (kind === 'full') {
       boxes.push(box(0, topY));
     } else if (kind === 'door') {
@@ -644,21 +655,21 @@ export function visualBoxes(layout) {
       // two windows per floor. Back wall: two windows per floor as well
       // (v41 — the back wall is no longer solid).
       for (const wz of [h.z0, h.z1]) {
-        pushWall(boxes, 'z', wz, h.x0, h.x1, [h.cx - 3.5, h.cx + 3.5], null, topY, h.floors);
+        pushWall(boxes, 'z', wz, h.x0, h.x1, [h.cx - 3.5, h.cx + 3.5], null, topY, h.floors, h.cz);
       }
-      pushWall(boxes, 'x', backPlane(h), h.z0, h.z1, [h.cz - 3.5, h.cz + 3.5], null, topY, h.floors);
+      pushWall(boxes, 'x', backPlane(h), h.z0, h.z1, [h.cz - 3.5, h.cz + 3.5], null, topY, h.floors, h.cx);
       // Street-facing wall, with the door and two windows per floor.
-      pushWall(boxes, 'x', streetPlane(h), h.z0, h.z1, [h.cz - 3.5, h.cz + 3.5], h.cz, topY, h.floors);
+      pushWall(boxes, 'x', streetPlane(h), h.z0, h.z1, [h.cz - 3.5, h.cz + 3.5], h.cz, topY, h.floors, h.cx);
     } else {
       // East / west walls: two windows per floor.
       for (const wx of [h.x0, h.x1]) {
-        pushWall(boxes, 'x', wx, h.z0, h.z1, [h.cz - 3.5, h.cz + 3.5], null, topY, h.floors);
+        pushWall(boxes, 'x', wx, h.z0, h.z1, [h.cz - 3.5, h.cz + 3.5], null, topY, h.floors, h.cx);
       }
       // Back wall (away from the E-W road): two windows per floor.
-      pushWall(boxes, 'z', backPlane(h), h.x0, h.x1, [h.cx - 3.5, h.cx + 3.5], null, topY, h.floors);
+      pushWall(boxes, 'z', backPlane(h), h.x0, h.x1, [h.cx - 3.5, h.cx + 3.5], null, topY, h.floors, h.cz);
       // Street-facing wall (towards the E-W road), with the door and two
       // windows per floor.
-      pushWall(boxes, 'z', streetPlane(h), h.x0, h.x1, [h.cx - 3.5, h.cx + 3.5], h.cx, topY, h.floors);
+      pushWall(boxes, 'z', streetPlane(h), h.x0, h.x1, [h.cx - 3.5, h.cx + 3.5], h.cx, topY, h.floors, h.cz);
     }
 
     // Ground-floor floor: a thin grey slab over the green ground plane.
