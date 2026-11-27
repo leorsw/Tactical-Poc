@@ -142,6 +142,35 @@
 //     still reports map large, and the solo player has no team. The
 //     old reading (a solo button that stays visible after joining a
 //     team) was wrong and is gone: solo never required a team pick.
+//   Scenario 39 (map toggle after leaving solo, post-v41 item 13):
+//     admin picks Large, enters Solo, leaves — the empty-room reset
+//     broadcasts map 'small', and a setMap small afterwards is a
+//     silent no-op (the client highlight bug was the solo
+//     early-return skipping renderMapRows — fixed in main.js).
+//   Scenario 40 (NPCs re-derived on a map change, post-v41 item 14):
+//     solo on the small map, host switches to Large — every NPC must
+//     sit at a valid large-map window spot and the set must have
+//     changed (stale small spots, e.g. z = +/-3.5, float mid-air).
+//   Scenario 41 (missile + crouch flags, post-v41 item 17): a
+//     charging Rocketeer relays missile:true with crouch:false
+//     standing, and missile:true with crouch:true while crouched —
+//     the inputs to the standing vs kneeling firing pose.
+//   Scenario 42 (leave the team, then solo, post-v41 item 18): an
+//     assigned admin leaves the team — the player record is dropped,
+//     the host migrates to the remaining player, the leaver gets
+//     'left', and they can then enter solo with the admin flag
+//     restored from the socket's pending-admin.
+//   Scenario 43 (entry gate, post-v41 item 20): direct entry is
+//     closed — a socket with no invite and no admin code gets
+//     entryDenied on join and on solo and never appears in the state;
+//     a valid invite admits; the admin code admits; an expired invite
+//     does not; a mid-match grace rejoin passes without an invite (a
+//     re-entry, not a new entry).
+//   Scenario 44 (an invite grants no admin, post-v41 item 21): a
+//     fresh visitor who enters with a valid invite joins as an
+//     ordinary player — the state shows admin false, they are not the
+//     host, and admin-only actions (setMap, createInvite) are ignored
+//     for them while an admin is present.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -187,8 +216,13 @@ async function waitFor(fn, timeoutMs, label) {
 }
 
 class Client {
-  constructor(name) {
+  constructor(name, opts = {}) {
     this.name = name;
+    // skipInvite: this socket proves entry another way (admin code, or
+    // a scenario that mints its own invite) — used by the inviter
+    // itself and by the entry-gate scenarios, never by ordinary
+    // scenario clients (their ready() proves a test invite).
+    this.skipInvite = !!opts.skipInvite;
     this.inbox = [];
     this.id = null;
     this.ws = new WebSocket(URL);
@@ -214,6 +248,16 @@ class Client {
 
   async ready() {
     await waitFor(() => this.ws.readyState === WebSocket.OPEN && this.id != null, 5000, `${this.name} connect`);
+    // Entry gate (27/11/2026, post-v41 item 20): every socket proves
+    // a valid invite before it may join — the harness mints a fresh
+    // test invite per client (the test TTL is 1.5 s, so one shared
+    // invite would expire). The invite flag lives on the socket, so a
+    // late join is still admitted.
+    if (!this.skipInvite) {
+      const code = await testInviteCode();
+      this.send({ t: 'checkInvite', code });
+      await this.waitFor('inviteStatus', (m) => m.valid === true, 5000);
+    }
   }
 
   send(obj) {
@@ -261,6 +305,40 @@ async function waitForServerUp() {
   }
 }
 
+// Test-invite minting (27/11/2026, post-v41 item 20): one persistent
+// unjoined-admin socket mints a fresh invite per client. It never
+// joins, so it never occupies a team slot — and adminPresent() counts
+// joined players/spectators only, so it never changes who may start
+// or set the map. (state.adminUnjoined reads true while it lives;
+// no scenario asserts it false.) Minting is serialized so two
+// clients racing ready() never share one inviteCreated.
+let inviter = null;
+let inviteMutex = Promise.resolve();
+
+async function ensureInviter() {
+  if (inviter) inviter.close();
+  inviter = new Client('inviter', { skipInvite: true });
+  await inviter.ready();
+  await inviter.becomeAdmin();
+}
+
+async function testInviteCode() {
+  const run = inviteMutex.then(async () => {
+    if (!inviter || inviter.ws.readyState !== WebSocket.OPEN) await ensureInviter();
+    const before = inviter.inbox.filter((m) => m.t === 'inviteCreated').length;
+    inviter.send({ t: 'createInvite' });
+    const created = await waitFor(
+      () => {
+        const list = inviter.inbox.filter((m) => m.t === 'inviteCreated');
+        return list.length > before ? list[list.length - 1] : null;
+      },
+      5000, 'inviter mints a test invite');
+    return created.code;
+  });
+  inviteMutex = run.catch(() => {});
+  return run;
+}
+
 async function main() {
   console.log('starting server on port', PORT);
   const server = spawn('node', ['server.mjs'], {
@@ -279,6 +357,8 @@ async function main() {
   try {
     await waitForServerUp(server);
     console.log('ok - server is up and serves / with 200');
+    await ensureInviter();
+    console.log('ok - test inviter is up (unjoined admin minting test invites)');
 
     // ------------------------------------------------ scenario 1: 2v2
     const a1 = new Client('A1');
@@ -2513,6 +2593,258 @@ async function main() {
     sm2.close();
     await sleep(300);
 
+    // ------------------------------------------------ scenario 39: the map
+    // toggle follows the server after leaving solo (post-v41 item 13).
+    // Admin picks Large, enters Solo, leaves — the empty-room reset
+    // broadcasts map 'small' while the client still thinks solo=true,
+    // and the old state handler skipped the toggle update (the solo
+    // early-return ran before renderMapRows). Server side pinned here:
+    // after leaveSolo the state reports map 'small', and a setMap
+    // small is a silent no-op. (The client highlight is covered by
+    // the puppeteer probe, not by this headless suite — no DOM here.)
+    const m13 = new Client('MapToggle');
+    await m13.ready();
+    m13.send({ t: 'admin', code: 'test-code' });
+    await m13.waitFor('adminOk', () => true, 5000);
+    m13.send({ t: 'setMap', map: 'large' });
+    await m13.waitFor('state', (m) => m.map === 'large', 5000);
+    m13.send({ t: 'solo', name: 'MapToggle', cls: 'rifleman' });
+    await m13.waitFor('soloJoined', () => true, 5000);
+    m13.inbox.length = 0; // a stale small state from before the switch must not satisfy the wait
+    m13.send({ t: 'leaveSolo' });
+    await m13.waitFor('soloLeft', () => true, 5000);
+    const m13Reset = await m13.waitFor('state', (m) => m.map === 'small', 5000);
+    assert.ok(m13Reset, 'the empty-room reset broadcasts map small after leaveSolo');
+    m13.send({ t: 'setMap', map: 'small' });
+    await sleep(400);
+    const m13Last = m13.findLast('state', () => true);
+    assert.equal(m13Last.map, 'small', 'setMap small after the reset is a no-op, map stays small');
+    console.log('ok - leaving solo resets the room map to small (broadcast) and setMap small is a no-op');
+    m13.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 40: NPCs are
+    // re-derived from the new layout on a map change (post-v41 item 14).
+    // A solo player on the small map, an observer watching snapshots:
+    // after the host switches to Large, every NPC must sit at a valid
+    // LARGE-map window spot, and the set must have changed — stale
+    // spots from the small map (e.g. z = +/-3.5, from the cz=0 houses)
+    // are mid-air on the large map, where no house has cz=0.
+    const w40 = new Client('NpcObserver');
+    await w40.ready();
+    w40.send({ t: 'join', name: 'NpcObserver', team: 'A' });
+    await w40.waitFor('state', (m) => m.players.length === 1);
+    const n40 = new Client('NpcSolo40');
+    await n40.ready();
+    n40.send({ t: 'solo', name: 'NpcSolo40' });
+    await n40.waitFor('soloJoined');
+    const npcSmall = await w40.waitFor('snapshot', (m) =>
+      m.players.filter((p) => p.npc === true).length === 10, 5000);
+    const spotSet = (name) => {
+      const s = new Set();
+      for (const h of mapMod.getLayout(name).houses) {
+        for (const z of [h.cz - 3.5, h.cz + 3.5]) for (const y of [0, 3]) {
+          s.add(`${h.side * 6.8},${y},${z}`);
+        }
+      }
+      return s;
+    };
+    const npcKey = (p) => `${p.x},${p.y},${p.z}`;
+    const smallSpots = spotSet('small');
+    const largeSpots = spotSet('large');
+    const smallNpcs = npcSmall.players.filter((p) => p.npc === true);
+    assert.ok(smallNpcs.every((p) => smallSpots.has(npcKey(p))),
+      `NPCs start on small-map window spots, got ${JSON.stringify(smallNpcs.map(npcKey))}`);
+    const beforeKeys = new Set(smallNpcs.map(npcKey));
+    // The observer joined first, so it is the host; with no admin in
+    // the room the host may switch maps. The solo player cannot (the
+    // joined setMap case blocks p.solo).
+    w40.send({ t: 'setMap', map: 'large' });
+    await w40.waitFor('state', (m) => m.map === 'large', 5000);
+    const npcLarge = await w40.waitFor('snapshot', (m) => {
+      const list = m.players.filter((p) => p.npc === true);
+      if (list.length !== 10) return false;
+      if (!list.every((p) => largeSpots.has(npcKey(p)))) return false;
+      return list.some((p) => !beforeKeys.has(npcKey(p)));
+    }, 5000);
+    assert.ok(npcLarge, 'after the map switch every NPC sits at a large-map window spot and the set changed');
+    console.log('ok - NPCs are re-derived from the new layout on a map change (no stale spots)');
+    for (const c of [w40, n40]) c.close();
+    await sleep(600); // the room resets to the small map once empty
+
+    // ------------------------------------------------ scenario 41: the
+    // missile + crouch flags relay together (post-v41 item 17). The
+    // client picks the firing pose from them: standing Rocketeer =
+    // missileFireStand, crouching Rocketeer = missileFire (kneel).
+    // Server side pinned here: a charging Rocketeer relays
+    // missile:true with crouch:false standing, and missile:true with
+    // crouch:true while crouched.
+    const m41a = new Client('PoseAdmin');
+    const m41b = new Client('PoseRocket');
+    for (const c of [m41a, m41b]) await c.ready();
+    m41a.send({ t: 'join', name: 'PoseAdmin', team: 'A' });
+    m41b.send({ t: 'join', name: 'PoseRocket', team: 'B' });
+    await m41a.waitFor('state', (m) => m.players.length === 2);
+    await m41a.becomeAdmin();
+    m41a.send({ t: 'setClass', playerId: m41b.id, cls: 'missile' });
+    await m41a.waitFor('state', (m) => m.players.some((p) => p.id === m41b.id && p.cls === 'missile'), 5000);
+    m41a.send({ t: 'setPrepEnabled', enabled: false });
+    await m41a.waitFor('state', (m) => m.prepEnabled === false);
+    m41a.send({ t: 'start' });
+    await m41a.waitFor('roundStart', (m) => m.round === 1);
+    await waitPrepEnd(m41a);
+    m41b.send({ t: 'missileCharge', on: true });
+    const m41Stand = await m41b.waitFor('snapshot', (m) => {
+      const me = m.players.find((p) => p.id === m41b.id);
+      return me && me.missile === true && me.crouch === false;
+    }, 5000);
+    assert.ok(m41Stand, 'a standing charging Rocketeer relays missile:true, crouch:false');
+    m41b.send({ t: 'move', x: 2, y: 0, z: 0, yaw: 0, pitch: 0, crouch: true });
+    const m41Crouch = await m41a.waitFor('snapshot', (m) => {
+      const me = m.players.find((p) => p.id === m41b.id);
+      return me && me.missile === true && me.crouch === true;
+    }, 5000);
+    assert.ok(m41Crouch, 'a crouching charging Rocketeer relays missile:true, crouch:true');
+    m41b.send({ t: 'missileCharge', on: false });
+    console.log('ok - missile + crouch flags relay together (standing vs crouched firing pose inputs)');
+    for (const c of [m41a, m41b]) c.close();
+    await sleep(600);
+
+    // ------------------------------------------------ scenario 42: leave
+    // the team, then go solo (post-v41 item 18). An assigned player had
+    // no way back to the join screen — the 'leave' path already existed
+    // for the EXIT button, and the lobby's Leave team button sends it.
+    // Host migrates to the earliest-joined remaining team player; the
+    // admin flag survives on the socket, so rejoining restores it.
+    const lt1 = new Client('LeaveTeam1');
+    const lt2 = new Client('LeaveTeam2');
+    for (const c of [lt1, lt2]) await c.ready();
+    lt1.send({ t: 'join', name: 'LeaveTeam1', team: 'A' });
+    await lt1.waitFor('state', (m) => m.players.length === 1);
+    await lt1.becomeAdmin();
+    lt2.send({ t: 'join', name: 'LeaveTeam2', team: 'B' });
+    const ltBoth = await lt1.waitFor('state', (m) => m.players.length === 2);
+    assert.equal(ltBoth.hostId, lt1.id, 'the first joiner is the host');
+    lt2.inbox.length = 0; // a stale 1-player state from before lt2 joined must not satisfy the wait
+    lt1.send({ t: 'leave' });
+    await lt1.waitFor('left', () => true, 5000);
+    const ltAfter = await lt2.waitFor('state', (m) => m.players.length === 1);
+    assert.equal(ltAfter.players[0].id, lt2.id, 'the leaver is gone from the state');
+    assert.equal(ltAfter.hostId, lt2.id, 'the host migrates to the remaining player');
+    lt1.send({ t: 'solo', name: 'LeaveTeam1', cls: 'rifleman' });
+    const ltSolo = await lt1.waitFor('soloJoined', () => true, 5000);
+    const ltState = await lt1.waitFor('state', (m) =>
+      m.players.some((p) => p.id === ltSolo.id && p.solo === true && p.team == null), 5000);
+    assert.ok(ltState.players.some((p) => p.id === ltSolo.id && p.admin === true),
+      'the admin flag survives the leave (socket pending-admin) and returns on the solo rejoin');
+    console.log('ok - Leave team returns to the join screen (host migrates, admin survives, solo works after)');
+    for (const c of [lt1, lt2]) c.close();
+    await sleep(600);
+
+    // ------------------------------------------------ scenario 43: the
+    // entry gate (post-v41 item 20). Direct entry is closed: a socket
+    // with no invite and no admin code gets entryDenied on join AND
+    // solo and never appears in the state; a valid invite admits; the
+    // admin code admits; an expired invite does not; a mid-match grace
+    // rejoin passes without an invite (a re-entry, not a new entry).
+    const eg1 = new Client('GateNoInvite', { skipInvite: true });
+    await eg1.ready();
+    eg1.send({ t: 'join', name: 'GateNoInvite', team: 'A' });
+    await eg1.waitFor('entryDenied', () => true, 5000);
+    assert.equal(eg1.inbox.filter((m) => m.t === 'joined').length, 0, 'a join without an invite or the admin code never joins');
+    eg1.inbox.length = 0; // clear the first denial so the solo denial is fresh
+    eg1.send({ t: 'solo', name: 'GateNoInvite', cls: 'rifleman' });
+    await eg1.waitFor('entryDenied', () => true, 5000);
+    assert.equal(eg1.inbox.filter((m) => m.t === 'soloJoined').length, 0, 'a solo without an invite is denied too');
+    console.log('ok - entry without an invite or the admin code is denied (join + solo)');
+    const eg2 = new Client('GateInvite', { skipInvite: true });
+    await eg2.ready();
+    const egCode = await testInviteCode();
+    eg2.send({ t: 'checkInvite', code: egCode });
+    await eg2.waitFor('inviteStatus', (m) => m.valid === true, 5000);
+    eg2.send({ t: 'join', name: 'GateInvite', team: 'A' });
+    await eg2.waitFor('joined', () => true, 5000);
+    // The denied socket never appears in the state another client sees
+    // (state is broadcast on events, so the denied socket itself may
+    // never receive one — the joiner’s state is the check).
+    const egState = await eg2.waitFor('state', (m) => m.players.some((p) => p.name === 'GateInvite'), 5000);
+    assert.ok(!egState.players.some((p) => p.name === 'GateNoInvite'), 'the denied socket never appears in the state');
+    console.log('ok - a valid invite admits entry');
+    const eg3 = new Client('GateAdmin', { skipInvite: true });
+    await eg3.ready();
+    await eg3.becomeAdmin();
+    eg3.send({ t: 'join', name: 'GateAdmin', team: 'B' });
+    await eg3.waitFor('joined', () => true, 5000);
+    const eg3State = await eg3.waitFor('state', (m) => m.players.some((p) => p.id === eg3.id && p.admin === true), 5000);
+    assert.ok(eg3State, 'the admin-code join carries admin');
+    console.log('ok - the admin code admits entry');
+    const eg4 = new Client('GateExpired', { skipInvite: true });
+    await eg4.ready();
+    const egOld = await testInviteCode();
+    await sleep(1700); // past the 1500 ms test invite TTL
+    eg4.send({ t: 'checkInvite', code: egOld });
+    const egStale = await eg4.waitFor('inviteStatus', (m) => m.code === egOld, 5000);
+    assert.equal(egStale.valid, false, 'an expired invite reports invalid');
+    eg4.send({ t: 'join', name: 'GateExpired', team: 'A' });
+    await eg4.waitFor('entryDenied', () => true, 5000);
+    assert.equal(eg4.inbox.filter((m) => m.t === 'joined').length, 0, 'an expired invite does not admit');
+    console.log('ok - an expired invite does not admit entry');
+    for (const c of [eg1, eg2, eg3, eg4]) c.close();
+    await sleep(600); // the room empties back to the lobby for the grace part
+    const egA = new Client('GateGraceA');
+    const egB = new Client('GateGraceB');
+    for (const c of [egA, egB]) await c.ready();
+    egA.send({ t: 'join', name: 'GateGraceA', team: 'A' });
+    egB.send({ t: 'join', name: 'GateGraceB', team: 'B' });
+    await egA.waitFor('state', (m) => m.players.length === 2);
+    await egA.becomeAdmin();
+    egA.send({ t: 'start' });
+    await egA.waitFor('state', (m) => m.phase === 'playing', 5000);
+    egB.close(); // clean disconnect mid-match opens the grace window
+    await sleep(300);
+    const egBack = new Client('GateGraceBack', { skipInvite: true });
+    await egBack.ready();
+    egBack.send({ t: 'join', name: 'GateGraceB', team: 'B' });
+    await egBack.waitFor('joined', () => true, 5000);
+    console.log('ok - a mid-match grace rejoin passes the gate without an invite');
+    for (const c of [egA, egBack]) c.close();
+    await sleep(600);
+
+    // ------------------------------------------------ scenario 44: an
+    // invite link grants no admin (post-v41 item 21). A fresh visitor
+    // who enters with a valid invite joins as an ordinary player: the
+    // state shows admin false, they are not the host, and admin-only
+    // actions (setMap, createInvite) are ignored for them while an
+    // admin is present.
+    const ivA = new Client('InviteeAdmin');
+    await ivA.ready();
+    ivA.send({ t: 'join', name: 'InviteeAdmin', team: 'A' });
+    await ivA.waitFor('joined', () => true, 5000);
+    await ivA.becomeAdmin();
+    const ivB = new Client('InviteeGuest', { skipInvite: true });
+    await ivB.ready();
+    const ivCode = await testInviteCode();
+    ivB.send({ t: 'checkInvite', code: ivCode });
+    await ivB.waitFor('inviteStatus', (m) => m.valid === true, 5000);
+    ivB.send({ t: 'join', name: 'InviteeGuest', team: 'B' });
+    await ivB.waitFor('joined', () => true, 5000);
+    const ivState = await ivB.waitFor('state', (m) =>
+      m.players.some((p) => p.id === ivB.id && p.admin === false), 5000);
+    assert.ok(ivState, 'an invitee joins with admin false');
+    assert.equal(ivState.players.find((p) => p.id === ivB.id).host, false, 'an invitee is not the host');
+    const ivBefore = ivB.findLast('state', () => true);
+    ivB.send({ t: 'setMap', map: ivBefore.map === 'large' ? 'small' : 'large' });
+    await sleep(400);
+    const ivAfter = ivB.findLast('state', () => true);
+    assert.equal(ivAfter.map, ivBefore.map, 'an invitee setMap is ignored (an admin is present)');
+    ivB.send({ t: 'createInvite' });
+    await sleep(400);
+    assert.equal(ivB.inbox.filter((m) => m.t === 'inviteCreated').length, 0, 'an invitee createInvite is ignored');
+    console.log('ok - a valid invite grants no admin (state admin false, not host, setMap + createInvite ignored)');
+    for (const c of [ivA, ivB]) c.close();
+    await sleep(600);
+
+    if (inviter) inviter.close();
     console.log('HEADLESS TEST PASSED');
   } catch (err) {
     console.error('HEADLESS TEST FAILED:', err.message);
