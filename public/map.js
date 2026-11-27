@@ -50,13 +50,17 @@ export const OBJECTIVE_R = 3.5;
 
 function nsHouse(cx, cz, side, number, tall = false) {
   const floors = tall ? 3 : 2;
-  // Stairs: a 2 m wide strip along the back wall, 6 m long in z,
-  // ascending towards +z from y=0 to y=3.
+  // Stairs: a 2 m wide strip along the back wall, 3.5 m long in z,
+  // ascending towards +z from y=0 to y=3 (27/11/2026, post-v41 item 9:
+  // the old 6 m ramp (26.6°) is now a 3.5 m flight (40.6°) rendered as
+  // real steps — see stairSteps() in main.js. The climb itself needs
+  // no code: floorHeightAt interpolates over the strip, and movement
+  // has no slope limit.)
   const stair = {
     x0: side < 0 ? cx - 4.5 : cx + 2.5,
     x1: side < 0 ? cx - 2.5 : cx + 4.5,
-    z0: cz - 4,
-    z1: cz + 2,
+    z0: cz - 2.5,
+    z1: cz + 1,
   };
   // Second flight (tall houses only): the adjacent 2 m strip towards the
   // house centre, same z range, ascending +z from y=3 to y=6.
@@ -64,8 +68,8 @@ function nsHouse(cx, cz, side, number, tall = false) {
     ? {
         x0: side < 0 ? cx - 2.5 : cx + 0.5,
         x1: side < 0 ? cx - 0.5 : cx + 2.5,
-        z0: cz - 4,
-        z1: cz + 2,
+        z0: cz - 2.5,
+        z1: cz + 1,
       }
     : null;
   return {
@@ -95,11 +99,12 @@ function ewHouse(cx, cz, number) {
   // opposite z-plane. side is still east (+1) / west (-1) of the N-S road.
   const northOfRoad = cz < 0;
   const backZ = northOfRoad ? cz - 5 : cz + 5;
-  // Stairs: a 2 m wide strip along the back wall, 6 m long in x,
-  // ascending towards +x from y=0 to y=3.
+  // Stairs: a 2 m wide strip along the back wall, 3.5 m long in x,
+  // ascending towards +x from y=0 to y=3 (27/11/2026, post-v41 item 9:
+  // was 6 m — see nsHouse).
   const stair = {
-    x0: cx - 3,
-    x1: cx + 3,
+    x0: cx - 1.75,
+    x1: cx + 1.75,
     z0: northOfRoad ? backZ : backZ - 2,
     z1: northOfRoad ? backZ + 2 : backZ,
   };
