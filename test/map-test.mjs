@@ -9,6 +9,7 @@ import {
   GROUND_WINDOWS,
   COLLIDERS,
   LAYOUTS,
+  WALL_COLOR,
   getLayout,
   spawnLayout,
   climbFadeAt,
@@ -137,6 +138,41 @@ check('stairs are steep flights, not ramps', () => {
   for (const s of stairRamps(LAYOUTS.large)) {
     assert.equal(s.run, 3.5, `large flight run is 3.5 m, got ${s.run}`);
     assert.equal(s.rise, 3, `large flight rise is 3 m, got ${s.rise}`);
+  }
+});
+
+check('second flight sits on the opposite wall from the first (item 11)', () => {
+  // Post-v41 item 11: in the tall houses the floor 2->3 flight moved
+  // from the adjacent strip (towards the centre) to the opposite
+  // (front/street-facing) wall, so the player must cross floor 2 to
+  // climb on. Same z range and +z ascent as the first flight.
+  const tall = getLayout('large').houses.filter((h) => h.floors === 3);
+  assert.equal(tall.length, 2, `expected 2 tall houses, got ${tall.length}`);
+  for (const h of tall) {
+    assert.ok(h.stair2, `tall house #${h.number} has no stair2`);
+    const mid1 = (h.stair.x0 + h.stair.x1) / 2 - h.cx;
+    const mid2 = (h.stair2.x0 + h.stair2.x1) / 2 - h.cx;
+    assert.ok(Math.sign(mid1) !== Math.sign(mid2),
+      `house #${h.number}: stair2 must mirror stair about cx (stair ${mid1.toFixed(1)}, stair2 ${mid2.toFixed(1)})`);
+    assert.equal(h.stair2.z0, h.stair.z0, `house #${h.number}: stair2 z0`);
+    assert.equal(h.stair2.z1, h.stair.z1, `house #${h.number}: stair2 z1`);
+    assert.equal(h.stair2.x1 - h.stair2.x0, 2, `house #${h.number}: stair2 is 2 m wide`);
+  }
+});
+
+check('every wall box tags its inward face (item 12)', () => {
+  // Post-v41 item 12: the client renders a plain-plaster lining on the
+  // inward face of every wall box — uniform plaster indoors, the v7
+  // patch outside only. Every WALL_COLOR box must carry inward in
+  // {px, nx, pz, nz}, pointing at the house centre.
+  for (const name of ['small', 'large']) {
+    const boxes = visualBoxes(getLayout(name));
+    const walls = boxes.filter((b) => b.color === WALL_COLOR);
+    assert.ok(walls.length > 0, `${name}: no wall boxes`);
+    for (const b of walls) {
+      assert.ok(['px', 'nx', 'pz', 'nz'].includes(b.inward),
+        `${name}: wall box ${JSON.stringify(b)} has no inward tag`);
+    }
   }
 });
 
@@ -326,10 +362,11 @@ check('tall houses #8/#13: 3 floors, second stair flight, 9 m walls', () => {
     assert.equal(h.floors, 3);
     assert.ok(h.stair2, `house ${n} has a second flight`);
   }
-  // #8 (west): stair1 x -15.5..-13.5, stair2 the adjacent strip -13.5..-11.5.
-  assert.deepEqual(byNumber.get(8).stair2, { x0: -13.5, x1: -11.5, z0: -18.5, z1: -15 });
-  // #13 (east): stair1 x 13.5..15.5, stair2 11.5..13.5.
-  assert.deepEqual(byNumber.get(13).stair2, { x0: 11.5, x1: 13.5, z0: 13.5, z1: 17 });
+  // #8 (west): stair1 x -15.5..-13.5 (back wall), stair2 the opposite
+  // strip -8.5..-6.5 (front/street wall, 27/11/2026 post-v41 item 11).
+  assert.deepEqual(byNumber.get(8).stair2, { x0: -8.5, x1: -6.5, z0: -18.5, z1: -15 });
+  // #13 (east): stair1 x 13.5..15.5, stair2 6.5..8.5.
+  assert.deepEqual(byNumber.get(13).stair2, { x0: 6.5, x1: 8.5, z0: 13.5, z1: 17 });
   // Every other large house is 2 floors with no second flight.
   for (const h of LAYOUTS.large.houses) {
     if (h.number !== 8 && h.number !== 13) {
@@ -342,9 +379,9 @@ check('tall houses #8/#13: 3 floors, second stair flight, 9 m walls', () => {
   assert.equal(floorHeightAt(-11, -16, 0, L), 0);
   assert.equal(floorHeightAt(-11, -16, 3, L), 3);
   assert.equal(floorHeightAt(-11, -16, 5, L), 6, 'above 4.5 m: floor 3');
-  assert.equal(floorHeightAt(-12.5, -18.5, 3, L), 3, 'stair2 bottom');
-  assert.equal(floorHeightAt(-12.5, -16.75, 3, L), 4.5, 'stair2 middle');
-  assert.equal(floorHeightAt(-12.5, -15, 3, L), 6, 'stair2 top');
+  assert.equal(floorHeightAt(-7.5, -18.5, 3, L), 3, 'stair2 bottom');
+  assert.equal(floorHeightAt(-7.5, -16.75, 3, L), 4.5, 'stair2 middle');
+  assert.equal(floorHeightAt(-7.5, -15, 3, L), 6, 'stair2 top');
   // 2-floor houses are unaffected by the 4.5 m rule.
   assert.equal(floorHeightAt(-11, -32, 5, L), 3, '2-floor house caps at 3');
   // Roof at y 9 on tall houses, y 6 elsewhere (visual boxes).
