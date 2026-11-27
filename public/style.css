@@ -140,30 +140,25 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 /* One universal back button (27/11/2026, v41): transparent ↩ in the
    top-left corner for every player in every game state. It sits above
    the match-end overlay (z-index 20) so a team player can leave from
-   the final screen too. Replaces EXIT / EXIT SOLO / EXIT SPECTATE. */
+   the final screen too. Replaces EXIT / EXIT SOLO / EXIT SPECTATE.
+   Bigger and more transparent (27/11/2026, post-v41 item 4): a larger
+   tap target that fades further into the scene. */
 #backBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; z-index: 25;
-  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
-  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
-  font-size: 20px; font-weight: 700; padding: 6px 14px; }
+  touch-action: manipulation;
+  background: rgba(255,255,255,0.03); border: 1.5px solid rgba(255,255,255,0.35);
+  color: rgba(255,255,255,0.75); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  font-size: 30px; font-weight: 700; padding: 10px 20px; }
 /* Mid-match spectate (27/11/2026, v41): an admin playing in a match
-   switches to bird's-eye from here. It shares the row below the ghost
-   toggle with the rejoin button — the two never show together (one is
-   for playing, one for spectating). It must NOT sit on the MAP row
-   (top 54): the first placement there covered the MAP button entirely
+   switches to bird's-eye from here. It sits below the ghost toggle
+   in the top-left column. It must NOT sit on the MAP row (top 54):
+   the first placement there covered the MAP button entirely
    (27/11/2026 — the map overlay could not be opened mid-match). */
 #midSpectateBtn { position: absolute; top: 194px; left: 10px; pointer-events: auto; z-index: 25;
   background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
   color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
-/* One-tap rejoin (27/11/2026, v41): a spectating admin returns to
-   their team from above. Same row as the mid-match spectate button
-   (they never show together); it must NOT sit at top 102 — that row
-   is the fullscreen row (27/11/2026). */
-#specRejoinBtn { position: absolute; top: 194px; left: 10px; pointer-events: auto; z-index: 25;
-  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
-  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
 /* Ghost toggle (27/11/2026, v41): transparent, shows the icon of the
    mode you switch TO — the ghost while bird's-eye, the bird while
-   ghosting. Above the rejoin / mid-match-spectate row in the column. */
+   ghosting. Above the mid-match-spectate row in the column. */
 #ghostToggleBtn { position: absolute; top: 148px; left: 10px; pointer-events: auto; z-index: 25;
   background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
   width: 44px; height: 44px; border-radius: 6px; display: flex;
@@ -297,8 +292,17 @@ body.touch #touchUI { display: block; }
 .grenadeBtn { position: relative; width: 60px; height: 60px; border-radius: 50%;
   background: transparent; border: 2px solid rgba(255,255,255,0.75);
   display: flex; align-items: center; justify-content: center; overflow: hidden;
-  touch-action: none; padding: 0; pointer-events: auto; cursor: pointer; }
-.grenadeBtn img { position: relative; z-index: 1; display: block; margin: 0 auto; }
+  touch-action: none; padding: 0; pointer-events: auto; cursor: pointer;
+  /* iOS image long-press menu (27/11/2026, post-v41 item 10): the
+     button holds an <img>, and a long press on it used to open the
+     system Share / Save / Copy menu (IMG_6386). The single-press
+     missile change removes the trigger; this blocks the menu and the
+     callout as a safety net. */
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.grenadeBtn img { position: relative; z-index: 1; display: block; margin: 0 auto;
+  /* The image itself must never be the touch target: taps land on the
+     button, so iOS has no image to offer actions for. */
+  pointer-events: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .grenadeFill { position: absolute; left: 0; right: 0; bottom: 0; height: 0%;
   background: rgba(255,179,64,0.55); }
 .grenadeBtn.hidden { display: none; }
@@ -382,5 +386,11 @@ body.spectating #lockHint { display: none; }
 #inviteExpired { background: rgba(180, 30, 30, 0.25); border: 1px solid rgba(229, 51, 51, 0.6);
   border-radius: 8px; padding: 10px 16px; max-width: 420px; }
 #inviteExpired p { margin: 0; color: #ffb0b0; font-size: 15px; }
-#inviteLinkInput { width: 280px; padding: 8px 10px; border-radius: 6px;
-  border: 1px solid #444; background: #1a1d22; color: #eee; font-size: 14px; }
+/* The link textbox (27/11/2026, post-v41 item 6): wide enough to show
+   the whole link, selectable by hand when Copy fails — the body-wide
+   user-select: none must NOT apply here, or iOS cannot select it. */
+#inviteOut { width: 100%; max-width: 560px; }
+#inviteLinkInput { flex: 1 1 320px; min-width: 0; width: auto; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid #444; background: #1a1d22; color: #eee; font-size: 15px; text-align: left;
+  -webkit-user-select: text; user-select: text; }
+#inviteManualHint { font-size: 12px; }
