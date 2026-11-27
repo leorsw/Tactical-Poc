@@ -74,6 +74,14 @@
       <p>This invite link has expired — ask the admin for a new one.</p>
     </div>
 
+    <!-- Entry gate (27/11/2026, post-v41 item 20): direct entry is
+         closed — a visitor without an invite link sees this instead of
+         the join buttons. The admin login row above stays visible, so
+         the admin can still unlock the join UI with the code. -->
+    <div id="inviteNeeded" class="hidden">
+      <p>You need an invite link from the admin to enter this game.</p>
+    </div>
+
     <div id="connectStatus" class="status">Connecting to server…</div>
     <p id="kickNotice" class="hidden"></p>
 
@@ -118,6 +126,7 @@
       <p id="teamHint" class="hint"></p>
       <div class="lobbyActions">
         <button id="switchBtn" class="secondary">Switch team</button>
+        <button id="leaveTeamBtn" class="secondary">Leave team</button>
       </div>
       <div id="hostControls" class="hidden">
         <p class="hostLabel">You are the host — pick the attacking team:</p>
@@ -192,7 +201,7 @@
            top-left corner for every player in every game state — it
            sends the leave matching the mode (leave / leaveSolo /
            leaveSpectate). Replaces EXIT / EXIT SOLO / EXIT SPECTATE. -->
-      <button id="backBtn" class="hidden" aria-label="Back to lobby">↩</button>
+      <button id="backBtn" class="hidden" aria-label="Back to lobby">↩︎</button>
       <button id="midSpectateBtn" class="hidden">👁 SPECTATE</button>
       <button id="specRecBtn" class="hidden">● REC</button>
       <button id="ghostToggleBtn" class="hidden" aria-label="Toggle ghost view"></button>
@@ -200,8 +209,11 @@
       <button id="mapBtn">MAP</button>
       <div id="fsRow">
         <button id="fsBtn">FULLSCREEN</button>
-        <button id="climbBtn" class="hidden">CLIMB</button>
       </div>
+      <!-- CLIMB is a standalone button below the top row (27/11/2026,
+           post-v41 item 23), not inside #fsRow — the row's width must
+           stay fixed so it never reaches the centred timer. -->
+      <button id="climbBtn" class="hidden">CLIMB</button>
       <div id="damageFlash"></div>
       <div id="bottomLeft">
         <svg id="healthIcon" viewBox="0 0 100 100" aria-hidden="true">
