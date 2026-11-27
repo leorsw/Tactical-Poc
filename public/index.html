@@ -67,6 +67,7 @@
       <input id="inviteLinkInput" readonly>
       <button id="copyInviteBtn" class="classBtn">Copy</button>
       <span id="inviteExpiry" class="classLabel"></span>
+      <span id="inviteManualHint" class="classLabel">If Copy doesn't work: tap the link to select it all, then copy it by hand.</span>
     </div>
 
     <div id="inviteExpired" class="hidden">
@@ -94,13 +95,13 @@
         <button class="classBtn activeChoice" data-cls="rifleman">Rifleman</button>
         <button class="classBtn" data-cls="marksman">Marksman</button>
         <button class="classBtn" data-cls="gunner">Machine gunner</button>
-        <button class="classBtn" data-cls="missile">טילן</button>
+        <button class="classBtn" data-cls="missile">Rocketeer</button>
       </div>
       <div class="joinRow" id="soloGrenadeRow">
         <span class="classLabel">Solo grenades:</span>
         <button id="soloGrenadeBtn" class="classBtn activeChoice">On</button>
       </div>
-      <p class="hint">Marksman: x4 scope, one shot a second, an aimed hit kills at any range.<br>Machine gunner: full-auto, 120-round mags, deadly up close standing, like a rifleman kneeling.<br>Missile soldier (טילן): a shoulder missile instead of grenades — 2 per round; hold the button 3 s to charge, it flies straight and hits even behind a wall.<br>Grenades: two per round — press a button, it fills for 1.5 seconds, then the grenade flies 10 m and explodes 3 seconds later. The toggle applies on the next solo entry.</p>
+      <p class="hint">Marksman: x4 scope, one shot a second, an aimed hit kills at any range.<br>Machine gunner: full-auto, 120-round mags, deadly up close standing, like a rifleman kneeling.<br>Rocketeer: a shoulder missile instead of grenades — 2 per round; press the munition button once, you get 3 s to aim with the cross marking the impact, then the missile fires on its own (press again to cancel). It flies straight and hits even behind a wall.<br>Grenades: two per round — press a button, it fills for 1.5 seconds, then the grenade flies 10 m and explodes 3 seconds later. The toggle applies on the next solo entry.</p>
     </div>
 
     <div id="teamsBox" class="hidden">
@@ -128,34 +129,6 @@
           <button id="clearRoomBtn" class="danger">Clear room — kick everyone else</button>
         </div>
       </div>
-      <div id="adminPanel" class="hidden">
-        <p class="hostLabel">You are the admin — set up the match:</p>
-        <div id="adminPlayerRows"></div>
-        <div class="joinRow">
-          <span class="classLabel">Grenades:</span>
-          <button id="adminGrenadeBtn" class="classBtn activeChoice">On</button>
-        </div>
-        <div class="joinRow">
-          <span class="classLabel">Round length (min):</span>
-          <input id="roundDurationInput" type="number" min="1" max="30" step="1" value="5">
-          <button id="roundDurationBtn" class="classBtn">Set</button>
-        </div>
-        <div class="joinRow">
-          <span class="classLabel">Map:</span>
-          <button id="mapSmallBtn" class="classBtn activeChoice">Small (10 houses)</button>
-          <button id="mapLargeBtn" class="classBtn">Large (20 houses)</button>
-        </div>
-        <div class="joinRow hidden" id="tallSpawnRow">
-          <span class="classLabel">Tall building:</span>
-          <button id="tallOffBtn" class="classBtn activeChoice">Off</button>
-          <button id="tall8Btn" class="classBtn">#8 NW</button>
-          <button id="tall13Btn" class="classBtn">#13 SE</button>
-        </div>
-        <div class="joinRow">
-          <span class="classLabel">Watch:</span>
-          <button id="spectateBtn" class="classBtn">Spectate (bird's-eye)</button>
-        </div>
-      </div>
       <div class="joinRow">
         <span class="classLabel">Prep time:</span>
         <button id="prepToggleBtn" class="classBtn">Off</button>
@@ -165,6 +138,38 @@
         <p id="startHint" class="hint"></p>
       </div>
       <p id="waitHost" class="hint hidden">Waiting for the admin to start the match…</p>
+    </div>
+    <!-- Admin panel (27/11/2026, post-v41 item 3): NOT inside teamsBox —
+         it must show for an admin who has not joined a team yet (code
+         only, no callsign, no team pick), and teamsBox hides on join.
+         A direct child of the lobby, shown from the admin flag alone. -->
+    <div id="adminPanel" class="hidden">
+      <p class="hostLabel">You are the admin — set up the match:</p>
+      <div id="adminPlayerRows"></div>
+      <div class="joinRow">
+        <span class="classLabel">Grenades:</span>
+        <button id="adminGrenadeBtn" class="classBtn activeChoice">On</button>
+      </div>
+      <div class="joinRow">
+        <span class="classLabel">Round length (min):</span>
+        <input id="roundDurationInput" type="number" min="1" max="30" step="1" value="5">
+        <button id="roundDurationBtn" class="classBtn">Set</button>
+      </div>
+      <div class="joinRow">
+        <span class="classLabel">Map:</span>
+        <button id="mapSmallBtn" class="classBtn activeChoice">Small (10 houses)</button>
+        <button id="mapLargeBtn" class="classBtn">Large (20 houses)</button>
+      </div>
+      <div class="joinRow hidden" id="tallSpawnRow">
+        <span class="classLabel">Tall building:</span>
+        <button id="tallOffBtn" class="classBtn activeChoice">Off</button>
+        <button id="tall8Btn" class="classBtn">#8 NW</button>
+        <button id="tall13Btn" class="classBtn">#13 SE</button>
+      </div>
+      <div class="joinRow">
+        <span class="classLabel">Watch:</span>
+        <button id="spectateBtn" class="classBtn">Spectate (bird's-eye)</button>
+      </div>
     </div>
     <p class="hint">WASD Move · Mouse Look · Click Shoot · Right Mouse Aim · R Reload · C Crouch · M Map · F Fullscreen · E Climb (at a ground-floor window)</p>
   </section>
@@ -190,7 +195,6 @@
       <button id="backBtn" class="hidden" aria-label="Back to lobby">↩</button>
       <button id="midSpectateBtn" class="hidden">👁 SPECTATE</button>
       <button id="specRecBtn" class="hidden">● REC</button>
-      <button id="specRejoinBtn" class="hidden">↩ REJOIN TEAM</button>
       <button id="ghostToggleBtn" class="hidden" aria-label="Toggle ghost view"></button>
       <button id="specActionBtn" class="hidden primary">START</button>
       <button id="mapBtn">MAP</button>
@@ -336,7 +340,7 @@
         <div class="help-callout" style="left:10px; top:158px;">מסך מלא</div>
         <div class="help-callout" id="helpCoClimb" style="left:150px; top:158px;">טיפוס דרך חלון</div>
         <div class="help-callout" style="left:262px; top:285px;">תנועה</div>
-        <div class="help-callout" style="left:440px; top:78px;">רימון / טיל — לחיצה והחזקה</div>
+        <div class="help-callout" style="left:440px; top:78px;">רימון / טיל — לחיצה אחת</div>
         <div class="help-callout" style="left:660px; top:82px;">החלקה לטעינה</div>
         <div class="help-callout" style="left:764px; top:307px;">כריעה</div>
         <div class="help-callout" style="left:675px; top:262px;">כוונת</div>
@@ -358,7 +362,7 @@
             <div><kbd>קליק ימני</kbd><span>כוונת</span></div>
             <div><kbd>R</kbd><span>טעינה</span></div>
             <div><kbd>C</kbd><span>כריעה</span></div>
-            <div><kbd>G</kbd><span>רימון / טיל (טילן: החזק 3 שניות לטעינה)</span></div>
+            <div><kbd>G</kbd><span>רימון / טיל (Rocketeer: לחיצה אחת, ירי אוטומטי אחרי 3 שניות)</span></div>
             <div><kbd>M</kbd><span>מפה</span></div>
             <div><kbd>F</kbd><span>מסך מלא</span></div>
             <div><kbd>E</kbd><span>טיפוס דרך חלון (ליד חלון קומת קרקע)</span></div>
