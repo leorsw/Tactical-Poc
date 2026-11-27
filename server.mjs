@@ -1060,6 +1060,30 @@ function takeOverDuplicates(name, team, sessionId, solo) {
   if (sessionRecord) takeOver(sessionRecord);
 }
 
+// Entry gate (27/11/2026, post-v41 item 20 — Lior's decision to close
+// direct entry): a NEW entry needs a valid invite (checkInvite on this
+// socket) or the admin code (pending admin). A re-entry is not a new
+// entry and passes without either: a team player inside the 5-minute
+// grace window after a mid-match disconnect, a frozen tab's ghost
+// record, or a record from the same tab session. The gate runs BEFORE
+// takeOverDuplicates, so a rejected join never removes anything.
+function entryAllowedForJoin(ws, name, team, sessionId) {
+  if (ws._inviteValid || ws._pendingAdmin) return true;
+  const now = Date.now();
+  if (recentDisconnects.some((r) => r.until > now && r.name === name && r.team === team)) return true;
+  if (findGhost(name, team, false)) return true;
+  const s = findSessionRecord(sessionId);
+  if (s && !s.solo && s.team === team) return true;
+  return false;
+}
+
+function entryAllowedForSolo(ws, sessionId) {
+  if (ws._inviteValid || ws._pendingAdmin) return true;
+  const s = findSessionRecord(sessionId);
+  if (s && s.solo) return true;
+  return false;
+}
+
 function handleJoin(ws, msg) {
   const name = String(msg.name || '').trim().slice(0, 16) || `Player${ws._pid}`;
   const sessionId = String(msg.session || '').slice(0, 64) || null;
@@ -1071,6 +1095,12 @@ function handleJoin(ws, msg) {
   if (team !== 'A' && team !== 'B') {
     // Auto-assign to the smaller team (A on a tie).
     team = playersOf('A').length <= playersOf('B').length ? 'A' : 'B';
+  }
+  // Entry gate (27/11/2026, post-v41 item 20): runs on the NORMALIZED
+  // team, so an auto-assign grace rejoin is still recognised as one.
+  if (!entryAllowedForJoin(ws, name, team, sessionId)) {
+    send(ws, { t: 'entryDenied', message: 'An invite link from the admin is needed to enter.' });
+    return;
   }
   // No mid-match joins: once a match has started (playing, or the
   // intermission between rounds), newcomers wait in the lobby until the
@@ -1165,6 +1195,13 @@ function handleJoin(ws, msg) {
 function handleSolo(ws, msg) {
   const name = String(msg.name || '').trim().slice(0, 16) || `Player${ws._pid}`;
   const sessionId = String(msg.session || '').slice(0, 64) || null;
+  // Entry gate (27/11/2026, post-v41 item 20): same rule as a team
+  // join — a fresh solo entry needs an invite or the admin code; a
+  // same-tab-session record is a re-entry, not a new entry.
+  if (!entryAllowedForSolo(ws, sessionId)) {
+    send(ws, { t: 'entryDenied', message: 'An invite link from the admin is needed to enter.' });
+    return;
+  }
   takeOverDuplicates(name, null, sessionId, true);
   // Same-name solo players are the same person in two tabs: solo has no
   // teams, so two humans never need the same callsign there (the phantom
@@ -1254,10 +1291,15 @@ function handleMessage(ws, msg) {
     case 'checkInvite': {
       // Anyone may ask whether an invite link is still good (it arrives
       // with the page load, before joining). Expired codes are pruned.
+      // A valid answer also admits this socket (27/11/2026, post-v41
+      // item 20): the join that follows on the same connection passes
+      // the entry gate. The flag lives for the socket only — a new
+      // connection proves its invite again.
       const code = String(msg.code || '');
       const rec = invites.get(code);
       const valid = !!rec && Date.now() < rec.expiresAt;
       if (rec && !valid) invites.delete(code);
+      if (valid) ws._inviteValid = true;
       send(ws, { t: 'inviteStatus', code, valid, expiresAt: valid ? rec.expiresAt : null });
       return;
     }
@@ -1384,6 +1426,10 @@ function handleMessage(ws, msg) {
         roomMap = map;
         defSpawn = null;
         deriveLayout();
+        // NPC spots come from the layout (27/11/2026, post-v41 item
+        // 14): clear the set so the next tick re-draws it from the NEW
+        // layout — stale spots from the old map float in mid-air.
+        npcs = [];
         broadcastState();
         break;
       }
@@ -1932,6 +1978,10 @@ function handleMessage(ws, msg) {
       roomMap = map;
       defSpawn = null;
       deriveLayout();
+      // NPC spots come from the layout (27/11/2026, post-v41 item 14):
+      // clear the set so the next tick re-draws it from the NEW layout
+      // — stale spots from the old map float in mid-air.
+      npcs = [];
       broadcastState();
       break;
     }
