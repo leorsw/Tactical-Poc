@@ -130,7 +130,6 @@ const spectateBar = $('spectateBar');
 const lockHint = $('lockHint');
 const backBtn = $('backBtn');
 const midSpectateBtn = $('midSpectateBtn');
-const specRejoinBtn = $('specRejoinBtn');
 const ghostToggleBtn = $('ghostToggleBtn');
 const specRecBtn = $('specRecBtn');
 const specActionBtn = $('specActionBtn');
@@ -247,8 +246,10 @@ let myInMag = 29;
 let myMags = 5;
 let myGrenades = 2; // grenades left this round (Lior, 25/11/2026)
 let myMissiles = 2; // missile munitions left this round (27/11/2026) — the
-// missile soldier (טילן) carries missiles INSTEAD of grenades.
-let missileCharging = null; // { endsAt } while the munition button is held (3 s)
+// Rocketeer carries missiles INSTEAD of grenades.
+let missileCharging = null; // { endsAt } while the 3 s aim window is open
+// (27/11/2026, post-v41 item 5): a single press opens the window — the
+// missile fires automatically at the end; a second press cancels.
 let missileFiredAt = 0; // performance.now() of my last missile launch (viewmodel swap)
 let missileCross = null; // transparent cross at the predicted impact, while charging
 let munitionIconCls = null; // class the munition buttons' icon was last set for
@@ -306,8 +307,6 @@ const local = { x: 0, y: 0, z: -55, yaw: Math.PI, pitch: 0 };
 // Spectating.
 let spectateTarget = null; // player id
 let teamCounts = { A: 0, B: 0 }; // players per team, from the last state (renderLobby)
-let myName = ''; // callsign, for the one-tap spectate rejoin
-let spectateFromTeam = null; // the team I spectated from (one-tap rejoin target)
 // Ghost observer mode (27/11/2026): the admin spectator watches from a
 // player's eyes — no figure, no name, can't be shot or shoot.
 let ghostMode = false;
@@ -673,20 +672,41 @@ function buildMapMeshes(layout) {
     add(mesh);
   }
 
-  // Stair ramps. Flight 2 (floor 2->3) starts at y0 = 3. Ramps ascend
-  // along their strip's long side: +z for N-S houses, +x for E-W houses.
+  // Stairs as real steps (27/11/2026, post-v41 item 9): each flight is
+  // one extruded stepped prism — 12 treads of 0.25 m over the 3.5 m
+  // run (40.6°; the old 6 m slanted ramp was 26.6°). One mesh per
+  // flight, same as the ramp it replaces. The climb itself is unchanged
+  // (floorHeightAt interpolates smoothly over the strip), so a climber's
+  // feet ride the diagonal: they sink up to one riser (0.25 m) into a
+  // tread at its front edge and land exactly on top at its back edge.
+  // In first person you never see your own feet; other players' figures
+  // dip slightly mid-flight. Flight 2 (floor 2->3) starts at y0 = 3.
+  // Ramps ascend along their strip's long side: +z for N-S houses,
+  // +x for E-W houses.
   if (!stairMatShared) stairMatShared = new THREE.MeshLambertMaterial({ color: 0x8f8f8f });
   for (const s of stairRamps(layout)) {
-    const slant = Math.hypot(s.run, s.rise);
-    let mesh;
-    if (s.axis === 'x') {
-      mesh = new THREE.Mesh(new THREE.BoxGeometry(slant, 0.25, s.width), stairMatShared);
-      mesh.rotation.z = Math.atan2(s.rise, s.run); // ascends towards +x
-    } else {
-      mesh = new THREE.Mesh(new THREE.BoxGeometry(s.width, 0.25, slant), stairMatShared);
-      mesh.rotation.x = -Math.atan2(s.rise, s.run); // ascends towards +z
+    const steps = 12;
+    const riser = s.rise / steps;
+    const tread = s.run / steps;
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0);
+    for (let i = 0; i < steps; i++) {
+      shape.lineTo((i + 1) * tread, i * riser);
+      shape.lineTo((i + 1) * tread, (i + 1) * riser);
     }
-    mesh.position.set(s.cx, (s.y0 || 0) + s.rise / 2 - 0.1, s.cz);
+    shape.lineTo(s.run, 0);
+    shape.closePath();
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: s.width, bevelEnabled: false });
+    const mesh = new THREE.Mesh(geo, stairMatShared);
+    if (s.axis === 'x') {
+      // Shape x is the run (+x), extrusion is the width (+z).
+      mesh.position.set(s.cx - s.run / 2, s.y0 || 0, s.cz - s.width / 2);
+    } else {
+      // Rotate -90° about Y: shape x becomes world +z (ascending
+      // towards +z), extrusion becomes world -x.
+      mesh.rotation.y = -Math.PI / 2;
+      mesh.position.set(s.cx + s.width / 2, s.y0 || 0, s.cz - s.run / 2);
+    }
     add(mesh);
   }
 
@@ -1353,7 +1373,7 @@ function makeRifleMesh(cls, gunmetal, darker) {
 
 // The shoulder-missile launcher (27/11/2026, v41): a black simplified RPG
 // — tube, warhead cone, rear nozzle, two grips — carried by the missile
-// soldier (טילן) ONLY while charging/firing; the rifle returns after the
+// soldier (Rocketeer) ONLY while the aim window is open/firing; the rifle returns after the
 // shot. The grip points (launcher-local) are what the firing pose's arms
 // solve to (ik-solve-missile.mjs).
 const LAUNCHER_GRIP_FRONT = new THREE.Vector3(0, -0.09, -0.35);
@@ -1878,17 +1898,24 @@ function renderLobby(state) {
   // not the admin yet; the panel shows to the admin.
   amAdmin = !!me && me.admin === true;
   // A spectating admin still counts: while they watch from above, the
-  // lobby must not fall back to "anyone may start" (26/11/2026).
-  const adminExists = state.players.some((p) => p.admin) || state.adminSpectating === true;
+  // lobby must not fall back to "anyone may start" (26/11/2026). An
+  // admin who has not joined yet counts too (27/11/2026, post-v41
+  // item 3 — the server carries it as state.adminUnjoined).
+  const adminExists = state.players.some((p) => p.admin) || state.adminSpectating === true
+    || state.adminUnjoined === true;
+  // The panel + invite row also open from the local admin flag
+  // (27/11/2026, post-v41 item 3): a returning admin whose player
+  // record is gone still sees them.
+  const adminHere = amAdmin || amAdminLocal;
   // Admin code FIRST (27/11/2026): the row shows before team choice too
   // — me is undefined until the player joins, and that no longer hides it.
-  adminLoginRow.classList.toggle('hidden', (me && me.solo) || amAdmin);
-  adminPanel.classList.toggle('hidden', !amAdmin);
-  if (amAdmin) renderAdminRows(state.players.filter((p) => !p.solo));
+  adminLoginRow.classList.toggle('hidden', (me && me.solo) || adminHere);
+  adminPanel.classList.toggle('hidden', !adminHere);
+  if (adminHere) renderAdminRows(state.players.filter((p) => !p.solo));
   // Invite link right below the admin login row (27/11/2026): visible
   // as soon as the admin logs in; the link itself shows once created.
-  inviteRow.classList.toggle('hidden', !amAdmin);
-  inviteOut.classList.toggle('hidden', !amAdmin || !$('inviteLinkInput').value);
+  inviteRow.classList.toggle('hidden', !adminHere);
+  inviteOut.classList.toggle('hidden', !adminHere || !$('inviteLinkInput').value);
   grenadesAllowedState = state.grenadesAllowed !== false;
   adminGrenadeBtn.textContent = grenadesAllowedState ? 'On' : 'Off';
   adminGrenadeBtn.classList.toggle('activeChoice', grenadesAllowedState);
@@ -2155,10 +2182,15 @@ function updateHUD() {
     midSpectateBtn.disabled = teamSize < 2;
     midSpectateBtn.title = teamSize < 2 ? 'Your team needs at least 2 players for you to spectate' : '';
   }
-  // Spectator buttons: one-tap rejoin (only when there is a team to
-  // rejoin) and the ghost toggle. REC stays available in ghost mode —
+  // Spectator buttons: the ghost toggle only. There used to be a second
+  // ↩ button here (one-tap rejoin, v41 item 18) — removed 27/11/2026,
+  // post-v41 item 7: two ↩ buttons in the corner confused the back
+  // action, and Lior asked for one corner back button only. A spectator
+  // rejoins by going back to the lobby and joining again (the grace
+  // window still admits a mid-match leaver as a spectator until the
+  // next round; the lobby join itself opens when the match ends).
+  // REC stays available in ghost mode —
   // it records the canvas stream, and the toggle never stops it.
-  specRejoinBtn.classList.toggle('hidden', !spectating || !spectateFromTeam);
   ghostToggleBtn.classList.toggle('hidden', !spectating);
 }
 
@@ -2450,24 +2482,40 @@ function tryReload() {
 // bottom-up — and the throw goes out when the fill completes. The
 // server then flies the grenade 10 m and explodes it 3 s after the throw.
 const GRENADE_ARM_MS = 1500;
-const MISSILE_CHARGE_MS = 3000; // continuous hold to charge the missile (27/11/2026)
+const MISSILE_CHARGE_MS = 3000; // aim window after ONE press (27/11/2026,
+// post-v41 item 5): press once, 3 s to aim, the missile fires on its
+// own at the end. No long press — the v41 continuous hold is gone.
 const grenadeBtnEls = [document.getElementById('grenadeBtn0'), document.getElementById('grenadeBtn1')];
-// The munition buttons are press-and-hold, not click (27/11/2026): the
-// missile charges only while held — releasing early cancels. Grenades
-// ignore the release (their 1.5 s arming completes on its own).
+// The munition buttons are press, not press-and-hold (27/11/2026,
+// post-v41 item 5): the missile opens its 3 s aim window on the
+// press — releasing does nothing, a second press cancels. Grenades
+// arm on press and throw on their own after 1.5 s.
 const GRENADE_IMG_HTML = grenadeBtnEls[0].querySelector('img')?.outerHTML || '';
 for (const btn of grenadeBtnEls) {
   btn.addEventListener('pointerdown', (e) => { e.preventDefault(); startMunitionPress(); });
-  btn.addEventListener('pointerup', () => endMunitionPress());
-  btn.addEventListener('pointerleave', () => endMunitionPress());
-  btn.addEventListener('pointercancel', () => endMunitionPress());
+  // No pointerup/leave/cancel handlers: releasing a missile press must
+  // NOT cancel the aim window (that was the v41 hold behaviour).
+  // iOS image long-press menu (27/11/2026, post-v41 item 10): the
+  // buttons hold an <img>, and a long press on it opens the system
+  // Share / Save / Copy menu — block the menu here (CSS blocks the
+  // callout too, see .grenadeBtn in style.css).
+  btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  btn.addEventListener('dragstart', (e) => e.preventDefault());
 }
 function startMunitionPress() {
-  if (myClass === 'missile') startMissileCharge();
-  else startGrenadeArm();
+  // Missile: toggle — a press while the aim window is open cancels it.
+  if (myClass === 'missile') {
+    if (missileCharging) cancelMissileCharge();
+    else startMissileCharge();
+    return;
+  }
+  startGrenadeArm();
 }
 function endMunitionPress() {
-  if (myClass === 'missile') cancelMissileCharge();
+  // Release does nothing now (27/11/2026, post-v41 item 5): the v41
+  // hold-to-charge is gone, so the G keyup / pointerup must not cancel
+  // an open aim window. Kept as the release hook for the Controls
+  // callbacks (onGrenadeEnd) — a no-op for both classes.
 }
 
 function startGrenadeArm() {
@@ -2498,10 +2546,13 @@ function renderGrenadeButtons() {
   const isMissile = myClass === 'missile';
   if (munitionIconCls !== myClass) {
     munitionIconCls = myClass;
-    for (const btn of grenadeBtnEls) {
+    grenadeBtnEls.forEach((btn, i) => {
       const img = btn.querySelector('img');
       if (img) img.outerHTML = isMissile ? MISSILE_IMG : GRENADE_IMG_HTML;
-    }
+      // The label must follow the icon (27/11/2026, post-v41 item 2):
+      // the buttons still said "Grenade 1/2" with a missile icon.
+      btn.setAttribute('aria-label', isMissile ? `Missile ${i + 1}` : `Grenade ${i + 1}`);
+    });
   }
   const myMunitions = isMissile ? myMissiles : myGrenades;
   grenadeBtnEls[0].classList.toggle('hidden', !canThrow || myMunitions < 2);
@@ -2526,13 +2577,16 @@ function renderGrenadeButtons() {
   }
 }
 
-// Shoulder missile (27/11/2026): the missile soldier (טילן) carries
-// missiles INSTEAD of grenades — 2 per round. Charging is a CONTINUOUS
-// HOLD of the munition button for 3 s; releasing early cancels. While
-// charging, a transparent cross marks the predicted impact point and the
-// server is told (so other players see the launcher). The missile flies
-// straight at aim height to the first obstacle and blasts like a grenade
-// (4 m) — but through walls, no line of sight needed.
+// Shoulder missile (27/11/2026; aim window reworked post-v41, item 5):
+// the Rocketeer carries missiles INSTEAD of grenades — 2 per round.
+// ONE press opens a 3 s aim window: a transparent cross marks the
+// predicted impact point and the server is told (so other players see
+// the launcher). The missile fires automatically at the end of the
+// window. A second press cancels; death or a round end cancels too.
+// The missile flies straight at aim height to the first obstacle and
+// blasts like a grenade (4 m) — but through walls, no line of sight
+// needed. The soldier starts with the rifle: the launcher only shows
+// while the window is open (or just after firing).
 function startMissileCharge() {
   if (missileCharging) return;
   if (!myAlive || (game.phase !== 'playing' && !solo)) return;
@@ -2567,8 +2621,8 @@ function predictMissileImpact() {
     z: Math.round(p.z * 10) / 10,
   };
 }
-// Transparent cross at the predicted impact, while charging — it follows
-// the aim as the player looks around.
+// Transparent cross at the predicted impact, while the aim window is
+// open — it follows the aim as the player looks around.
 function updateMissileCross() {
   if (!missileCharging || !myAlive) {
     if (missileCross) missileCross.visible = false;
@@ -2709,8 +2763,29 @@ function onCanvasClick() {
 
 let connected = false;
 let savedJoin = null; // { name, team } or { name, solo: true } — for auto-rejoin
-let savedAdminCode = null; // admin code, kept in memory for this page only (27/11/2026):
-// re-sent after every (re)join so the permission survives; a full reload clears it.
+// Admin code, kept across page loads (27/11/2026, post-v41 item 3):
+// the v41 version kept it in memory only, so leaving the page and
+// coming back lost the admin permission entirely (Lior, 27/11/2026 —
+// he entered the code, left, returned, and the options were gone).
+// localStorage survives a reload and a new tab; a wrong code clears it
+// (see the error handler). Private mode may refuse storage — then the
+// code simply lives for this page only, as before.
+const ADMIN_CODE_KEY = 'tacticalAdminCode';
+function loadSavedAdminCode() {
+  try { return localStorage.getItem(ADMIN_CODE_KEY) || null; } catch { return null; }
+}
+function storeSavedAdminCode(code) {
+  try {
+    if (code) localStorage.setItem(ADMIN_CODE_KEY, code);
+    else localStorage.removeItem(ADMIN_CODE_KEY);
+  } catch { /* private mode: memory-only */ }
+}
+let savedAdminCode = loadSavedAdminCode();
+// True once this tab holds a confirmed admin code (27/11/2026,
+// post-v41 item 3): the admin panel + invite row render from this flag
+// even before joining — an admin with no player record yet must still
+// see the panel. Set on adminOk, cleared on a wrong-code error.
+let amAdminLocal = !!savedAdminCode;
 let lastRejoinRetry = 0; // throttle for the state-handler rejoin retry
 socket.onOpen = () => {
   connected = true;
@@ -2889,15 +2964,28 @@ socket.on('spectateLeft', () => {
 
 socket.on('adminOk', () => {
   // The admin panel renders from the state that follows this message.
-  // The code itself stays in savedAdminCode (re-sent on rejoin).
+  // The code itself stays in savedAdminCode (re-sent on rejoin) and in
+  // localStorage (survives a reload — post-v41 item 3). The local flag
+  // opens the panel even before joining, for an admin with no player
+  // record yet; the state handler re-renders it from the same flag.
+  amAdminLocal = true;
+  storeSavedAdminCode(savedAdminCode);
   adminCodeInput.value = '';
   adminError.classList.add('hidden');
+  updateUnjoinedAdminUI();
 });
 
 socket.on('error', (msg) => {
   if (msg.message === 'Wrong admin code.') {
+    // A stored code the server no longer accepts (e.g. the server
+    // restarted with a new code): drop it, or every reload would
+    // re-send a dead code and flash the panel for nothing.
     adminError.textContent = msg.message;
     adminError.classList.remove('hidden');
+    savedAdminCode = null;
+    amAdminLocal = false;
+    storeSavedAdminCode(null);
+    updateUnjoinedAdminUI();
     return;
   }
   teamHint.textContent = msg.message || 'Error';
@@ -2943,6 +3031,23 @@ socket.on('kicked', (msg) => {
   showScreen('lobby');
 });
 
+// Admin UI for a visitor who has NOT joined (27/11/2026, post-v41
+// item 3): the code row hides once the admin is in, the invite row and
+// the full admin panel show from the local admin flag alone — an admin
+// with no player record yet must still see the panel. Joined players
+// are rendered by renderLobby instead; this only runs while unjoined
+// so the two never fight. The player rows render from the latest
+// state (the server sends state to waiting sockets too).
+let lastStatePlayers = [];
+function updateUnjoinedAdminUI() {
+  if (joined) return;
+  adminLoginRow.classList.toggle('hidden', amAdminLocal);
+  inviteRow.classList.toggle('hidden', !amAdminLocal);
+  inviteOut.classList.toggle('hidden', !amAdminLocal || !$('inviteLinkInput').value);
+  adminPanel.classList.toggle('hidden', !amAdminLocal);
+  if (amAdminLocal) renderAdminRows(lastStatePlayers.filter((p) => !p.solo));
+}
+
 // Admin panel rows (Lior, 25/11/2026): one row per team player — an
 // editable name, team buttons, class buttons. Rebuilt only when the
 // player set changes, so typing a name is not interrupted by a state
@@ -2975,9 +3080,10 @@ function renderAdminRows(teamPlayers) {
       btn.addEventListener('click', () => socket.send({ t: 'setTeam', playerId: p.id, team }));
       row.appendChild(btn);
     }
-    // 'טילן' is the WORKING NAME for the missile class (27/11/2026) —
-    // Lior can rename it in one line here and in the solo class row.
-    for (const [cls, label] of [['rifleman', 'Rifleman'], ['marksman', 'Marksman'], ['gunner', 'Gunner'], ['missile', 'טילן']]) {
+    // 'Rocketeer' is the display name for the missile class
+    // (27/11/2026, post-v41 item 2 — was 'טילן'); the code id stays
+    // 'missile' everywhere (server, client, tests).
+    for (const [cls, label] of [['rifleman', 'Rifleman'], ['marksman', 'Marksman'], ['gunner', 'Gunner'], ['missile', 'Rocketeer']]) {
       const btn = document.createElement('button');
       btn.textContent = label;
       btn.className = 'classBtn' + (p.cls === cls ? ' activeChoice' : '');
@@ -3004,12 +3110,14 @@ socket.on('state', (msg) => {
   // Dual maps (27/11/2026, item 23): the room's map applies in the lobby
   // only — never mid-match. A change that arrives mid-match is ignored
   // here; the next lobby state carries the same map and applies it.
-  // Solo stays on the small map (its server session is small-only).
-  if (!solo) {
-    if (msg.phase === 'lobby' && msg.map && msg.map !== currentMapName) rebuildMap(msg.map);
-  } else if (currentMapName !== 'small') {
-    rebuildMap('small');
-  }
+  // Solo follows the room's map too (27/11/2026, corrected item 8):
+  // the admin picks the map on the join screen and presses Solo, and
+  // the server spawns solo from the room layout — so the render must
+  // match it. The old code forced solo onto the small map, which
+  // stranded the player outside the rendered street when the room map
+  // was large (the large attackers spawn sits at z = -60, past the
+  // small map's street end).
+  if (msg.phase === 'lobby' && msg.map && msg.map !== currentMapName) rebuildMap(msg.map);
   updateRoleLabels(msg.attackersTeam);
   meta = new Map(msg.players.map((p) => [p.id, p]));
   const me = meta.get(myId);
@@ -3032,14 +3140,20 @@ socket.on('state', (msg) => {
   joinAEl.disabled = joinBlocked;
   joinBEl.disabled = joinBlocked;
   joinAutoEl.disabled = joinBlocked;
-  // Admin login before joining (27/11/2026, item 5): renderLobby only
-  // runs for joined players, so the login row + invite row for an
-  // unjoined visitor are updated here from the state.
-  const amAdminPre = !!me && me.admin === true;
-  adminLoginRow.classList.toggle('hidden', (me && me.solo) || amAdminPre);
-  inviteRow.classList.toggle('hidden', !amAdminPre);
-  inviteOut.classList.toggle('hidden', !amAdminPre || !$('inviteLinkInput').value);
+  // Admin login before joining (27/11/2026, item 5; post-v41 item 3):
+  // renderLobby only runs for joined players, so the login row +
+  // invite row + panel for an unjoined visitor update here from the
+  // state. A joined player's own admin flag counts (me.admin); an
+  // unjoined admin counts from the local flag alone.
+  lastStatePlayers = msg.players;
   if (!joined) {
+    updateUnjoinedAdminUI();
+    // The map toggle is an admin control on the join screen too
+    // (27/11/2026, corrected item 8): reflect the server's map on the
+    // buttons so a code-only admin sees which map is picked before
+    // pressing Solo. renderLobby (which calls this for joined players)
+    // does not run while unjoined.
+    renderMapRows(msg);
     // A returning player whose rejoin was rejected (old record still in
     // the room, grace not open yet) retries on state updates, at most
     // once per 2 s: the server accepts once the old record goes silent
@@ -3157,6 +3271,8 @@ socket.on('snapshot', (msg) => {
       // screenshot run (22/11/2026).
       controls.exitLock();
       controls.fireQueued = false;
+      // Death cancels a missile aim window (27/11/2026, post-v41 item 5).
+      if (missileCharging) cancelMissileCharge();
       if (msg.phase === 'playing') {
         downUntil = performance.now() + 3000;
         downOverlay.classList.remove('hidden');
@@ -3413,7 +3529,6 @@ function join(team) {
   sfx.ensure();
   kickNotice.classList.add('hidden');
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
-  myName = name;
   savedJoin = { name, team };
   sendJoin(savedJoin);
 }
@@ -3425,7 +3540,6 @@ $('soloBtn').addEventListener('click', () => {
   sfx.ensure();
   kickNotice.classList.add('hidden');
   const name = nameInput.value.trim() || `Player${myId ?? ''}`;
-  myName = name;
   savedJoin = { name, solo: true, cls: soloClass, grenades: soloGrenades };
   sendJoin(savedJoin);
 });
@@ -3447,11 +3561,25 @@ $('soloGrenadeBtn').addEventListener('click', () => {
   btn.classList.toggle('activeChoice', soloGrenades);
 });
 // One universal back button (27/11/2026): the leave message matches
-// the mode — spectator, solo, or team player.
-backBtn.addEventListener('click', () => {
+// the mode — spectator, solo, or team player. The tap also listens on
+// touchend (27/11/2026, post-v41 item 1): on iOS a tap on a small
+// button can lose its click, and the spectator's ↩ is the one button
+// that must never swallow a tap. The touchend path suppresses the
+// click that follows it (same leave, sent once) via lastBackTouchAt.
+let lastBackTouchAt = 0;
+function goBack() {
   if (spectating) socket.send({ t: 'leaveSpectate' });
   else if (solo) socket.send({ t: 'leaveSolo' });
   else socket.send({ t: 'leave' });
+}
+backBtn.addEventListener('click', () => {
+  if (performance.now() - lastBackTouchAt < 1000) return; // touchend already sent it
+  goBack();
+});
+backBtn.addEventListener('touchend', (e) => {
+  e.preventDefault(); // suppress the compatibility click; we send once, here
+  lastBackTouchAt = performance.now();
+  goBack();
 });
 // Bird's-eye spectator (admin only, from the admin panel).
 $('spectateBtn').addEventListener('click', () => {
@@ -3461,23 +3589,14 @@ $('spectateBtn').addEventListener('click', () => {
     const role = myTeam === game.attackersTeam ? 'Attackers' : 'Defenders';
     if (!window.confirm(`You are the only player on the ${role} — spectating will leave the team empty and the match can't start. Spectate anyway?`)) return;
   }
-  spectateFromTeam = myTeam;
   socket.send({ t: 'spectate' });
 });
-// One-tap rejoin (27/11/2026): a spectating admin returns to their team
-// from above; the server drops the spectator record first. The admin
-// permission rides on the same connection (savedAdminCode), so it
-// survives the rejoin.
-specRejoinBtn.addEventListener('click', () => {
-  if (!spectateFromTeam || !myName) return;
-  savedJoin = { name: myName, team: spectateFromTeam };
-  sendJoin(savedJoin);
-});
+// One-tap rejoin button removed 27/11/2026 (post-v41 item 7) — see the
+// updateHUD note: the spectator view has one corner back button only.
 // Mid-match spectate (27/11/2026): an admin playing in a match switches
 // to bird's-eye without forfeiting the round — the server only allows
 // it while their team still has another player.
 midSpectateBtn.addEventListener('click', () => {
-  spectateFromTeam = myTeam;
   socket.send({ t: 'spectate' });
 });
 // Ghost observer mode (27/11/2026): bird's-eye ↔ a player's eyes.
@@ -3690,17 +3809,34 @@ $('copyInviteBtn').addEventListener('click', async () => {
   } catch { /* fall through to the manual-selection fallback */ }
   if (!copied) {
     try {
+      // execCommand('copy') from a readonly field fails on some iOS
+      // versions: drop readonly for the selection, restore it after.
+      const wasReadonly = input.readOnly;
+      input.readOnly = false;
       input.focus();
       input.select();
       input.setSelectionRange(0, input.value.length);
       copied = document.execCommand('copy');
+      input.readOnly = wasReadonly;
     } catch { copied = false; }
   }
-  // Never claim success on a failed copy: on failure, say so and tell
-  // the user to long-press the link and copy it by hand.
-  btn.textContent = copied ? 'Copied' : 'Copy failed — long-press the link to copy it';
+  // Never claim success on a failed copy: on failure, say so and point
+  // at the textbox below, which always shows the full link for manual
+  // selection (27/11/2026, post-v41 item 6).
+  btn.textContent = copied ? 'Copied' : 'Copy failed — select the link below to copy it';
   setTimeout(() => { btn.textContent = 'Copy'; }, copied ? 1500 : 4000);
 });
+// Manual-copy fallback (27/11/2026, post-v41 item 6): tapping the link
+// selects it all, so the whole link can be copied by hand even when
+// the Copy button fails. The textbox is always visible next to the
+// button whenever a link exists — never behind a toggle.
+for (const ev of ['focus', 'click']) {
+  $('inviteLinkInput').addEventListener(ev, () => {
+    const input = $('inviteLinkInput');
+    input.select();
+    try { input.setSelectionRange(0, input.value.length); } catch { /* already selected */ }
+  });
+}
 
 socket.on('inviteCreated', (msg) => {
   $('inviteLinkInput').value = `${location.origin}/?invite=${msg.code}`;
@@ -4210,6 +4346,9 @@ window.__tacticalFire = () => ({
   climbing,
   mapOpen,
 });
+// Debug/test hook: the rendered map name (27/11/2026, corrected item 8 —
+// verifies solo renders the map the admin picked on the join screen).
+window.__tacticalMap = () => currentMapName;
 window.__tacticalMeshes = playerMeshes; // debug/test hook: remote player meshes by id
 document.getElementById('boot')?.remove(); // inline splash done its job
 socket.connect();
