@@ -8,6 +8,8 @@ import {
   OBJECTIVE,
   GROUND_WINDOWS,
   COLLIDERS,
+  LAYOUTS,
+  getLayout,
   spawnLayout,
   climbFadeAt,
   floorHeightAt,
@@ -160,8 +162,12 @@ check('windows on the alley-facing walls (north/south)', () => {
   assert.equal(covered(-14.5, 0.5, -6), true, 'wall below the window stays solid');
   // South wall mirrors it (z=+6).
   assert.equal(covered(-14.5, 1.6, 6), false, 'ground-floor south window should be a gap');
-  // Back wall (x=-16) has no windows.
-  assert.equal(covered(-16, 1.6, 0), true, 'back wall stays solid');
+  // Back wall (x=-16) has windows too (v41): gaps at cz +/- 3.5, solid
+  // between them (z=0) and below/above the windows.
+  assert.equal(covered(-16, 1.6, -3.5), false, 'ground-floor back window should be a gap');
+  assert.equal(covered(-16, 4.6, -3.5), false, 'upper back window should be a gap');
+  assert.equal(covered(-16, 1.6, 0), true, 'back wall between windows stays solid');
+  assert.equal(covered(-16, 0.5, -3.5), true, 'back wall below the window stays solid');
 });
 
 check('grey floor inside each house', () => {
@@ -182,8 +188,8 @@ check('objective zone detection', () => {
   assert.equal(objectiveContains(0, -52), false);
 });
 
-check('ground-floor windows: 60, vault landings clear', () => {
-  assert.equal(GROUND_WINDOWS.length, 60);
+check('ground-floor windows: 80 (v41: back-wall pair added), vault landings clear', () => {
+  assert.equal(GROUND_WINDOWS.length, 80);
   // Every window's vault landing (0.75 m past the plane, both sides) must
   // be free of colliders, or the climb would push the player back.
   for (const w of GROUND_WINDOWS) {
@@ -240,6 +246,239 @@ check('line of sight: blind spot under an upper window, slab blocks', () => {
   // Upper floor to ground floor inside the same house: the second-floor
   // slab (y 2.8..3.0) is in the way.
   assert.equal(hasLineOfSight(-6.8, 4.6, -3.5, -11, 1.2, 0), false);
+});
+
+// ---------------------------------------------------------------------------
+// v41: layouts, large map, back windows, tall houses, overlay
+// ---------------------------------------------------------------------------
+
+check('getLayout: known names resolve, anything else falls back to small', () => {
+  assert.equal(getLayout('small'), LAYOUTS.small);
+  assert.equal(getLayout('large'), LAYOUTS.large);
+  assert.equal(getLayout('nope'), LAYOUTS.small);
+  assert.equal(getLayout(), LAYOUTS.small);
+  assert.equal(getLayout(null), LAYOUTS.small);
+  assert.equal(getLayout('LARGE'), LAYOUTS.small, 'names are case-sensitive');
+});
+
+check('large layout: 20 houses, right numbering per quarter', () => {
+  const large = LAYOUTS.large;
+  assert.equal(large.houses.length, 20);
+  assert.deepEqual(large.houses.map((h) => h.number),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+  const quarter = (h) => (h.cz < 0 ? (h.cx > 0 ? 'NE' : 'NW') : (h.cx > 0 ? 'SE' : 'SW'));
+  assert.deepEqual(large.houses.filter((h) => quarter(h) === 'NE').map((h) => h.number), [1, 2, 3, 4, 5]);
+  assert.deepEqual(large.houses.filter((h) => quarter(h) === 'NW').map((h) => h.number), [6, 7, 8, 9, 10]);
+  assert.deepEqual(large.houses.filter((h) => quarter(h) === 'SE').map((h) => h.number), [11, 12, 13, 14, 15]);
+  assert.deepEqual(large.houses.filter((h) => quarter(h) === 'SW').map((h) => h.number), [16, 17, 18, 19, 20]);
+  // N-S houses keep the small-map pitch and footprint; E-W houses are
+  // rotated 90 degrees (12 wide along x, 10 deep along z).
+  for (const h of large.houses) {
+    if (h.facing === 'ns') {
+      assert.equal(h.x1 - h.x0, 10);
+      assert.equal(h.z1 - h.z0, 12);
+    } else {
+      assert.equal(h.x1 - h.x0, 12);
+      assert.equal(h.z1 - h.z0, 10);
+    }
+  }
+  assert.equal(large.houses.filter((h) => h.facing === 'ns').length, 12);
+  assert.equal(large.houses.filter((h) => h.facing === 'ew').length, 8);
+  // Bounds enclose houses + roads + spawns with a 6 m margin.
+  assert.deepEqual(large.bounds, { x0: -50, x1: 50, z0: -66, z1: 66 });
+  assert.equal(LAYOUTS.small.bounds.x1, 18, 'small bounds unchanged');
+});
+
+check('corner houses 3/8/13/18 sit at the cross', () => {
+  const byNumber = new Map(LAYOUTS.large.houses.map((h) => [h.number, h]));
+  assert.deepEqual([byNumber.get(3).cx, byNumber.get(3).cz], [11, -16]);
+  assert.deepEqual([byNumber.get(8).cx, byNumber.get(8).cz], [-11, -16]);
+  assert.deepEqual([byNumber.get(13).cx, byNumber.get(13).cz], [11, 16]);
+  assert.deepEqual([byNumber.get(18).cx, byNumber.get(18).cz], [-11, 16]);
+  // Each corner house's inner face meets the first E-W house's inner face.
+  assert.equal(byNumber.get(4).x0, 16, 'house 4 starts where house 3 ends');
+  assert.equal(byNumber.get(9).x1, -16, 'house 9 ends where house 8 starts');
+  assert.equal(byNumber.get(14).x0, 16, 'house 14 starts where house 13 ends');
+  assert.equal(byNumber.get(19).x1, -16, 'house 19 ends where house 18 starts');
+  // Overlay flags the same four houses as corners.
+  const corners = LAYOUTS.large.overlay.houses.filter((h) => h.corner).map((h) => h.number);
+  assert.deepEqual(corners, [3, 8, 13, 18]);
+  assert.equal(LAYOUTS.small.overlay.houses.filter((h) => h.corner).length, 0);
+});
+
+check('tall houses #8/#13: 3 floors, second stair flight, 9 m walls', () => {
+  const byNumber = new Map(LAYOUTS.large.houses.map((h) => [h.number, h]));
+  for (const n of [8, 13]) {
+    const h = byNumber.get(n);
+    assert.equal(h.floors, 3);
+    assert.ok(h.stair2, `house ${n} has a second flight`);
+  }
+  // #8 (west): stair1 x -15.5..-13.5, stair2 the adjacent strip -13.5..-11.5.
+  assert.deepEqual(byNumber.get(8).stair2, { x0: -13.5, x1: -11.5, z0: -20, z1: -14 });
+  // #13 (east): stair1 x 13.5..15.5, stair2 11.5..13.5.
+  assert.deepEqual(byNumber.get(13).stair2, { x0: 11.5, x1: 13.5, z0: 12, z1: 18 });
+  // Every other large house is 2 floors with no second flight.
+  for (const h of LAYOUTS.large.houses) {
+    if (h.number !== 8 && h.number !== 13) {
+      assert.equal(h.floors, 2, `house ${h.number} is 2 floors`);
+      assert.equal(h.stair2, null, `house ${h.number} has no stair2`);
+    }
+  }
+  // Floor height inside #8 follows all three floors + the second flight.
+  const L = LAYOUTS.large;
+  assert.equal(floorHeightAt(-11, -16, 0, L), 0);
+  assert.equal(floorHeightAt(-11, -16, 3, L), 3);
+  assert.equal(floorHeightAt(-11, -16, 5, L), 6, 'above 4.5 m: floor 3');
+  assert.equal(floorHeightAt(-12.5, -20, 3, L), 3, 'stair2 bottom');
+  assert.equal(floorHeightAt(-12.5, -17, 3, L), 4.5, 'stair2 middle');
+  assert.equal(floorHeightAt(-12.5, -14, 3, L), 6, 'stair2 top');
+  // 2-floor houses are unaffected by the 4.5 m rule.
+  assert.equal(floorHeightAt(-11, -32, 5, L), 3, '2-floor house caps at 3');
+  // Roof at y 9 on tall houses, y 6 elsewhere (visual boxes).
+  const boxes = visualBoxes(L);
+  const covered = (x, y, z) => boxes.some(
+    (b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1 && z >= b.z0 && z <= b.z1);
+  assert.equal(covered(-11, 9.1, -16), true, 'tall house roof at y 9');
+  assert.equal(covered(-11, 6.1, -32), true, 'normal house roof at y 6');
+  // Floor-3 windows are gaps on the tall houses (street wall, x=-6).
+  assert.equal(covered(-6, 7.6, -19.5), false, 'floor-3 street window is a gap');
+  assert.equal(covered(-6, 6.5, -19.5), true, 'wall below the floor-3 window stays solid');
+});
+
+check('back windows: visual-box count grows by 8 per house', () => {
+  // Small: 10 houses x 44 boxes + 4 fence = 444 (was 354 with a solid
+  // back wall: 10 x 35 + 4). Large: 12 ns x 44 + 8 ew x 43 + 2 tall
+  // extra (8 window-band pieces + 4 floor-3 slab pieces) + 4 fence = 900.
+  assert.equal(visualBoxes().length, 444);
+  assert.equal(visualBoxes(LAYOUTS.large).length, 900);
+});
+
+check('overlay data present for both layouts', () => {
+  for (const [name, layout] of [['small', LAYOUTS.small], ['large', LAYOUTS.large]]) {
+    const o = layout.overlay;
+    assert.deepEqual(o.fence, layout.bounds, `${name}: fence = bounds`);
+    assert.equal(o.houses.length, layout.houses.length, `${name}: one entry per house`);
+    for (const oh of o.houses) {
+      const h = layout.houses.find((hh) => hh.number === oh.number);
+      assert.equal(oh.x, h.cx, `${name} #${oh.number}: x is the centre`);
+      assert.equal(oh.z, h.cz, `${name} #${oh.number}: z is the centre`);
+      assert.equal(oh.w, h.x1 - h.x0, `${name} #${oh.number}: w along x`);
+      assert.equal(oh.d, h.z1 - h.z0, `${name} #${oh.number}: d along z`);
+      assert.equal(oh.tall, h.floors === 3, `${name} #${oh.number}: tall flag`);
+    }
+  }
+  // Small: one road (the N-S street). Large: two roads crossing.
+  assert.deepEqual(LAYOUTS.small.overlay.roads,
+    [{ x0: -6.3, z0: -62, x1: 6.3, z1: 62 }]);
+  assert.deepEqual(LAYOUTS.large.overlay.roads, [
+    { x0: -6.3, z0: -66, x1: 6.3, z1: 66 },
+    { x0: -50, z0: -6.3, x1: 50, z1: 6.3 },
+  ]);
+});
+
+check('tallSpawns: defenders inside the tall building, attackers at the opposite end', () => {
+  const ts = LAYOUTS.large.tallSpawns;
+  assert.ok(ts, 'large layout has tallSpawns');
+  assert.equal(LAYOUTS.small.tallSpawns, undefined, 'small layout has none');
+  for (const [num, house] of [[8, { cx: -11, cz: -16 }], [13, { cx: 11, cz: 16 }]]) {
+    const t = ts[num];
+    assert.equal(t.defenders.length, 6, `#${num}: 6 defender points`);
+    assert.equal(t.attackers.length, 6, `#${num}: 6 attacker points`);
+    // Defenders are inside the building, on open ground, clear of the stairs.
+    for (const s of t.defenders) {
+      assert.ok(Math.abs(s.x - house.cx) <= 4.5 && Math.abs(s.z - house.cz) <= 5.5,
+        `#${num} defender inside the building: ${JSON.stringify(s)}`);
+      const out = resolveCollision(s.x, s.z, 0, 0.4, LAYOUTS.large);
+      assert.equal(out.x, s.x, `#${num} defender clear: ${JSON.stringify(s)}`);
+      assert.equal(out.z, s.z, `#${num} defender clear: ${JSON.stringify(s)}`);
+      assert.equal(floorHeightAt(s.x, s.z, 0, LAYOUTS.large), 0);
+    }
+    // Objective is the top floor of that building.
+    assert.deepEqual(t.objective, { x: house.cx, z: house.cz, r: 3.5, yMin: 6 });
+  }
+  // Opposite ends: #8's attackers at the SE end (z +60), #13's at the NW end.
+  assert.ok(ts[8].attackers.every((s) => s.z === 60 && s.x > 0), '#8 attackers at SE end');
+  assert.ok(ts[8].attackers.every((s) => s.yaw === 0), '#8 attackers face north');
+  assert.ok(ts[13].attackers.every((s) => s.z === -60 && s.x < 0), '#13 attackers at NW end');
+  assert.ok(ts[13].attackers.every((s) => s.yaw === Math.PI), '#13 attackers face south');
+  // Attackers sit inside the objective-style end zone, defenders do not.
+  assert.ok(ts[8].attackers.every((s) => objectiveContains(s.x, s.z, { x: 11, z: 60, r: 3.5 })));
+});
+
+check('layout-parameterised functions agree with the no-arg versions (small)', () => {
+  const L = LAYOUTS.small;
+  assert.deepEqual(visualBoxes(L), visualBoxes());
+  assert.deepEqual(stairRamps(L), stairRamps());
+  assert.deepEqual(spawnLayout(-1, 1, L), spawnLayout(-1, 1));
+  assert.deepEqual(spawnLayout(1, -1, 'small'), spawnLayout(1, -1));
+  assert.deepEqual(resolveCollision(-11, -6, 0, 0.4, L), resolveCollision(-11, -6, 0));
+  assert.equal(floorHeightAt(-14.5, -1, 0, L), floorHeightAt(-14.5, -1, 0));
+  assert.equal(climbFadeAt(-14.5, -38, L), climbFadeAt(-14.5, -38));
+  assert.equal(hasLineOfSight(0, 1.6, 0, 0, 1.2, 20, L), hasLineOfSight(0, 1.6, 0, 0, 1.2, 20));
+  // A layout name string works too.
+  assert.equal(floorHeightAt(-11, -16, 3, 'large'), 3, 'large house interior, floor 2');
+});
+
+check('large layout: spawns clear, objective clear of the street, 160 ground windows', () => {
+  const L = LAYOUTS.large;
+  assert.equal(L.colliders.length, 124, '20 houses x 6 + 4 boundary');
+  assert.equal(L.groundWindows.length, 160, '20 houses x 8');
+  assert.equal(stairRamps(L).length, 22, '20 first flights + 2 second flights');
+  for (const atkSide of [-1, 1]) {
+    for (const defSide of [-1, 1]) {
+      const layout = spawnLayout(atkSide, defSide, L);
+      assert.ok(layout.attackers.every((s) => s.z === -60));
+      assert.ok(layout.defenders.every((s) => s.z === 60));
+      assert.equal(layout.objective.z, 60);
+      assert.equal(layout.objective.r, 3.5);
+      for (const role of ['attackers', 'defenders']) {
+        for (const s of layout[role]) {
+          const out = resolveCollision(s.x, s.z, 0, 0.4, L);
+          assert.equal(out.x, s.x, `large spawn clear: ${JSON.stringify(s)}`);
+          assert.equal(out.z, s.z, `large spawn clear: ${JSON.stringify(s)}`);
+          assert.equal(floorHeightAt(s.x, s.z, 0, L), 0);
+        }
+      }
+      assert.equal(objectiveContains(6, 60, layout.objective), false, 'zone must not reach the street');
+      assert.equal(objectiveContains(-6, 60, layout.objective), false, 'zone must not reach the street');
+    }
+  }
+  // Every large ground window's vault landing is clear of colliders.
+  for (const w of L.groundWindows) {
+    for (const side of [-1, 1]) {
+      const px = w.axis === 'x' ? w.plane + side * 0.75 : w.center;
+      const pz = w.axis === 'x' ? w.center : w.plane + side * 0.75;
+      const out = resolveCollision(px, pz, 0, 0.4, L);
+      assert.equal(out.x, px, `large window ${JSON.stringify(w)} side ${side}: x pushed`);
+      assert.equal(out.z, pz, `large window ${JSON.stringify(w)} side ${side}: z pushed`);
+    }
+  }
+});
+
+check('large layout: E-W house doors, floors, stairs, line of sight', () => {
+  const L = LAYOUTS.large;
+  // House #4 (E-W, cx 22, cz -11.3): door on the street wall z=-6.3.
+  const door = resolveCollision(22, -6.3, 0, 0.4, L);
+  assert.ok(Math.abs(door.x - 22) < 0.01 && Math.abs(door.z - -6.3) < 0.01,
+    `E-W door passable at ground level, got ${JSON.stringify(door)}`);
+  const blocked = resolveCollision(22, -6.3, 3, 0.4, L);
+  assert.ok(Math.abs(blocked.z - -6.3) >= 0.4, `E-W door header blocks at y=3, got ${JSON.stringify(blocked)}`);
+  // Floor height inside #4 follows the current floor; stairs run along x.
+  assert.equal(floorHeightAt(22, -11.3, 0, L), 0);
+  assert.equal(floorHeightAt(22, -11.3, 3, L), 3);
+  assert.equal(floorHeightAt(19, -15.3, 0, L), 0, 'E-W stair bottom');
+  assert.equal(floorHeightAt(22, -15.3, 0, L), 1.5, 'E-W stair middle');
+  assert.equal(floorHeightAt(25, -15.3, 0, L), 3, 'E-W stair top');
+  // Line of sight: out of #4's door onto the E-W road, and blocked
+  // through the solid band next to the door.
+  assert.equal(hasLineOfSight(22, 1.6, -11.3, 22, 1.2, 0, L), true, 'through the E-W door');
+  assert.equal(hasLineOfSight(24, 1.6, -11.3, 24, 1.2, 0, L), false, 'solid band blocks');
+  // Out of #4's back-wall window (z=-16.3, window at x=25.5).
+  assert.equal(hasLineOfSight(25.5, 1.6, -11.3, 25.5, 1.2, -25, L), true, 'through the back window');
+  // Per-layout LOS cache: this ray is clear on the small map (open
+  // ground east of the street) but blocked on the large map (house #5).
+  assert.equal(hasLineOfSight(30, 1.6, -11.3, 45, 1.2, -11.3), true, 'small: open ground');
+  assert.equal(hasLineOfSight(30, 1.6, -11.3, 45, 1.2, -11.3, L), false, 'large: E-W house blocks');
 });
 
 console.log(`map tests passed (${n} checks)`);
