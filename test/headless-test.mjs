@@ -54,8 +54,9 @@
 //     with different names coexist untouched.
 //   Scenario 12 (solo NPC shoot-down): a solo shot at another player
 //     still never hits; distance damage on NPCs (1 hit <= 15 m, 2 hits
-//     15-50 m, 3 hits > 50 m); a downed NPC stays down — no revive —
-//     and stops firing, and shots at it do not hit.
+//     15-50 m, 3 hits > 50 m); a downed NPC lies still for 2 s and stops
+//     firing, then is replaced at a free window spot (Lior, 26/11/2026);
+//     shots at it while down do not hit.
 //   Scenario 13 (deliberate team leave): a 1v1 match, one player sends
 //     'leave' mid-match — the leaver gets 'left', the other team wins
 //     the round by elimination, the leaver is gone from the state, and
@@ -118,6 +119,10 @@
 //     minutes from the lobby (state.roundDurationMin); a non-admin set
 //     is ignored; the next round runs the new clock (2 min here, the
 //     test env runs ROUND_MS=60000).
+//   Scenario 26 (solo NPC respawn): a downed NPC is replaced after
+//     2 s at a free window spot (Lior, 26/11/2026) — same id, full
+//     health, different spot, still 10 NPCs — and the replacement can
+//     itself be shot down again.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -127,6 +132,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import WebSocket from 'ws';
 import { SPAWNS } from '../public/map.js';
+import * as mapMod from '../public/map.js'; // getLayout presence check for the dual-map scenarios
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = 8021;
@@ -932,7 +938,8 @@ async function main() {
 
     // Scenario 12 — solo players can shoot the NPCs down: distance
     // damage (1 hit <= 15 m, 2 hits 15-50 m, 3 hits > 50 m). A downed
-    // NPC stays down — no revive — stops firing, and shots at it do
+    // NPC lies still for 2 s and stops firing, then is replaced at a
+    // free window spot (Lior, 26/11/2026); shots at it while down do
     // not hit. Solo shots at players still never hit.
     const shooter = new Client('NpcShooter');
     await shooter.ready();
@@ -967,6 +974,7 @@ async function main() {
     shooter.inbox.length = 0;
     shooter.send({ t: 'shot', targetId: close.id });
     const down = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id && m.targetId === close.id, 5000);
+    const killAt = Date.now(); // the kill event just arrived; the server stamped downAt a few ms earlier
     assert.equal(down.hit, true);
     assert.equal(down.killed, true);
     assert.equal(down.damage, 100);
@@ -984,18 +992,38 @@ async function main() {
     const downShot = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id, 5000);
     assert.equal(downShot.hit, false);
     console.log('ok - shots at the downed NPC do not hit');
-    // No revive: well past the old down time it is still down, and it
-    // has not fired since going down.
+    // Respawn (Lior, 26/11/2026): the downed NPC lies still for 2 s —
+    // still down and silent at ~1.2 s — then vanishes and a fresh NPC
+    // appears at a free window spot: same id, full health, a different
+    // spot, still 10 NPCs in total.
     const closeShotsBefore = shooter.inbox.filter((m) => m.t === 'shot' && m.shooterId === close.id).length;
-    await sleep(2500);
+    await sleep(900);
     const stillDown = shooter.findLast('snapshot', (m) =>
       m.players.some((p) => p.id === close.id));
     assert.ok(stillDown && stillDown.players.find((p) => p.id === close.id).alive === false
       && stillDown.players.find((p) => p.id === close.id).health === 0,
-      'downed NPC must stay down (no revive)');
+      'downed NPC must still be down before the 2 s respawn');
     assert.equal(shooter.inbox.filter((m) => m.t === 'shot' && m.shooterId === close.id).length,
-      closeShotsBefore, 'downed NPC must not fire');
-    console.log('ok - downed NPC stays down after 2.5 s+ and never fires again');
+      closeShotsBefore, 'downed NPC must not fire while down');
+    console.log('ok - downed NPC still down and silent at ~1.2 s');
+    shooter.inbox.length = 0;
+    const respawnSnap = await shooter.waitFor('snapshot', (m) => {
+      const n = m.players.find((p) => p.npc === true && p.id === close.id);
+      return n && n.alive === true && n.health === 100
+        && (n.x !== close.x || n.y !== close.y || n.z !== close.z);
+    }, 5000);
+    const respawned = respawnSnap.players.find((p) => p.id === close.id);
+    const respawnMs = Date.now() - killAt;
+    assert.ok(respawnMs >= 1700 && respawnMs <= 5000,
+      `respawn must land ~2 s after the kill, took ${respawnMs} ms`);
+    const respawnSet = respawnSnap.players.filter((p) => p.npc === true);
+    assert.equal(respawnSet.length, 10, 'still 10 NPCs after the respawn');
+    assert.ok(!respawnSet.some((p) => p.id !== close.id
+      && p.x === respawned.x && p.y === respawned.y && p.z === respawned.z),
+      'no other NPC shares the respawn spot');
+    assert.ok(Math.abs(Math.abs(respawned.x) - 6.8) < 0.01 && (respawned.y === 0 || respawned.y === 3),
+      `respawn spot must be a window spot, got ${respawned.x},${respawned.y},${respawned.z}`);
+    console.log(`ok - NPC respawns after ~2 s at a new free window spot (${respawnMs} ms)`);
     // Medium range (15-50 m): 20 m along the street — 50 damage, 2 hits.
     const medium = set.find((p) => p.id !== close.id);
     const medZ = medium.z + 20 <= 60 ? medium.z + 20 : medium.z - 20;
@@ -1172,7 +1200,14 @@ async function main() {
     await ls1.waitFor('shot', (m) => m.shooterId === lTarget.id, 5000);
     ls1.inbox.length = 0; // drop shot 1 of the burst; shots 2-3 must follow
     const behindX = lTarget.x < 0 ? -17 : 17;
-    ls1.send({ t: 'move', x: behindX, y: 0, z: lTarget.z, yaw: 0, pitch: 0 });
+    // Duck OFF the window line: the NPC sits at a window centre
+    // (z = cz +/- 3.5) and the back wall has windows at exactly those
+    // z values (item 10), so ducking at the same z keeps line of sight
+    // straight through the back window. +1.75 m along the wall puts the
+    // player in the solid band between the back windows (verified:
+    // hasLineOfSight is false there), restoring the "behind cover"
+    // premise of this test.
+    ls1.send({ t: 'move', x: behindX, y: 0, z: lTarget.z + 1.75, yaw: 0, pitch: 0 });
     await sleep(2500);
     const midBurst = ls1.inbox.filter((m) => m.t === 'shot' && m.shooterId === lTarget.id).length;
     assert.equal(midBurst, 2, `burst must complete after LoS breaks, got ${midBurst} more shots`);
@@ -1892,6 +1927,406 @@ async function main() {
       `round clock is ~120 s, got ${rdSnap.timeLeftMs} ms`);
     console.log('ok - round with admin-set 2 min runs a ~120 s clock');
     for (const c of [rd1, rd2]) c.close();
+    await sleep(300);
+
+    // Scenario 26 — solo NPC respawn: the replacement is a live target.
+    const resp = new Client('RespawnShooter');
+    await resp.ready();
+    resp.send({ t: 'solo', name: 'RespawnShooter' });
+    await resp.waitFor('soloJoined');
+    const rSetSnap = await resp.waitFor('snapshot', (m) =>
+      m.players.filter((p) => p.npc === true).length === 10);
+    const rSet = rSetSnap.players.filter((p) => p.npc === true);
+    const victim = rSet[0];
+    resp.send({ t: 'move', x: 0, y: 0, z: victim.z, yaw: 0, pitch: 0 });
+    await sleep(300);
+    resp.inbox.length = 0;
+    resp.send({ t: 'shot', targetId: victim.id });
+    const rKill = await resp.waitFor('shot', (m) => m.shooterId === resp.id && m.targetId === victim.id, 5000);
+    assert.equal(rKill.killed, true);
+    const rKillAt = Date.now();
+    // Wait for the replacement (same id, alive, new spot).
+    resp.inbox.length = 0;
+    const rRespawnSnap = await resp.waitFor('snapshot', (m) => {
+      const n = m.players.find((p) => p.npc === true && p.id === victim.id);
+      return n && n.alive === true && n.health === 100
+        && (n.x !== victim.x || n.y !== victim.y || n.z !== victim.z);
+    }, 5000);
+    const rMs = Date.now() - rKillAt;
+    assert.ok(rMs >= 1700 && rMs <= 5000, `replacement must arrive ~2 s after the kill, took ${rMs} ms`);
+    const replacement = rRespawnSnap.players.find((p) => p.id === victim.id);
+    // The replacement is itself a live target: walk to its window and
+    // shoot it down again.
+    resp.send({ t: 'move', x: 0, y: 0, z: replacement.z, yaw: 0, pitch: 0 });
+    await sleep(300);
+    resp.inbox.length = 0;
+    resp.send({ t: 'shot', targetId: replacement.id });
+    const rKill2 = await resp.waitFor('shot', (m) => m.shooterId === resp.id && m.targetId === replacement.id, 5000);
+    assert.equal(rKill2.killed, true);
+    assert.equal(rKill2.targetHealth, 0);
+    console.log(`ok - respawned NPC is a live target and goes down again (${rMs} ms)`);
+    resp.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 27: admin
+    // code before join (v41, item 5). Entering the code on an unjoined
+    // connection stores a pending-admin flag; the join applies it and
+    // sends adminOk, and an admin-gated action then works. A wrong
+    // pre-join code grants nothing.
+    const ab1 = new Client('AbAdmin');
+    const ab2 = new Client('AbMate');
+    for (const c of [ab1, ab2]) await c.ready();
+    ab1.send({ t: 'admin', code: 'wrong-code' });
+    const abWrong = await ab1.waitFor('error', (m) => /Wrong admin code/.test(m.message || ''));
+    assert.ok(abWrong, 'a wrong pre-join code is rejected');
+    ab1.send({ t: 'join', name: 'AbAdmin', team: 'A' });
+    await ab1.waitFor('joined');
+    await sleep(300);
+    const abNotAdmin = ab1.findLast('state');
+    assert.equal(abNotAdmin.players.find((p) => p.id === ab1.id).admin, false, 'a wrong code must not make the joiner admin');
+    console.log('ok - wrong admin code before join is rejected and grants nothing');
+    ab2.send({ t: 'admin', code: 'test-code' });
+    await ab2.waitFor('adminOk');
+    ab2.inbox.length = 0;
+    ab2.send({ t: 'join', name: 'AbMate', team: 'B' });
+    await ab2.waitFor('joined');
+    await ab2.waitFor('adminOk'); // second adminOk, on join
+    const abAdminState = await ab2.waitFor('state', (m) => m.players.some((p) => p.id === ab2.id && p.admin === true));
+    assert.ok(abAdminState.players.find((p) => p.id === ab2.id).admin, 'the pre-join admin applies on join');
+    ab2.send({ t: 'setRoundDuration', minutes: 3 });
+    const abSet = await ab2.waitFor('state', (m) => m.roundDurationMin === 3);
+    assert.equal(abSet.roundDurationMin, 3, 'the pre-join admin can use admin-gated actions');
+    console.log('ok - admin code before join applies on join (adminOk + gated action works)');
+    ab2.send({ t: 'setRoundDuration', minutes: 1 }); // leave the clock as the suite found it
+    await ab2.waitFor('state', (m) => m.roundDurationMin === 1);
+    for (const c of [ab1, ab2]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 28: missile
+    // class (v41, item 12). The missile soldier ("טילן" in the UI)
+    // fires a rifleman-equivalent rifle, carries 0 grenades and 2
+    // missiles per round; charging shows a missile flag in snapshots;
+    // the blast kills through walls (no line of sight) and spends a
+    // munition; a third fire with none left is rejected.
+    const mi = new Client('MissileSolo');
+    await mi.ready();
+    mi.send({ t: 'solo', name: 'MissileSolo', cls: 'missile' });
+    await mi.waitFor('soloJoined');
+    const miState = await mi.waitFor('state', (m) => m.players.some((p) => p.id === mi.id));
+    const miEntry = miState.players.find((p) => p.id === mi.id);
+    assert.equal(miEntry.cls, 'missile', 'solo join carries the missile class');
+    assert.equal(miEntry.missiles, 2, 'missile soldier starts with 2 munitions');
+    assert.equal(miEntry.grenades, 0, 'missile soldier carries no grenades');
+    console.log('ok - missile class joins solo with 2 munitions and 0 grenades');
+    const miSnap0 = await mi.waitFor('snapshot', (m) => m.players.filter((p) => p.npc === true).length === 10);
+    const miVictim = miSnap0.players.filter((p) => p.npc === true).find((p) => p.y === 0);
+    // Charge: the snapshot carries missile:true on the shooter.
+    mi.send({ t: 'missileCharge', on: true });
+    const miCharged = await mi.waitFor('snapshot', (m) => {
+      const me = m.players.find((p) => p.id === mi.id);
+      return me && me.missile === true;
+    }, 5000);
+    assert.ok(miCharged, 'charging shows the missile flag in snapshots');
+    console.log('ok - missile charge flag appears in snapshots');
+    // Fire at a point 1.3 m street-side of the NPC: the NPC sits just
+    // inside its house wall, so the wall stands between the impact and
+    // the victim — a grenade there would be blocked, the missile is not.
+    const miImpact = {
+      x: Math.round((miVictim.x < 0 ? miVictim.x + 1.3 : miVictim.x - 1.3) * 10) / 10,
+      y: 0,
+      z: miVictim.z,
+    };
+    mi.send({ t: 'missile', impact: miImpact });
+    const miBlast = await mi.waitFor('missileBlast', (m) => m.shooterId === mi.id, 5000);
+    assert.ok(miBlast.victims.some((v) => v.id === miVictim.id && v.killed),
+      'the blast kills the NPC through the wall');
+    assert.deepEqual([miBlast.impact.x, miBlast.impact.y, miBlast.impact.z],
+      [miImpact.x, miImpact.y, miImpact.z], 'the blast echoes the impact point');
+    const miState2 = await mi.waitFor('state', (m) => {
+      const e = m.players.find((p) => p.id === mi.id);
+      return e && e.missiles === 1;
+    });
+    assert.equal(miState2.players.find((p) => p.id === mi.id).missiles, 1, 'munitions drop to 1 after the first fire');
+    console.log('ok - missile blast kills through a wall, munitions drop to 1');
+    // The charge flag clears on fire.
+    mi.inbox.length = 0;
+    const miSnapAfter = await mi.waitFor('snapshot', (m) => {
+      const me = m.players.find((p) => p.id === mi.id);
+      return me && me.missile !== true;
+    }, 5000);
+    assert.ok(miSnapAfter, 'the charge flag clears after firing');
+    // Second fire: another NPC goes down, munitions hit 0.
+    const miSnap1 = await mi.waitFor('snapshot', (m) =>
+      m.players.filter((p) => p.npc === true && p.alive === true).length >= 9);
+    const miVictim2 = miSnap1.players.filter((p) => p.npc === true && p.alive === true && p.id !== miVictim.id)
+      .find((p) => p.y === 0);
+    const miImpact2 = {
+      x: Math.round((miVictim2.x < 0 ? miVictim2.x + 1.3 : miVictim2.x - 1.3) * 10) / 10,
+      y: 0,
+      z: miVictim2.z,
+    };
+    mi.send({ t: 'missileCharge', on: true });
+    await mi.waitFor('snapshot', (m) => m.players.find((p) => p.id === mi.id)?.missile === true, 5000);
+    mi.send({ t: 'missile', impact: miImpact2 });
+    const miBlast2 = await mi.waitFor('missileBlast', (m) => m.shooterId === mi.id
+      && m.victims.some((v) => v.id === miVictim2.id), 5000);
+    assert.ok(miBlast2.victims.some((v) => v.id === miVictim2.id && v.killed), 'the second blast kills its NPC');
+    await mi.waitFor('state', (m) => m.players.find((p) => p.id === mi.id)?.missiles === 0, 5000);
+    // Third fire with none left is rejected: no blast at all.
+    mi.inbox.length = 0;
+    mi.send({ t: 'missile', impact: miImpact2 });
+    await sleep(600);
+    assert.equal(mi.inbox.filter((m) => m.t === 'missileBlast').length, 0, 'a third fire with no munitions is rejected');
+    console.log('ok - second fire spends the last munition; a third fire is rejected');
+    mi.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 29: spectator
+    // one-tap rejoin (v41, item 18). A spectator sends 'join' straight
+    // from the spectator view — no leaveSpectate first — and is a
+    // player again (fresh positive id, admin flag kept, no spectator
+    // record left behind).
+    const rj1 = new Client('RejoinAdmin');
+    const rj2 = new Client('RejoinMate');
+    const rj3 = new Client('RejoinFoe');
+    for (const c of [rj1, rj2, rj3]) await c.ready();
+    rj1.send({ t: 'join', name: 'RejoinAdmin', team: 'A' });
+    rj2.send({ t: 'join', name: 'RejoinMate', team: 'A' });
+    rj3.send({ t: 'join', name: 'RejoinFoe', team: 'B' });
+    await rj1.waitFor('state', (m) => m.players.length === 3);
+    await rj1.becomeAdmin();
+    rj1.send({ t: 'spectate' });
+    const rjSpec = await rj1.waitFor('spectateJoined', () => true);
+    assert.ok(rjSpec.id < 0, 'the spectator id is negative');
+    await rj1.waitFor('state', (m) => m.adminSpectating === true);
+    rj1.inbox.length = 0;
+    rj1.send({ t: 'join', name: 'RejoinAdmin', team: 'A' });
+    const rjJoined = await rj1.waitFor('joined', () => true, 5000);
+    assert.ok(rjJoined.id > 0, 'the rejoined player gets a fresh positive id');
+    rj1.id = rjJoined.id; // the Client id was the welcome id; the rejoin id is new
+    const rjState = await rj1.waitFor('state', (m) => m.players.length === 3 && m.adminSpectating === false);
+    assert.ok(rjState.players.some((p) => p.id === rjJoined.id && p.name === 'RejoinAdmin' && p.admin === true),
+      'the rejoining spectator is a player again — and still the admin');
+    console.log('ok - spectator rejoins with one join (fresh player id, admin kept, no spectator record)');
+    for (const c of [rj1, rj2, rj3]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 30: mid-match
+    // spectate (v41, item 19). Allowed only when the admin's team has
+    // >= 2 players; the last player on a team is rejected with
+    // spectate_last_player; and a team emptying because its last
+    // living player spectated does NOT forfeit the round.
+    const ms1 = new Client('MsAdmin');
+    const ms2 = new Client('MsMate');
+    const ms3 = new Client('MsFoe');
+    for (const c of [ms1, ms2, ms3]) await c.ready();
+    ms1.send({ t: 'join', name: 'MsAdmin', team: 'A' });
+    ms2.send({ t: 'join', name: 'MsMate', team: 'A' });
+    ms3.send({ t: 'join', name: 'MsFoe', team: 'B' });
+    await ms1.waitFor('state', (m) => m.players.length === 3);
+    await ms1.becomeAdmin();
+    ms1.send({ t: 'setPrepEnabled', enabled: false });
+    await ms1.waitFor('state', (m) => m.prepEnabled === false);
+    ms1.send({ t: 'start' });
+    await ms1.waitFor('roundStart', (m) => m.round === 1);
+    await waitPrepEnd(ms1);
+    // The foe kills the admin's teammate, so the admin is the last
+    // living player on A (the dead mate is still a player record, so
+    // the team still counts 2 players and spectate is allowed).
+    ms2.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0 });
+    ms3.send({ t: 'move', x: 2, y: 0, z: 0, yaw: 0, pitch: 0 });
+    await sleep(300);
+    ms3.send({ t: 'shot', targetId: ms2.id });
+    const msKill = await ms3.waitFor('shot', (m) => m.targetId === ms2.id && m.killed, 5000);
+    assert.ok(msKill, 'the foe kills the admin\'s teammate');
+    assert.equal(msKill.damage, 100, 'close-range kill');
+    // Admin spectates: allowed (2 players on A), and the round does
+    // NOT end — a team emptying by spectate is not a forfeit.
+    ms1.send({ t: 'spectate' });
+    await ms1.waitFor('spectateJoined', () => true);
+    const msSpecState = await ms1.waitFor('state', (m) => m.adminSpectating === true);
+    assert.equal(msSpecState.players.length, 2, 'spectating admin leaves the player list mid-match');
+    assert.equal(msSpecState.phase, 'playing', 'the round keeps playing');
+    await sleep(800);
+    assert.equal(ms1.inbox.filter((m) => m.t === 'roundEnd').length, 0,
+      'no round end when the last living player spectates');
+    console.log('ok - mid-match spectate allowed with 2 on the team; no forfeit when the team empties by spectate');
+    for (const c of [ms1, ms2, ms3]) c.close();
+    await sleep(600);
+    // Second match: the admin alone on A is the last player — spectate
+    // is rejected with spectate_last_player and the admin stays put.
+    const mr1 = new Client('MrAdmin');
+    const mr2 = new Client('MrFoe');
+    const mr3 = new Client('MrFoe2');
+    for (const c of [mr1, mr2, mr3]) await c.ready();
+    mr1.send({ t: 'join', name: 'MrAdmin', team: 'A' });
+    mr2.send({ t: 'join', name: 'MrFoe', team: 'B' });
+    mr3.send({ t: 'join', name: 'MrFoe2', team: 'B' });
+    await mr1.waitFor('state', (m) => m.players.length === 3);
+    await mr1.becomeAdmin();
+    mr1.send({ t: 'setPrepEnabled', enabled: false });
+    await mr1.waitFor('state', (m) => m.prepEnabled === false);
+    mr1.send({ t: 'start' });
+    await mr1.waitFor('roundStart', (m) => m.round === 1);
+    await waitPrepEnd(mr1);
+    mr1.inbox.length = 0;
+    mr1.send({ t: 'spectate' });
+    const mrReject = await mr1.waitFor('error', (m) => m.code === 'spectate_last_player', 5000);
+    assert.ok(mrReject, 'last-player spectate is rejected with spectate_last_player');
+    await sleep(400);
+    assert.equal(mr1.inbox.filter((m) => m.t === 'spectateJoined').length, 0, 'no spectateJoined on rejection');
+    const mrAfter = mr2.findLast('state');
+    assert.ok(mrAfter.players.some((p) => p.id === mr1.id), 'the rejected admin stays a player');
+    assert.equal(mrAfter.phase, 'playing', 'the round keeps playing after the rejection');
+    assert.equal(mrAfter.adminSpectating, false, 'nobody is spectating after the rejection');
+    console.log('ok - last player on the team cannot spectate mid-match (spectate_last_player)');
+    for (const c of [mr1, mr2, mr3]) c.close();
+    await sleep(600);
+
+    // ------------------------------------------------ scenario 31: dual maps
+    // (v41, item 23). The room map is 'small' by default; only the
+    // admin may change it, lobby only; the state carries the map.
+    assert.equal(typeof mapMod.getLayout, 'function', 'map.js must export getLayout for the dual-map scenarios');
+    const mp1 = new Client('MapAdmin');
+    const mp2 = new Client('MapMate');
+    const mp3 = new Client('MapFoe');
+    for (const c of [mp1, mp2, mp3]) await c.ready();
+    mp1.send({ t: 'join', name: 'MapAdmin', team: 'A' });
+    mp2.send({ t: 'join', name: 'MapMate', team: 'A' });
+    mp3.send({ t: 'join', name: 'MapFoe', team: 'B' });
+    await mp1.waitFor('state', (m) => m.players.length === 3);
+    await mp1.becomeAdmin();
+    const mpDefault = await mp1.waitFor('state', (m) => m.map != null);
+    assert.equal(mpDefault.map, 'small', 'default map is small');
+    console.log('ok - default map is small (state.map)');
+    mp2.send({ t: 'setMap', map: 'large' });
+    await sleep(400);
+    assert.equal(mp1.findLast('state').map, 'small', 'a non-admin setMap is ignored');
+    console.log('ok - non-admin setMap is ignored');
+    mp1.send({ t: 'setMap', map: 'large' });
+    const mpLarge = await mp1.waitFor('state', (m) => m.map === 'large');
+    assert.equal(mpLarge.map, 'large', 'admin setMap to large');
+    assert.ok(mpLarge.objective, 'state carries the large-map objective');
+    console.log('ok - admin sets the map to large; state carries map + objective');
+    mp1.send({ t: 'setPrepEnabled', enabled: false });
+    await mp1.waitFor('state', (m) => m.prepEnabled === false);
+    mp1.send({ t: 'start' });
+    await mp1.waitFor('roundStart', (m) => m.round === 1);
+    await waitPrepEnd(mp1);
+    mp1.send({ t: 'setMap', map: 'small' });
+    await sleep(400);
+    assert.equal(mp1.findLast('state').map, 'large', 'a mid-match setMap is ignored');
+    console.log('ok - mid-match setMap is ignored');
+    for (const c of [mp1, mp2, mp3]) c.close();
+    await sleep(600);
+
+    // ------------------------------------------------ scenario 32: tall-building
+    // capture (v41, item 24, large map only). With building 8 set, the
+    // defenders spawn in the tall building and the objective sits on
+    // its third floor (yMin 6): an attacker at ground level inside the
+    // footprint does NOT progress the capture; at y >= 6 the hold runs
+    // and wins the round by objective.
+    const tc1 = new Client('TallAtk');
+    const tc2 = new Client('TallDef');
+    for (const c of [tc1, tc2]) await c.ready();
+    tc1.send({ t: 'join', name: 'TallAtk', team: 'A' });
+    tc2.send({ t: 'join', name: 'TallDef', team: 'B' });
+    await tc1.waitFor('state', (m) => m.players.length === 2);
+    await tc1.becomeAdmin();
+    tc1.send({ t: 'setAttackers', team: 'A' });
+    tc1.send({ t: 'setMap', map: 'large' });
+    await tc1.waitFor('state', (m) => m.map === 'large');
+    tc1.send({ t: 'setDefSpawn', building: 8 });
+    const tcSet = await tc1.waitFor('state', (m) => m.defSpawn === 8);
+    assert.ok(tcSet.objective && tcSet.objective.yMin === 6,
+      `tall objective carries yMin 6, got ${JSON.stringify(tcSet.objective)}`);
+    console.log('ok - tall-building spawn set (building 8, objective yMin 6)');
+    tc1.send({ t: 'setPrepEnabled', enabled: false });
+    await tc1.waitFor('state', (m) => m.prepEnabled === false);
+    tc1.send({ t: 'start' });
+    const tcR1 = await tc1.waitFor('roundStart', (m) => m.round === 1);
+    await waitPrepEnd(tc1);
+    assert.ok(tcR1.objective && tcR1.objective.yMin === 6, 'roundStart carries the tall objective');
+    const obj = tcR1.objective;
+    // Ground level inside the footprint: no capture progress.
+    tc1.send({ t: 'move', x: obj.x, y: 0, z: obj.z, yaw: 0, pitch: 0 });
+    await sleep(1500);
+    const tcGround = tc1.findLast('snapshot', (m) => m.phase === 'playing');
+    assert.ok(tcGround && tcGround.captureProgress === 0,
+      `ground-level hold must not progress the capture, got ${tcGround && tcGround.captureProgress}`);
+    assert.equal(tc1.inbox.filter((m) => m.t === 'roundEnd').length, 0, 'no round end from ground level');
+    console.log('ok - attacker at ground level inside the footprint does not progress the capture');
+    // At y >= yMin the hold runs and wins the round (CAPTURE_MS=600 here).
+    tc1.inbox.length = 0;
+    tc1.send({ t: 'move', x: obj.x, y: 6, z: obj.z, yaw: 0, pitch: 0 });
+    const tcEnd = await tc1.waitFor('roundEnd', (m) => m.winner === 'A' && m.reason === 'objective', 5000);
+    assert.equal(tcEnd.score.A, 1, 'the tall capture wins the round for the attackers');
+    console.log('ok - attacker at y >= yMin captures and wins the round by objective');
+    for (const c of [tc1, tc2]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 33: admin
+    // leave + rejoin keeps admin (v41, item 17 fix, 27/11/2026). A player
+    // who logs in WHILE JOINED got p.admin but no pending flag, and the
+    // client never re-sent the code on a manual rejoin — so leaving and
+    // rejoining silently dropped the admin permission (the admin panel
+    // never came back). Both halves fixed: the joined admin case keeps
+    // the pending flag on the connection, and sendJoin re-sends the
+    // stored code before the join.
+    const lv1 = new Client('LvAdmin');
+    const lv2 = new Client('LvFoe');
+    for (const c of [lv1, lv2]) await c.ready();
+    lv1.send({ t: 'join', name: 'LvAdmin', team: 'A' });
+    lv2.send({ t: 'join', name: 'LvFoe', team: 'B' });
+    await lv1.waitFor('state', (m) => m.players.length === 2);
+    await lv1.becomeAdmin();
+    lv1.send({ t: 'leave' });
+    await lv1.waitFor('left', () => true, 5000);
+    lv1.send({ t: 'join', name: 'LvAdmin', team: 'A' });
+    await lv1.waitFor('joined', () => true, 5000);
+    const lvState = await lv1.waitFor('state', (m) => m.players.some((p) => p.name === 'LvAdmin' && p.admin === true), 5000);
+    assert.ok(lvState.players.some((p) => p.name === 'LvAdmin' && p.admin === true),
+      'the rejoined player is admin again');
+    // And the permission really works: a gated action goes through.
+    lv1.send({ t: 'setPrepEnabled', enabled: false });
+    await lv1.waitFor('state', (m) => m.prepEnabled === false, 5000);
+    console.log('ok - admin leaves and rejoins on the same connection and stays admin');
+    for (const c of [lv1, lv2]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 34: joined
+    // carries the team spawn (camera spawn race, 27/11/2026). Before the
+    // fix the team `joined` message carried no spawn, so the client's
+    // local position stayed at the (0, -55) default until the first
+    // round-change snapshot snapped it — a player whose snapshot arrived
+    // late spawned at the default. Now the spawn rides `joined`, like
+    // soloJoined already did. The check is state-independent (the room
+    // may still be on the large map with a tall spawn from scenario 32):
+    // the spawn must exist, must not be the client default, and must
+    // match the server's own record in the next snapshot.
+    const js1 = new Client('Js1');
+    const js2 = new Client('Js2');
+    for (const c of [js1, js2]) await c.ready();
+    js1.send({ t: 'join', name: 'Js1', team: 'A' });
+    js2.send({ t: 'join', name: 'Js2', team: 'B' });
+    const js1Joined = await js1.waitFor('joined', () => true, 5000);
+    const js2Joined = await js2.waitFor('joined', () => true, 5000);
+    for (const [c, j] of [[js1, js1Joined], [js2, js2Joined]]) {
+      assert.ok(j.spawn && typeof j.spawn.x === 'number' && typeof j.spawn.y === 'number'
+        && typeof j.spawn.z === 'number' && typeof j.spawn.yaw === 'number',
+        `${c.name}: joined must carry a spawn point, got ${JSON.stringify(j.spawn)}`);
+      assert.ok(!(j.spawn.x === 0 && j.spawn.z === -55),
+        `${c.name}: joined spawn must not be the (0, -55) client default, got ${JSON.stringify(j.spawn)}`);
+    }
+    // The spawn the server sent is the spawn it assigned: the next
+    // snapshot must show the player at exactly that spot.
+    const jSnap = await js1.waitFor('snapshot', (m) => m.players.some((p) => p.id === js1.id), 5000);
+    const jMe = jSnap.players.find((p) => p.id === js1.id);
+    assert.equal(jMe.x, js1Joined.spawn.x, 'snapshot x must match the joined spawn');
+    assert.equal(jMe.z, js1Joined.spawn.z, 'snapshot z must match the joined spawn');
+    assert.equal(jMe.yaw, js1Joined.spawn.yaw, 'snapshot yaw must match the joined spawn');
+    console.log('ok - team joined carries the team spawn (not the (0, -55) default), matching the snapshot');
+    for (const c of [js1, js2]) c.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
