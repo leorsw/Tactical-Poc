@@ -137,14 +137,38 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
   margin-top: 5px; overflow: hidden; }
 #captureFill { height: 100%; width: 0%; background: #4caf50; }
 #captureBar.danger #captureFill { background: #e53333; }
-#exitSoloBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; }
-/* EXIT sits above the match-end overlay (z-index 20) so a team player
-   can leave from the final screen too; same corner as EXIT SOLO. */
-#exitBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; z-index: 25; }
-/* Spectator controls (bird's-eye admin view, 26/11/2026): EXIT SPECTATE
-   in the same corner as EXIT; the START / CONTINUE action sits centred
-   just below the top bar and only shows when the match needs it. */
-#specExitBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; z-index: 25; }
+/* One universal back button (27/11/2026, v41): transparent ↩ in the
+   top-left corner for every player in every game state. It sits above
+   the match-end overlay (z-index 20) so a team player can leave from
+   the final screen too. Replaces EXIT / EXIT SOLO / EXIT SPECTATE. */
+#backBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; z-index: 25;
+  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
+  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  font-size: 20px; font-weight: 700; padding: 6px 14px; }
+/* Mid-match spectate (27/11/2026, v41): an admin playing in a match
+   switches to bird's-eye from here. It shares the row below the ghost
+   toggle with the rejoin button — the two never show together (one is
+   for playing, one for spectating). It must NOT sit on the MAP row
+   (top 54): the first placement there covered the MAP button entirely
+   (27/11/2026 — the map overlay could not be opened mid-match). */
+#midSpectateBtn { position: absolute; top: 194px; left: 10px; pointer-events: auto; z-index: 25;
+  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
+  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
+/* One-tap rejoin (27/11/2026, v41): a spectating admin returns to
+   their team from above. Same row as the mid-match spectate button
+   (they never show together); it must NOT sit at top 102 — that row
+   is the fullscreen row (27/11/2026). */
+#specRejoinBtn { position: absolute; top: 194px; left: 10px; pointer-events: auto; z-index: 25;
+  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
+  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
+/* Ghost toggle (27/11/2026, v41): transparent, shows the icon of the
+   mode you switch TO — the ghost while bird's-eye, the bird while
+   ghosting. Above the rejoin / mid-match-spectate row in the column. */
+#ghostToggleBtn { position: absolute; top: 148px; left: 10px; pointer-events: auto; z-index: 25;
+  background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
+  width: 44px; height: 44px; border-radius: 6px; display: flex;
+  align-items: center; justify-content: center; padding: 0; }
+#ghostToggleBtn img { display: block; }
 /* REC (Lior, 26/11/2026): under EXIT SPECTATE in the same top-left
    column — the centred action button never reaches this far left.
    While recording the button goes red with a blinking dot + timer. */
@@ -303,10 +327,26 @@ body.touch #touchUI { display: block; }
   font-size: 24px; font-weight: bold; display: flex;
   align-items: center; justify-content: center; text-shadow: 0 1px 3px #000;
   z-index: 5; padding: 0; }
-/* "?" button (Lior, 26/11/2026): topmost in the top-right column, with
-   the grenade buttons below it. It sat at top:100px for a day (26/11)
-   because the grenades were above it; the whole column moved so the
-   order is ? first, grenades second, reload arrow third. */
+/* Desktop help slide (27/11/2026, v41): a centred key list, not
+   positioned callouts — desktop screens vary too much in size for
+   the touch slide's fixed 844x390 frame. Same overlay behaviour:
+   auto-closes after 10 s, "?" reopens it. */
+#helpSlideDesktop { position: absolute; inset: 0; pointer-events: auto;
+  display: flex; align-items: center; justify-content: center; }
+.helpDesktopPanel { position: relative; background: rgba(0,0,0,0.78);
+  border: 1px solid rgba(255,255,255,0.35); border-radius: 14px;
+  color: #fff; padding: 20px 28px; max-width: 520px; text-align: right; }
+.helpDesktopTitle { font-size: 20px; font-weight: bold; margin-bottom: 12px; text-align: center; }
+.helpKeys { display: flex; flex-direction: column; gap: 8px; font-size: 16px; }
+.helpKeys div { display: flex; gap: 12px; align-items: baseline; }
+.helpKeys kbd { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.4);
+  border-radius: 6px; padding: 2px 8px; font-family: inherit; font-size: 14px;
+  white-space: nowrap; direction: ltr; }
+#helpCloseBtnDesktop { position: absolute; top: 8px; left: 8px; width: 36px; height: 36px;
+  border-radius: 50%; background: rgba(255,255,255,0.06);
+  border: 1.5px solid rgba(255,255,255,0.55); color: #fff;
+  font-size: 20px; font-weight: bold; display: flex;
+  align-items: center; justify-content: center; padding: 0; }
 #helpBtn { position: absolute; top: 12px; right: 14px; width: 44px; height: 44px;
   border-radius: 50%; background: rgba(255,255,255,0.06);
   border: 1.5px solid rgba(255,255,255,0.55); color: #fff;
