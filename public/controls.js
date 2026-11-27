@@ -5,12 +5,16 @@
 // means (moving, firing, spectating) based on the game state.
 
 export class Controls {
-  constructor({ onReload, onMap, onFullscreen, onClimb, onGrenade } = {}) {
+  constructor({ onReload, onMap, onFullscreen, onClimb, onGrenade, onGrenadeEnd } = {}) {
     this.onReload = onReload || (() => {});
     this.onMap = onMap || (() => {});
     this.onFullscreen = onFullscreen || (() => {});
     this.onClimb = onClimb || (() => {});
     this.onGrenade = onGrenade || (() => {});
+    // Key/mouse release for the munition button (27/11/2026): the
+    // missile soldier charges by HOLDING — releasing early cancels.
+    // Grenades ignore it (their 1.5 s arming completes on its own).
+    this.onGrenadeEnd = onGrenadeEnd || (() => {});
     // Coarse pointer = a phone or tablet. Touchscreen laptops report touch
     // capability too, but their primary pointer is the mouse: treating them
     // as touch devices covers the screen with touch zones that swallow mouse
@@ -154,6 +158,7 @@ export class Controls {
   }
 
   _onKeyUp(e) {
+    if (e.code === 'KeyG') this.onGrenadeEnd(); // missile: release cancels the charge
     this.keys.delete(e.code);
   }
 
