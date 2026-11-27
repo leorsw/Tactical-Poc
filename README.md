@@ -416,3 +416,4 @@ test/
   included); objective shown on the map only, defenders' X only, labelled
   לכבוש / להגן; CONTINUE button ends each intermission (no auto-advance);
   spawn sides drawn randomly every round (4 combinations).
+- **v41 (27/11/2026):** missile class (טילן, 2 munitions, 3 s hold, 4 m blast through walls), dual maps (small default + 20-house large map, admin toggle), tall-building defender spawn with height-aware top-floor capture, ghost observer mode, universal back button, bird's-eye markings, admin code before team choice, admin persistence, spectator START + mid-match spectate with recording, wall texture v7, windows on all faces, two 3-story houses, NPC respawn + rifle fix, ready pose v2, mobile + desktop help slides, recording without audio (2 Mbps cap), iPhone invite-copy fix.
