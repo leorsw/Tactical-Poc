@@ -22,7 +22,14 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { SPAWNS, spawnLayout, objectiveContains, HOUSES, hasLineOfSight, visualBoxes, EYE_HEIGHT } from './public/map.js';
+import { SPAWNS, spawnLayout, objectiveContains, HOUSES, hasLineOfSight, visualBoxes, EYE_HEIGHT, BOUNDS } from './public/map.js';
+import * as mapMod from './public/map.js';
+// Dual maps (v41): the large layout arrives via getLayout/LAYOUTS in
+// map.js (built by a parallel agent). If that API is not exported yet,
+// every map-aware call falls back to the small layout — the room simply
+// cannot select 'large' until the API lands. Never import getLayout by
+// name: a missing named export would fail the whole module load.
+const hasMapApi = typeof mapMod.getLayout === 'function';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +62,11 @@ const CLASSES = {
   rifleman: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 100, auto: false },
   marksman: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 1000, auto: false },
   gunner: { magSize: 120, magCount: 3, reloadMs: 5000, fireIntervalMs: 100, auto: true },
+  // Shoulder-missile soldier (v41, "טילן" in the UI — the server only
+  // knows the class id 'missile'): a rifleman-equivalent rifle; the
+  // missile replaces GRENADES, not the rifle — 0 grenades, 2 missiles
+  // per round, reset on round start exactly like grenades.
+  missile: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 100, auto: false },
 };
 const classStats = (cls) => CLASSES[cls] || CLASSES.rifleman;
 const WIN_SCORE = 3;
@@ -117,6 +129,14 @@ let grenades = []; // live grenades: {id, throwerId, throwAt, flightMs, dist, di
 let nextGrenadeId = 1;
 let grenadesAllowed = true; // admin switch (setGrenadesAllowed) — on by default
 
+// Shoulder missile (v41): 2 per round for the missile class. The client
+// holds 'missileCharge' for 3 s (the launcher model shows while charging),
+// then sends 'missile' with the impact point. The blast applies the
+// distance damage table within 4 m with NO line-of-sight requirement —
+// it hits through walls — teammates and the shooter included.
+const MISSILE_COUNT = 2;
+const MISSILE_BLAST_R = 4;
+
 // Expiring invite links (Lior, 26/11/2026 — for the testing period):
 // the admin creates a shareable link that admits entry for one hour.
 // INVITE_TTL_MS is a test hook (the headless suite shortens it to prove
@@ -176,6 +196,50 @@ let captureMs = 0;
 // Current round's spawn layout: each team drew a random side of the street
 // (see spawnLayout in map.js). The objective is the defenders' spawn centre.
 let layout = spawnLayout(-1, 1);
+
+// Dual maps (v41): 'small' by default; the admin may pick 'large' in the
+// lobby (setMap). defSpawn (large only) pins the defenders to a tall
+// building's spawn (setDefSpawn, 8 | 13 | null).
+let roomMap = 'small';
+let defSpawn = null;
+// Teams that lost their last living player to spectate this round: the
+// elimination check must not treat that as a forfeit (see checkElimination).
+const spectatedOut = new Set();
+
+// The map.js layout object for the room's current map, or undefined when
+// the dual-map API is not exported yet (small-map behaviour throughout).
+function activeLayout() {
+  return hasMapApi ? mapMod.getLayout(roomMap) : undefined;
+}
+
+// Re-derive the current spawn layout from the room map (and the tall
+// spawn, when set). Tall spawns come straight from the layout — no random
+// side draw; the objective is the tall building's objective, which
+// carries yMin (the capture is height-aware).
+function deriveLayout() {
+  const L = activeLayout();
+  if (roomMap === 'large' && defSpawn != null && L && L.tallSpawns && L.tallSpawns[defSpawn]) {
+    const ts = L.tallSpawns[defSpawn];
+    layout = {
+      attackers: ts.attackers,
+      defenders: ts.defenders,
+      objective: ts.objective,
+      attackersSpawn: { x: ts.attackers[0].x, z: ts.attackers[0].z },
+    };
+    return;
+  }
+  const side = () => (Math.random() < 0.5 ? -1 : 1);
+  layout = spawnLayout(side(), side(), L);
+}
+
+// Houses the NPC window spots are drawn from. The large layout exposes
+// its own houses when it has them; otherwise the small map's HOUSES
+// (the layout object is expected to use the same house record shape:
+// side, cz, z0, z1).
+function npcHouses() {
+  const L = activeLayout();
+  return (L && Array.isArray(L.houses) && L.houses.length) ? L.houses : HOUSES;
+}
 
 function teamOf(p) {
   return p.team;
@@ -272,6 +336,8 @@ function publicState() {
     grenadesAllowed,
     prepEnabled,
     roundDurationMin: roundDurationMs / 60000,
+    map: roomMap,
+    defSpawn,
     adminSpectating: [...spectators.values()].some((q) => q.admin),
     players: [...players.values()].map((p) => ({
       id: p.id,
@@ -288,6 +354,7 @@ function publicState() {
       inMag: p.inMag,
       mags: p.mags,
       grenades: p.grenades ?? 0,
+      missiles: p.missiles ?? 0,
       reloading: Date.now() < p.reloadingUntil,
     })),
   };
@@ -316,6 +383,10 @@ function snapshotPlayerList(now) {
     inMag: p.inMag,
     mags: p.mags,
     grenades: p.grenades ?? 0,
+    missiles: p.missiles ?? 0,
+    // Shoulder-missile soldier (v41): while charging, other clients
+    // render the RPG launcher model on this player.
+    missile: !!p.missileCharging,
     reloading: now < p.reloadingUntil,
     crouch: !!p.crouch,
     aiming: !!p.aiming,
@@ -323,8 +394,8 @@ function snapshotPlayerList(now) {
   // The NPCs ride the snapshot (never the state): clients render them
   // like any other player, but they never appear in the lobby or the
   // counts. An NPC's alive flag is its up/down state: a solo kill puts
-  // it down for good — it never gets back up (no revive; the set is
-  // re-drawn only when the next solo session starts).
+  // it down for 2 seconds, then it is replaced at a free window spot
+  // (Lior, 26/11/2026).
   for (const n of npcs) {
     list.push({
       id: n.id,
@@ -402,7 +473,7 @@ function simulateThrow(p) {
   const landY = p.pos.y;
   // The thin ground-floor slabs (y 0..0.02) are floors, not walls — the
   // arc ends exactly on them, so they must not count as a wall hit.
-  const boxes = visualBoxes().filter((b) => b.y1 - b.y0 >= 0.1);
+  const boxes = visualBoxes(activeLayout()).filter((b) => b.y1 - b.y0 >= 0.1);
   const STEP = 0.25; // smaller than any wall thickness (0.3), so no crossing is skipped
   let prev = { ...from };
   for (let d = STEP; d <= GRENADE_RANGE_M; d += STEP) {
@@ -440,7 +511,7 @@ function explodeGrenade(g) {
       if (!p.alive || p.solo) continue;
       const d = Math.hypot(p.pos.x - ex.x, p.pos.y - ex.y, p.pos.z - ex.z);
       if (d > GRENADE_BLAST_R) continue;
-      if (!hasLineOfSight(ex.x, ex.y, ex.z, p.pos.x, p.pos.y + 1.2, p.pos.z)) continue;
+      if (!hasLineOfSight(ex.x, ex.y, ex.z, p.pos.x, p.pos.y + 1.2, p.pos.z, activeLayout())) continue;
       p.health = 0;
       p.alive = false;
       p.reloadingUntil = 0;
@@ -455,7 +526,7 @@ function explodeGrenade(g) {
       if (n.health <= 0) continue;
       const d = Math.hypot(n.x - ex.x, n.y - ex.y, n.z - ex.z);
       if (d > GRENADE_BLAST_R) continue;
-      if (!hasLineOfSight(ex.x, ex.y, ex.z, n.x, n.y + 1.2, n.z)) continue;
+      if (!hasLineOfSight(ex.x, ex.y, ex.z, n.x, n.y + 1.2, n.z, activeLayout())) continue;
       n.health = 0;
       n.aiming = false;
       n.burstLeft = 0;
@@ -464,6 +535,63 @@ function explodeGrenade(g) {
   }
   broadcast({ t: 'grenadeExploded', id: g.id, throwerId: g.throwerId, x: g.to.x, y: g.to.y, z: g.to.z, victims });
   if (victims.some((id) => id > 0)) {
+    broadcastState();
+    checkElimination();
+  }
+}
+
+// Shoulder-missile blast (v41): like a grenade blast, but the damage
+// follows the distance table (<= 15 m: 100, 15–50 m: 50, > 50 m: 34 —
+// inside the 4 m blast radius that is always 100, i.e. a kill) and
+// there is NO line-of-sight requirement — the blast hurts through
+// walls. Teammates and the shooter himself are hurt (friendly fire).
+// A solo missile hurts NPCs only, like solo grenades. Broadcast as a
+// dedicated { t: 'missileBlast', shooterId, impact, victims } event —
+// victims are { id, damage, killed } (grenadeExploded sends bare ids,
+// so a separate event keeps the two shapes unambiguous).
+function explodeMissile(shooter, impact) {
+  const ex = { x: impact.x, y: impact.y, z: impact.z };
+  const victims = [];
+  const counts = phase === 'playing' || shooter.solo;
+  if (counts && !shooter.solo) {
+    for (const p of [...players.values()]) {
+      if (!p.alive || p.solo) continue;
+      const d = Math.hypot(p.pos.x - ex.x, p.pos.y - ex.y, p.pos.z - ex.z);
+      if (d > MISSILE_BLAST_R) continue;
+      const damage = damageForDistance(d);
+      let killed = false;
+      p.health -= damage;
+      shooter.stats.damage += damage;
+      if (p.health <= 0) {
+        p.health = 0;
+        p.alive = false;
+        p.reloadingUntil = 0;
+        killed = true;
+        p.stats.deaths += 1;
+        shooter.stats.kills += 1;
+        if (shooter.team && p.team === shooter.team) shooter.stats.teamkills += 1;
+      }
+      victims.push({ id: p.id, damage, killed });
+    }
+  }
+  if (counts && shooter.solo) {
+    for (const n of npcs) {
+      if (n.health <= 0) continue;
+      const d = Math.hypot(n.x - ex.x, n.y - ex.y, n.z - ex.z);
+      if (d > MISSILE_BLAST_R) continue;
+      const damage = damageForDistance(d);
+      n.health -= damage;
+      if (n.health <= 0) {
+        n.health = 0;
+        n.aiming = false;
+        n.burstLeft = 0;
+        n.downAt = Date.now(); // respawn clock starts now, like a shot-down NPC
+      }
+      victims.push({ id: n.id, damage, killed: n.health <= 0 });
+    }
+  }
+  broadcast({ t: 'missileBlast', shooterId: shooter.id, impact: { ...impact }, victims });
+  if (victims.some((v) => v.id > 0)) {
     broadcastState();
     checkElimination();
   }
@@ -483,7 +611,12 @@ function resetPlayerForRound(p) {
   p.health = 100;
   p.inMag = cs.magSize;
   p.mags = cs.magCount - 1; // spares; one mag is loaded
-  p.grenades = grenadesAllowed ? GRENADE_COUNT : 0;
+  // The missile class carries no grenades and 2 missiles per round;
+  // every other class gets grenades and no missiles.
+  p.grenades = p.cls === 'missile' ? 0 : (grenadesAllowed ? GRENADE_COUNT : 0);
+  p.missiles = p.cls === 'missile' ? MISSILE_COUNT : 0;
+  p.missileCharging = false;
+  p.missileChargeAt = 0;
   p.reloadingUntil = 0;
   p.lastShotAt = 0;
   p.pos = { x: spawn.x, y: 0, z: spawn.z };
@@ -508,11 +641,10 @@ function startRound(n) {
   roundWinner = null;
   roundReason = '';
   captureMs = 0;
-  // Fresh random spawn sides for this round: each team independently draws
-  // west (-1) or east (+1) — 4 combinations. The objective moves with the
-  // defenders' spawn.
-  const side = () => (Math.random() < 0.5 ? -1 : 1);
-  layout = spawnLayout(side(), side());
+  spectatedOut.clear();
+  // Fresh spawn layout for this round (random sides, or the tall
+  // building's fixed spawns when a tall spawn is set).
+  deriveLayout();
   for (const p of players.values()) {
     if (p.solo) continue; // solo players keep exploring, untouched by rounds
     resetPlayerForRound(p);
@@ -552,17 +684,22 @@ function endRound(winnerTeam, reason) {
 }
 
 // After a kill or a disconnect: if a team has no living players left while
-// the other team still has at least one, the round is over.
+// the other team still has at least one, the round is over. EXCEPT a team
+// that lost its last living player because that player spectated: the
+// 'spectate' handler records the team in spectatedOut, and the round is
+// NOT forfeited — it runs to the timer (or an objective win) instead.
+// A team that empties by any other path (death, leave, disconnect) still
+// forfeits exactly as before.
 function checkElimination() {
   if (phase !== 'playing') return;
   const aAlive = aliveOf('A').length;
   const bAlive = aliveOf('B').length;
   const aTotal = playersOf('A').length;
   const bTotal = playersOf('B').length;
-  if (aTotal > 0 && aAlive === 0 && bAlive > 0) endRound('B', 'elimination');
-  else if (bTotal > 0 && bAlive === 0 && aAlive > 0) endRound('A', 'elimination');
-  else if (aTotal === 0 && bTotal > 0) endRound('B', 'elimination');
-  else if (bTotal === 0 && aTotal > 0) endRound('A', 'elimination');
+  if (aTotal > 0 && aAlive === 0 && bAlive > 0 && !spectatedOut.has('A')) endRound('B', 'elimination');
+  else if (bTotal > 0 && bAlive === 0 && aAlive > 0 && !spectatedOut.has('B')) endRound('A', 'elimination');
+  else if (aTotal === 0 && bTotal > 0 && !spectatedOut.has('A')) endRound('B', 'elimination');
+  else if (bTotal === 0 && aTotal > 0 && !spectatedOut.has('B')) endRound('A', 'elimination');
 }
 
 // ---------------------------------------------------------------------------
@@ -572,12 +709,12 @@ function checkElimination() {
 // outside and hear remote shots, and has targets to shoot at. They are
 // NOT players: they live outside the players map and never join a match,
 // and their shots never damage anyone. Solo players CAN shoot them: same
-// distance damage as a player, and enough hits put one down for good —
-// it stays down until the solo session ends (no revive, unlike the old
-// single Dummy). They exist only while the room is in the lobby phase
-// and at least one solo player is present; the set is drawn when the
-// first solo player arrives and re-drawn when the next solo player
-// arrives after the room emptied of solo players.
+// distance damage as a player, and enough hits put one down — it lies
+// still for 2 seconds, then vanishes and a fresh NPC appears at a free
+// window spot (Lior, 26/11/2026). They exist only while the room is in
+// the lobby phase and at least one solo player is present; the set is
+// drawn when the first solo player arrives and re-drawn when the next
+// solo player arrives after the room emptied of solo players.
 //
 // An NPC only opens fire when it can SEE its target: within 30 m AND a
 // clear line of sight from its eye to the target's torso (map.js
@@ -602,7 +739,8 @@ const NPC_TARGET_HEIGHT = 1.2; // torso height above the target's feet — the p
 const NPC_BURST = 3; // shots per burst
 const NPC_BURST_INTERVAL_MS = 120; // inside a burst
 const NPC_BURST_PAUSE_MS = 1200; // between bursts
-let npcs = []; // [{ id, name, x, y, z, yaw, aiming, burstLeft, nextShotAt, health }] or []
+const NPC_RESPAWN_MS = 2000; // a downed NPC vanishes and is replaced after 2 s (Lior, 26/11/2026)
+let npcs = []; // [{ id, name, x, y, z, yaw, aiming, burstLeft, nextShotAt, health, downAt }] or []
 
 // The yaw an NPC faces when it is not engaging: out of its window,
 // towards the street. Forward = (-sin(yaw), 0, -cos(yaw)).
@@ -625,7 +763,7 @@ function seededRandom(seed) {
 function drawNpcSet() {
   // Candidate window spots, bucketed by side and floor.
   const buckets = { westGround: [], westUpper: [], eastGround: [], eastUpper: [] };
-  for (const h of HOUSES) {
+  for (const h of npcHouses()) {
     for (const wz of [h.cz - 3.5, h.cz + 3.5]) {
       const spot = { x: h.side * 6.8, z: wz };
       for (const y of [0, 3]) {
@@ -665,7 +803,48 @@ function drawNpcSet() {
     burstsFired: 0, // counts started bursts; every 3rd lands a hit (below)
     nextShotAt: 0,
     health: 100,
+    downAt: 0, // ms timestamp of the kill; 0 while alive
   }));
+}
+
+// A free window spot for a respawning NPC (Lior, 26/11/2026): any of the
+// 40 window spots (both sides, both floors) with no NPC on it right now
+// — the downed one still counts as occupying its spot until it moves,
+// so the replacement always lands somewhere else. With 10 NPCs and 40
+// spots there is always room; null only if every spot were taken.
+function freeNpcSpot() {
+  const occupied = new Set(npcs.map((o) => `${o.x},${o.y},${o.z}`));
+  const spots = [];
+  for (const h of npcHouses()) {
+    for (const wz of [h.cz - 3.5, h.cz + 3.5]) {
+      for (const y of [0, 3]) {
+        const s = { x: h.side * 6.8, z: wz, y };
+        if (!occupied.has(`${s.x},${s.y},${s.z}`)) spots.push(s);
+      }
+    }
+  }
+  if (spots.length === 0) return null;
+  return spots[Math.floor(Math.random() * spots.length)];
+}
+
+// Replace a downed NPC with a fresh one at a free window spot: same id
+// and name (the client just sees the body vanish and a standing NPC
+// appear elsewhere), full health, burst counters reset.
+function respawnNpc(n) {
+  const spot = freeNpcSpot();
+  if (!spot) return false; // no free spot — stays down, retried next tick
+  n.x = spot.x;
+  n.y = spot.y;
+  n.z = spot.z;
+  n.yaw = streetYaw(n);
+  n.health = 100;
+  n.aiming = false;
+  n.burstLeft = 0;
+  n.burstsFired = 0;
+  n.hitBurst = false;
+  n.nextShotAt = 0;
+  n.downAt = 0;
+  return true;
 }
 
 function updateNpcs(now) {
@@ -677,10 +856,11 @@ function updateNpcs(now) {
   if (npcs.length === 0) npcs = drawNpcSet();
   for (const n of npcs) {
     // Down: shot by a solo player. It lies still — no aiming, no fire —
-    // for good; the set is re-drawn only when the next solo session
-    // starts (see above).
+    // for 2 seconds, then vanishes and a fresh NPC appears at a free
+    // window spot (Lior, 26/11/2026; see respawnNpc above).
     if (n.health <= 0) {
       n.aiming = false;
+      if (now - (n.downAt || now) >= NPC_RESPAWN_MS) respawnNpc(n);
       continue;
     }
     let target = null;
@@ -702,6 +882,7 @@ function updateNpcs(now) {
     if (n.burstLeft === 0 && !hasLineOfSight(
       n.x, n.y + EYE_HEIGHT, n.z,
       target.pos.x, target.pos.y + NPC_TARGET_HEIGHT, target.pos.z,
+      activeLayout(),
     )) {
       n.aiming = false;
       n.yaw = streetYaw(n);
@@ -767,8 +948,14 @@ setInterval(() => {
   // empty (the capturer left, or died). Completing the hold wins the
   // round — reaching the zone is no longer an instant win.
   if (phase === 'playing') {
+    // Height-aware capture (v41): a tall-building objective carries
+    // yMin (the feet height of the objective floor) — an attacker at
+    // ground level inside the footprint does not progress the hold.
+    // Plain objectives have no yMin, so yMin defaults to 0.
+    const yMin = layout.objective.yMin || 0;
     const cappers = [...players.values()].filter(
       (p) => !p.solo && p.alive && roleOf(p.team) === 'attackers'
+        && p.pos.y >= yMin
         && objectiveContains(p.pos.x, p.pos.z, layout.objective),
     );
     if (cappers.length > 0) {
@@ -930,7 +1117,10 @@ function handleJoin(ws, msg) {
     cls,
     inMag: cs.magSize,
     mags: cs.magCount - 1,
-    grenades: grenadesAllowed ? GRENADE_COUNT : 0,
+    grenades: cls === 'missile' ? 0 : (grenadesAllowed ? GRENADE_COUNT : 0),
+    missiles: cls === 'missile' ? MISSILE_COUNT : 0,
+    missileCharging: false,
+    missileChargeAt: 0,
     reloadingUntil: 0,
     lastShotAt: 0,
     stats: freshStats(),
@@ -941,14 +1131,26 @@ function handleJoin(ws, msg) {
     aiming: false, // players see the pose (kneel / aim)
   };
   // Give a lobby position so the player has a sane default if the match
-  // starts while they are idle; startRound overwrites it anyway.
+  // starts while they are idle; startRound overwrites it anyway. The
+  // spawn comes from the room's current layout (large map included).
   const role = roleOf(team);
-  const spawn = SPAWNS[role][playersOf(team).length % SPAWNS[role].length];
+  const spawns = layout[role] || SPAWNS[role];
+  const spawn = spawns[playersOf(team).length % spawns.length];
   p.pos = { x: spawn.x, y: 0, z: spawn.z };
   p.yaw = spawn.yaw;
   players.set(p.id, p);
   if (hostId === null) hostId = p.id;
-  send(ws, { t: 'joined', id: p.id, cls: p.cls });
+  // Admin code entered before joining (v41): the pending flag on the
+  // connection is applied now, with a fresh adminOk.
+  if (ws._pendingAdmin) {
+    p.admin = true;
+    send(ws, { t: 'adminOk' });
+  }
+  // Spawn rides `joined` (camera spawn race, 27/11/2026): the client
+  // sets local from it at join time, so the camera is at the team spawn
+  // immediately — the round-change snapshot snap stays as the safety net.
+  // Same shape as soloJoined's spawn.
+  send(ws, { t: 'joined', id: p.id, cls: p.cls, spawn: { x: spawn.x, y: 0, z: spawn.z, yaw: spawn.yaw } });
   broadcastState();
 }
 
@@ -974,7 +1176,7 @@ function handleSolo(ws, msg) {
       setTimeout(() => { try { p.ws.close(); } catch { /* already closed */ } }, 150);
     }
   }
-  const spawn = SPAWNS.attackers[0];
+  const spawn = (layout.attackers && layout.attackers[0]) || SPAWNS.attackers[0];
   // Solo players choose their own class (Lior, 25/11/2026) — the join
   // may name one, rifleman is the default, and setClass changes it later.
   // They also choose whether to add grenades to their solo mode
@@ -997,7 +1199,10 @@ function handleSolo(ws, msg) {
     cls,
     inMag: cs.magSize,
     mags: cs.magCount - 1,
-    grenades: grenadesAllowed && msg.grenades !== false ? GRENADE_COUNT : 0,
+    grenades: cls === 'missile' ? 0 : (grenadesAllowed && msg.grenades !== false ? GRENADE_COUNT : 0),
+    missiles: cls === 'missile' ? MISSILE_COUNT : 0,
+    missileCharging: false,
+    missileChargeAt: 0,
     reloadingUntil: 0,
     lastShotAt: 0,
     stats: freshStats(),
@@ -1008,6 +1213,11 @@ function handleSolo(ws, msg) {
     aiming: false,
   };
   players.set(p.id, p);
+  // Admin code entered before joining (v41) — same as handleJoin.
+  if (ws._pendingAdmin) {
+    p.admin = true;
+    send(ws, { t: 'adminOk' });
+  }
   send(ws, { t: 'soloJoined', id: p.id, cls: p.cls, spawn: { x: spawn.x, y: 0, z: spawn.z, yaw: spawn.yaw } });
   broadcastState();
 }
@@ -1017,6 +1227,17 @@ function handleMessage(ws, msg) {
   switch (msg.t) {
     case 'join': {
       if (p) return; // already joined
+      // One-tap rejoin from the spectator view (v41): a spectator
+      // record on this connection is dropped first, and the connection
+      // gets a fresh player id — spectator ids are negative and must
+      // never become a player id. A spectating admin carries the admin
+      // flag over as a pending admin (applied by handleJoin).
+      const spec = spectators.get(ws._pid);
+      if (spec) {
+        spectators.delete(ws._pid);
+        if (spec.admin) ws._pendingAdmin = true;
+        ws._pid = nextId++;
+      }
       handleJoin(ws, msg);
       return;
     }
@@ -1033,6 +1254,25 @@ function handleMessage(ws, msg) {
       const valid = !!rec && Date.now() < rec.expiresAt;
       if (rec && !valid) invites.delete(code);
       send(ws, { t: 'inviteStatus', code, valid, expiresAt: valid ? rec.expiresAt : null });
+      return;
+    }
+    case 'admin': {
+      // Admin code entered BEFORE joining (v41, item 5): the flag is
+      // stored on the connection and applied when it later joins
+      // (team or solo) — the join then sends a fresh adminOk. A wrong
+      // code is rejected here and grants nothing.
+      // Pre-join ONLY: a joined player (or a spectator) falls through
+      // to the 'admin' case in the joined switch below, which is what
+      // actually sets p.admin — without this guard the pre-join case
+      // would swallow every admin message and no joined player could
+      // ever become admin.
+      if (p || spectators.get(ws._pid)) break;
+      if (msg.code !== ADMIN_CODE) {
+        send(ws, { t: 'error', message: 'Wrong admin code.' });
+        return;
+      }
+      ws._pendingAdmin = true;
+      send(ws, { t: 'adminOk' });
       return;
     }
     default:
@@ -1114,6 +1354,11 @@ function handleMessage(ws, msg) {
         return;
       }
       p.admin = true;
+      // (v41, item 17): keep the flag on the connection too, so a leave
+      // + rejoin on the same socket restores admin without the client
+      // having to re-send the code (the pre-join case only sets it when
+      // the code arrives while unjoined).
+      ws._pendingAdmin = true;
       send(ws, { t: 'adminOk' });
       broadcastState();
       break;
@@ -1122,10 +1367,30 @@ function handleMessage(ws, msg) {
       // The admin leaves the match and watches from above (Lior,
       // 26/11/2026): no figure, no weapon, no shots — bird's-eye view.
       // The player record goes through the normal leave path (grace,
-      // host migration, elimination check); the spectator record keeps
-      // the admin flag, so the lobby still knows an admin exists.
+      // host migration); the spectator record keeps the admin flag, so
+      // the lobby still knows an admin exists.
+      // Mid-match (v41): only when the admin's team still has >= 2
+      // players — the last player on a team may not leave the match
+      // for the bird's-eye view. The rejection carries a code so the
+      // client can show it.
       if (p.solo || !p.admin) return;
+      if (phase === 'playing' && playersOf(p.team).length < 2) {
+        send(ws, { t: 'error', code: 'spectate_last_player', message: 'You are the last player on your team — you cannot spectate mid-match.' });
+        return;
+      }
       const name = p.name;
+      // If this player was their team's last LIVING player, the team
+      // empties by spectating — record it so the elimination check
+      // does not call it a forfeit (see checkElimination). A team that
+      // empties by death, leave or disconnect still forfeits.
+      if (phase === 'playing' && p.alive && aliveOf(p.team).length <= 1) spectatedOut.add(p.team);
+      // A spectating mid-match player may rejoin within the grace
+      // window, like a disconnect (one-tap rejoin from the spectator
+      // view — see case 'join').
+      if (phase === 'playing' || phase === 'intermission') {
+        recentDisconnects.push({ name: p.name, team: p.team, until: Date.now() + REJOIN_GRACE_MS });
+        if (recentDisconnects.length > 48) recentDisconnects.splice(0, recentDisconnects.length - 48);
+      }
       removePlayer(p);
       const id = nextSpectatorId--;
       spectators.set(id, { id, ws, name, admin: true });
@@ -1190,6 +1455,12 @@ function handleMessage(ws, msg) {
       target.inMag = tcs.magSize;
       target.mags = tcs.magCount - 1;
       target.reloadingUntil = 0;
+      // A missile soldier carries missiles, not grenades; any other
+      // class carries grenades (when allowed) and no missiles.
+      target.missiles = cls === 'missile' ? MISSILE_COUNT : 0;
+      target.missileCharging = false;
+      target.missileChargeAt = 0;
+      target.grenades = cls === 'missile' ? 0 : (grenadesAllowed ? GRENADE_COUNT : 0);
       broadcastState();
       break;
     }
@@ -1232,10 +1503,17 @@ function handleMessage(ws, msg) {
       const prepFrozen = phase === 'playing' && !p.solo
         && roleOf(p.team) === 'attackers' && Date.now() < prepEndsAt;
       if (!prepFrozen) {
-        // Clamp to the map so a bad client cannot teleport across the world.
-        p.pos.x = Math.max(-18, Math.min(18, x));
-        p.pos.z = Math.max(-62, Math.min(62, z));
-        p.pos.y = Math.max(0, Math.min(3, y));
+        // Clamp to the map so a bad client cannot teleport across the
+        // world. Bounds and the height cap come from the room's map:
+        // the small map tops out at the second floor (y = 3), the
+        // large map's tall buildings need room up to y = 12 (the
+        // tall-building objective sits at yMin = 6).
+        const L = activeLayout();
+        const b = (L && L.bounds) || BOUNDS;
+        const maxY = roomMap === 'large' ? 12 : 3;
+        p.pos.x = Math.max(b.x0, Math.min(b.x1, x));
+        p.pos.z = Math.max(b.z0, Math.min(b.z1, z));
+        p.pos.y = Math.max(0, Math.min(maxY, y));
       }
       if (Number.isFinite(msg.yaw)) p.yaw = Number(msg.yaw);
       if (Number.isFinite(msg.pitch)) p.pitch = Number(msg.pitch);
@@ -1308,8 +1586,8 @@ function handleMessage(ws, msg) {
         }
       }
       // Solo players can shoot the NPCs: same distance damage as a
-      // player. Enough hits put one down for good (no revive; the set
-      // is re-drawn only when the next solo session starts). Not a
+      // player. Enough hits put one down for 2 seconds, then it is
+      // replaced at a free window spot (Lior, 26/11/2026). Not a
       // match kill: no state broadcast, no elimination check, no kill
       // credit. An NPC hit reports its own (negative) id.
       const npcHit = p.solo ? npcs.find((n) => n.id === Number(msg.targetId)) : null;
@@ -1332,6 +1610,7 @@ function handleMessage(ws, msg) {
             npcHit.health = 0;
             npcHit.aiming = false;
             npcHit.burstLeft = 0;
+            npcHit.downAt = Date.now(); // respawn clock starts now (Lior, 26/11/2026)
             killed = true;
           }
           targetHealth = npcHit.health;
@@ -1407,6 +1686,50 @@ function handleMessage(ws, msg) {
       broadcastState(); // the grenade count changed
       break;
     }
+    case 'missileCharge': {
+      // Shoulder-missile soldier (v41): hold to charge — the snapshot
+      // carries missile:true on this player so other clients render
+      // the RPG launcher model. The flag is relayed, not timed, on
+      // the server: the 3 s hold is enforced by the client, and the
+      // fire itself is validated on 'missile'. Releasing early just
+      // clears the flag.
+      if (p.cls !== 'missile' || !p.alive) return;
+      if (phase !== 'playing' && !p.solo) return;
+      if (msg.on === true) {
+        if ((p.missiles ?? 0) <= 0) return;
+        p.missileCharging = true;
+        p.missileChargeAt = Date.now();
+      } else if (msg.on === false) {
+        p.missileCharging = false;
+        p.missileChargeAt = 0;
+      }
+      break;
+    }
+    case 'missile': {
+      // Fire after the 3 s hold: the client sends the impact point
+      // (its raycast). Validated like a grenade throw — missile class,
+      // munitions left, alive, round active (or solo), no firing
+      // during prep — then the munition is spent, the charge flag
+      // clears, and the blast applies (no line of sight, see
+      // explodeMissile). A fire with no munitions is silently ignored.
+      const now = Date.now();
+      if (p.cls !== 'missile' || !p.alive) return;
+      if (phase !== 'playing' && !p.solo) return;
+      if (phase === 'playing' && !p.solo && now < prepEndsAt) return;
+      if ((p.missiles ?? 0) <= 0) return;
+      const impact = msg.impact;
+      if (!impact || !Number.isFinite(impact.x) || !Number.isFinite(impact.y) || !Number.isFinite(impact.z)) return;
+      p.missiles -= 1;
+      p.missileCharging = false;
+      p.missileChargeAt = 0;
+      explodeMissile(p, {
+        x: Math.round(impact.x * 10) / 10,
+        y: Math.round(impact.y * 10) / 10,
+        z: Math.round(impact.z * 10) / 10,
+      });
+      broadcastState(); // the munitions count changed
+      break;
+    }
     case 'setGrenadesAllowed': {
       // Grenades on/off for the room. When an admin exists, only the
       // admin toggles it; with no admin, the host does (the old rule).
@@ -1439,6 +1762,46 @@ function handleMessage(ws, msg) {
       const mins = Number(msg.minutes);
       if (!Number.isFinite(mins)) return;
       roundDurationMs = Math.min(30, Math.max(1, Math.round(mins))) * 60 * 1000;
+      broadcastState();
+      break;
+    }
+    case 'setMap': {
+      // Dual maps (v41): lobby only, admin (or host when no admin).
+      // A map change clears any tall spawn and re-derives the spawn
+      // layout; the state carries the current map. 'large' needs the
+      // map.js dual-map API — without it the request is refused
+      // (the client can show the error) instead of silently doing
+      // nothing.
+      if (p.solo || phase !== 'lobby') return;
+      if (adminPresent() ? !p.admin : p.id !== hostId) return;
+      const map = msg.map === 'large' ? 'large' : msg.map === 'small' ? 'small' : null;
+      if (!map || map === roomMap) return;
+      if (map === 'large' && !hasMapApi) {
+        send(ws, { t: 'error', code: 'map_unavailable', message: 'The large map is not available yet.' });
+        return;
+      }
+      roomMap = map;
+      defSpawn = null;
+      deriveLayout();
+      broadcastState();
+      break;
+    }
+    case 'setDefSpawn': {
+      // Tall-building defender spawn (v41, large map only): lobby
+      // only, admin (or host when no admin). building 8 | 13 pins the
+      // defenders to that building's spawn (and the attackers to the
+      // opposite end); null clears it back to the normal side draw.
+      if (p.solo || phase !== 'lobby') return;
+      if (adminPresent() ? !p.admin : p.id !== hostId) return;
+      if (roomMap !== 'large' || !hasMapApi) return;
+      const b = msg.building;
+      if (b !== null && b !== 8 && b !== 13) return;
+      if (b !== null) {
+        const L = activeLayout();
+        if (!L || !L.tallSpawns || !L.tallSpawns[b]) return;
+      }
+      defSpawn = b;
+      deriveLayout();
       broadcastState();
       break;
     }
@@ -1502,6 +1865,9 @@ function removePlayer(p) {
     roundReason = '';
     matchWinner = null;
     captureMs = 0;
+    roomMap = 'small';
+    defSpawn = null;
+    spectatedOut.clear();
     layout = spawnLayout(-1, 1);
     // No match left to rejoin: drop stale grace entries so they cannot
     // admit anyone into a later match.
