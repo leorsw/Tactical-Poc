@@ -142,32 +142,49 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
    the match-end overlay (z-index 20) so a team player can leave from
    the final screen too. Replaces EXIT / EXIT SOLO / EXIT SPECTATE.
    Bigger and more transparent (27/11/2026, post-v41 item 4): a larger
-   tap target that fades further into the scene. */
+   tap target that fades further into the scene.
+   FULLY transparent (27/11/2026, post-v41 item 16): no fill, no border
+   — a plain ↩ glyph only. The glyph itself is U+21A9 + U+FE0E (text
+   presentation) in index.html so iOS renders it as a plain white
+   symbol, not the blue emoji. Top-left ROW (27/11/2026, post-v41
+   item 23 — Lior asked for a horizontal row instead of the vertical
+   stack, whose MAP button overlapped the enlarged back button on the
+   live build): back at left 10, MAP / REC at left 85, fullscreen at
+   left 220 — all top 10, 10 px gaps, no overlaps. The fullscreen slot
+   sits at 220 (not 172) because REC grows while recording ("● REC
+   00:12", up to ~125 px wide) and must never reach it. Below the row:
+   CLIMB at top 79, ghost / mid-spectate at top 131. The row's right
+   edge (350) stays left of the centred timer (~381). */
 #backBtn { position: absolute; top: 10px; left: 10px; pointer-events: auto; z-index: 25;
   touch-action: manipulation;
-  background: rgba(255,255,255,0.03); border: 1.5px solid rgba(255,255,255,0.35);
-  color: rgba(255,255,255,0.75); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  background: transparent; border: none;
+  color: rgba(255,255,255,0.85); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
   font-size: 30px; font-weight: 700; padding: 10px 20px; }
 /* Mid-match spectate (27/11/2026, v41): an admin playing in a match
-   switches to bird's-eye from here. It sits below the ghost toggle
-   in the top-left column. It must NOT sit on the MAP row (top 54):
+   switches to bird's-eye from here. It shares the below-row slot with
+   the ghost toggle (top 131) — the two are never visible together (one
+   is for playing, one for spectating). It must NOT sit on the MAP row:
    the first placement there covered the MAP button entirely
    (27/11/2026 — the map overlay could not be opened mid-match). */
-#midSpectateBtn { position: absolute; top: 194px; left: 10px; pointer-events: auto; z-index: 25;
+#midSpectateBtn { position: absolute; top: 131px; left: 10px; pointer-events: auto; z-index: 25;
   background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
   color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
 /* Ghost toggle (27/11/2026, v41): transparent, shows the icon of the
    mode you switch TO — the ghost while bird's-eye, the bird while
-   ghosting. Above the mid-match-spectate row in the column. */
-#ghostToggleBtn { position: absolute; top: 148px; left: 10px; pointer-events: auto; z-index: 25;
+   ghosting. Below the top row (top 131), under CLIMB. */
+#ghostToggleBtn { position: absolute; top: 131px; left: 10px; pointer-events: auto; z-index: 25;
   background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
   width: 44px; height: 44px; border-radius: 6px; display: flex;
   align-items: center; justify-content: center; padding: 0; }
 #ghostToggleBtn img { display: block; }
-/* REC (Lior, 26/11/2026): under EXIT SPECTATE in the same top-left
-   column — the centred action button never reaches this far left.
-   While recording the button goes red with a blinking dot + timer. */
-#specRecBtn { position: absolute; top: 56px; left: 10px; pointer-events: auto; z-index: 25; }
+/* REC (Lior, 26/11/2026): in the top row at left 85 — it shares the
+   slot with MAP, which is hidden while spectating. Transparent
+   (27/11/2026, post-v41 item 16): no dark fill — the old solid
+   #22262d came from the base button style. While recording the button
+   goes red with a blinking dot + timer. */
+#specRecBtn { position: absolute; top: 10px; left: 85px; pointer-events: auto; z-index: 25;
+  background: transparent; border: 1.5px solid rgba(255,255,255,0.55);
+  color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
 #specRecBtn.recording { background: #e53333; border-color: #ff8080; color: #fff; }
 #specRecBtn .recDot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
   background: #fff; margin-right: 6px; animation: recBlink 1s steps(2, start) infinite; }
@@ -182,7 +199,7 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
 /* Transparent buttons (UI redesign, 23/11/2026): a faint fill + a light
    border, so the buttons read without covering the scene. EXIT SOLO keeps
    its solid style. */
-#mapBtn { position: absolute; top: 54px; left: 10px; pointer-events: auto;
+#mapBtn { position: absolute; top: 10px; left: 85px; pointer-events: auto;
   background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.55);
   color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
 /* z-index 5 on #fsRow / #bottomLeft: the touch joystick base
@@ -191,11 +208,14 @@ input { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid
    moving (23/11/2026). Still below the overlays (20) and the banner (30).
    Hit-testing is unaffected: the joystick visuals are pointer-events none
    and #bottomLeft inherits none from #hud. */
-#fsRow { position: absolute; top: 98px; left: 10px; display: flex; gap: 10px; align-items: center; z-index: 5; }
+#fsRow { position: absolute; top: 10px; left: 220px; display: flex; gap: 10px; align-items: center; z-index: 5; }
 #fsBtn { pointer-events: auto; background: rgba(255,255,255,0.06);
   border: 1.5px solid rgba(255,255,255,0.55); color: rgba(255,255,255,0.92);
   text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
-#climbBtn { pointer-events: auto; background: rgba(255,255,255,0.06);
+/* CLIMB (27/11/2026, post-v41 item 23): out of #fsRow — the row's
+   width must stay fixed (a second button there would push it into
+   the centred timer). Standalone below the row, top 79. */
+#climbBtn { position: absolute; top: 79px; left: 10px; pointer-events: auto; background: rgba(255,255,255,0.06);
   border: 1.5px solid rgba(120,170,255,0.75); color: rgba(255,255,255,0.92);
   text-shadow: 0 1px 3px rgba(0,0,0,0.9); font-weight: 700; padding: 10px 22px; font-size: 16px; }
 #connBanner { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); background: rgba(180, 30, 30, 0.92); color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 14px; font-weight: bold; pointer-events: none; z-index: 30; white-space: nowrap; }
