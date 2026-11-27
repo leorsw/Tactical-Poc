@@ -123,6 +123,25 @@
 //     2 s at a free window spot (Lior, 26/11/2026) — same id, full
 //     health, different spot, still 10 NPCs — and the replacement can
 //     itself be shot down again.
+//   Scenario 35 (missile reload, post-v41): the Rocketeer empties the
+//     29-round mag, reloads, and the mag refills (29 rounds, 4 spares
+//     left) after the 3.5 s reload.
+//   Scenario 36 (admin without registration, post-v41 item 3): the
+//     admin code alone — no callsign, no team — opens the full admin
+//     panel on an unjoined socket (createInvite, setRoundDuration,
+//     setMap, spectate, and state.adminUnjoined); leaving spectate
+//     and then joining keeps the admin with a fresh positive player
+//     id; a wrong code grants nothing.
+//   Scenario 37 (death cancels the missile aim window, post-v41
+//     item 5): a Rocketeer with the aim window open is killed — the
+//     snapshot missile flag clears on the dead player.
+//   Scenario 38 (admin picks the map, then Solo — no team, post-v41
+//     item 8 CORRECTED 27/11/2026 20:40): the code-only admin sets the
+//     large map on the join screen and presses Solo — the solo session
+//     starts on the large map (spawn z = -60; small is -45), the room
+//     still reports map large, and the solo player has no team. The
+//     old reading (a solo button that stays visible after joining a
+//     team) was wrong and is gone: solo never required a team pick.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -2003,7 +2022,7 @@ async function main() {
     await sleep(300);
 
     // ------------------------------------------------ scenario 28: missile
-    // class (v41, item 12). The missile soldier ("טילן" in the UI)
+    // class (v41, item 12). The missile soldier ("Rocketeer" in the UI)
     // fires a rifleman-equivalent rifle, carries 0 grenades and 2
     // missiles per round; charging shows a missile flag in snapshots;
     // the blast kills through walls (no line of sight) and spends a
@@ -2327,6 +2346,171 @@ async function main() {
     assert.equal(jMe.yaw, js1Joined.spawn.yaw, 'snapshot yaw must match the joined spawn');
     console.log('ok - team joined carries the team spawn (not the (0, -55) default), matching the snapshot');
     for (const c of [js1, js2]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 35: missile
+    // reload (post-v41). The Rocketeer reloads like a rifleman: empty
+    // the 29-round mag, press reload, the mag refills (29 rounds, one
+    // fewer spare) after the 3.5 s reload. (The v41 smoke test was
+    // inconclusive here — ammo stayed EMPTY after R.)
+    const mr = new Client('MissileReloader');
+    await mr.ready();
+    mr.send({ t: 'solo', name: 'MissileReloader', cls: 'missile' });
+    await mr.waitFor('soloJoined');
+    const mrState = await mr.waitFor('state', (m) => m.players.some((p) => p.id === mr.id));
+    const mrEntry = mrState.players.find((p) => p.id === mr.id);
+    assert.equal(mrEntry.cls, 'missile', 'solo join carries the missile class');
+    assert.equal(mrEntry.inMag, 29, 'missile class starts with a full 29-round mag');
+    for (let i = 0; i < 29; i++) {
+      mr.send({ t: 'shot', targetId: null });
+      await sleep(110);
+    }
+    const mrEmpty = await mr.waitFor('snapshot', (m) => {
+      const me = m.players.find((p) => p.id === mr.id);
+      return me && me.inMag === 0;
+    }, 8000);
+    assert.ok(mrEmpty, 'the mag is empty after 29 shots');
+    mr.send({ t: 'reload' });
+    await mr.waitFor('reloadStart', (m) => m.playerId === mr.id, 5000);
+    const mrReloaded = await mr.waitFor('reloaded', (m) => m.playerId === mr.id, 6000);
+    assert.equal(mrReloaded.inMag, 29, 'reload refills the mag to 29');
+    assert.equal(mrReloaded.mags, 4, 'reload consumes one spare mag (4 left)');
+    console.log('ok - missile class reloads: empty mag refills to 29 rounds, 4 spares left');
+    mr.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 36: admin
+    // without registration (post-v41 item 3). Entering the admin code
+    // ALONE — no callsign, no team — opens the full admin panel: the
+    // unjoined socket may create invites, set the round length and the
+    // map, and spectate from above; leaving spectate and then joining
+    // keeps the admin (fresh positive player id). A wrong code grants
+    // nothing to an unjoined socket.
+    const ua = new Client('UnjoinedAdmin');
+    await ua.ready();
+    ua.send({ t: 'admin', code: 'test-code' });
+    await ua.waitFor('adminOk', () => true, 5000);
+    ua.send({ t: 'createInvite' });
+    const uaInvite = await ua.waitFor('inviteCreated', () => true, 5000);
+    assert.equal(typeof uaInvite.code, 'string', 'unjoined admin creates an invite');
+    assert.equal(uaInvite.code.length, 8, 'invite code is 8 chars');
+    assert.ok(uaInvite.expiresAt > Date.now(), 'invite expiry is in the future');
+    ua.send({ t: 'setRoundDuration', minutes: 2 });
+    const uaDur = await ua.waitFor('state', (m) => m.roundDurationMin === 2, 5000);
+    assert.equal(uaDur.roundDurationMin, 2, 'unjoined admin sets the round length');
+    ua.send({ t: 'setMap', map: 'large' });
+    const uaMap = await ua.waitFor('state', (m) => m.map === 'large', 5000);
+    assert.equal(uaMap.map, 'large', 'unjoined admin sets the map');
+    assert.equal(uaMap.adminUnjoined, true, 'state reports an unjoined admin');
+    ua.send({ t: 'setMap', map: 'small' });
+    await ua.waitFor('state', (m) => m.map === 'small', 5000);
+    ua.send({ t: 'spectate' });
+    const uaSpec = await ua.waitFor('spectateJoined', () => true, 5000);
+    assert.ok(uaSpec.id < 0, 'the unjoined admin spectates with a spectator id');
+    await ua.waitFor('state', (m) => m.adminSpectating === true, 5000);
+    ua.send({ t: 'leaveSpectate' });
+    await ua.waitFor('spectateLeft', () => true, 5000);
+    await ua.waitFor('state', (m) => m.adminSpectating === false, 5000);
+    ua.send({ t: 'join', name: 'UnjoinedAdmin', team: 'A' });
+    const uaJoined = await ua.waitFor('joined', () => true, 5000);
+    assert.ok(uaJoined.id > 0, 'joining after leaveSpectate gets a fresh positive id');
+    const uaState = await ua.waitFor('state', (m) => m.players.some((p) => p.id === uaJoined.id && p.admin === true), 5000);
+    assert.ok(uaState.players.some((p) => p.id === uaJoined.id && p.admin === true),
+      'the joined admin keeps the permission from the code-only login');
+    ua.send({ t: 'setRoundDuration', minutes: 1 }); // restore the clock
+    await ua.waitFor('state', (m) => m.roundDurationMin === 1, 5000);
+    ua.send({ t: 'leave' });
+    await ua.waitFor('left', () => true, 5000);
+    console.log('ok - admin code alone opens the full admin panel (invite, round length, map, spectate, join keeps admin)');
+    // Wrong code, unjoined: nothing is granted.
+    const uw = new Client('WrongUnjoined');
+    await uw.ready();
+    uw.send({ t: 'admin', code: 'wrong-code' });
+    await uw.waitFor('error', (m) => /Wrong admin code/.test(m.message || ''));
+    uw.inbox.length = 0;
+    uw.send({ t: 'createInvite' });
+    uw.send({ t: 'setRoundDuration', minutes: 9 });
+    await sleep(600);
+    assert.equal(uw.inbox.filter((m) => m.t === 'inviteCreated').length, 0, 'a wrong code creates no invite');
+    assert.notEqual(uw.findLast('state')?.roundDurationMin, 9, 'a wrong code sets no round length');
+    console.log('ok - wrong admin code grants nothing to an unjoined socket');
+    for (const c of [ua, uw]) c.close();
+    await sleep(300);
+
+    // ------------------------------------------------ scenario 37: death
+    // cancels the missile aim window (post-v41 item 5). A Rocketeer
+    // with the aim window open is killed — the snapshot flag clears
+    // (the server used to keep missile:true on the dead player until
+    // the round reset, so other clients kept showing the launcher).
+    const dc1 = new Client('DcAdmin');
+    const dc2 = new Client('DcRocket');
+    for (const c of [dc1, dc2]) await c.ready();
+    dc1.send({ t: 'join', name: 'DcAdmin', team: 'A' });
+    dc2.send({ t: 'join', name: 'DcRocket', team: 'B' });
+    await dc1.waitFor('state', (m) => m.players.length === 2);
+    await dc1.becomeAdmin();
+    dc1.send({ t: 'setClass', playerId: dc2.id, cls: 'missile' });
+    await dc1.waitFor('state', (m) => m.players.some((p) => p.id === dc2.id && p.cls === 'missile'), 5000);
+    dc1.send({ t: 'setPrepEnabled', enabled: false });
+    await dc1.waitFor('state', (m) => m.prepEnabled === false);
+    dc1.send({ t: 'start' });
+    await dc1.waitFor('roundStart', (m) => m.round === 1);
+    await waitPrepEnd(dc1);
+    dc2.send({ t: 'missileCharge', on: true });
+    const dcCharged = await dc2.waitFor('snapshot', (m) => {
+      const me = m.players.find((p) => p.id === dc2.id);
+      return me && me.missile === true;
+    }, 5000);
+    assert.ok(dcCharged, 'the aim window shows the missile flag in snapshots');
+    dc1.send({ t: 'move', x: 0, y: 0, z: 0, yaw: 0, pitch: 0 });
+    dc2.send({ t: 'move', x: 2, y: 0, z: 0, yaw: 0, pitch: 0 });
+    await sleep(300);
+    dc1.send({ t: 'shot', targetId: dc2.id });
+    const dcKill = await dc1.waitFor('shot', (m) => m.targetId === dc2.id && m.killed, 5000);
+    assert.ok(dcKill, 'the foe kills the charging Rocketeer at close range');
+    const dcCleared = await dc1.waitFor('snapshot', (m) => {
+      const me = m.players.find((p) => p.id === dc2.id);
+      return me && me.alive === false && me.missile !== true;
+    }, 5000);
+    assert.ok(dcCleared, 'death clears the missile flag in snapshots');
+    console.log('ok - death cancels the missile aim window (flag clears on the dead player)');
+    for (const c of [dc1, dc2]) c.close();
+    await sleep(600);
+
+    // ------------------------------------------------ scenario 38: admin
+    // picks the map on the join screen, then presses Solo — no team
+    // pick (post-v41 item 8, CORRECTED 27/11/2026 20:40). Solo never
+    // required a team, and that does not change: the admin enters the
+    // code alone, picks the large map on the join screen, and presses
+    // Solo. The solo session starts on the large map — the spawn the
+    // server sends sits at z = -60 (the large attackers spawn; small
+    // is -45), and the room still reports map large. Control: a solo
+    // join with no map change spawns at z = -45 on the small map.
+    const sm = new Client('SoloMapper');
+    await sm.ready();
+    sm.send({ t: 'admin', code: 'test-code' });
+    await sm.waitFor('adminOk', () => true, 5000);
+    sm.send({ t: 'setMap', map: 'large' });
+    await sm.waitFor('state', (m) => m.map === 'large', 5000);
+    sm.send({ t: 'solo', name: 'SoloMapper', cls: 'rifleman' });
+    const smJoined = await sm.waitFor('soloJoined', () => true, 5000);
+    assert.equal(smJoined.spawn.z, -60, 'solo on the large map spawns at z = -60');
+    const smState = await sm.waitFor('state', (m) => m.players.some((p) => p.id === smJoined.id && p.solo === true), 5000);
+    assert.equal(smState.map, 'large', 'the room still reports the large map after the solo join');
+    assert.ok(smState.players.some((p) => p.id === smJoined.id && p.solo === true && p.team == null),
+      'the solo player has no team');
+    sm.send({ t: 'leaveSolo' });
+    await sm.waitFor('soloLeft', () => true, 5000);
+    console.log('ok - admin picks large on the join screen, presses Solo, solo starts on the large map (spawn z = -60, no team)');
+    sm.close();
+    await sleep(600); // the room resets to the small map once empty
+    const sm2 = new Client('SoloMapperSmall');
+    await sm2.ready();
+    sm2.send({ t: 'solo', name: 'SoloMapperSmall', cls: 'rifleman' });
+    const sm2Joined = await sm2.waitFor('soloJoined', () => true, 5000);
+    assert.equal(sm2Joined.spawn.z, -45, 'solo with no map change spawns at z = -45 on the small map');
+    console.log('ok - solo control: no map change spawns at z = -45 on the small map');
+    sm2.close();
     await sleep(300);
 
     console.log('HEADLESS TEST PASSED');
