@@ -62,7 +62,7 @@ const CLASSES = {
   rifleman: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 100, auto: false },
   marksman: { magSize: 29, magCount: 6, reloadMs: 3500, fireIntervalMs: 1000, auto: false },
   gunner: { magSize: 120, magCount: 3, reloadMs: 5000, fireIntervalMs: 100, auto: true },
-  // Shoulder-missile soldier (v41, "טילן" in the UI — the server only
+  // Shoulder-missile soldier (v41, "Rocketeer" in the UI — the server only
   // knows the class id 'missile'): a rifleman-equivalent rifle; the
   // missile replaces GRENADES, not the rifle — 0 grenades, 2 missiles
   // per round, reset on round start exactly like grenades.
@@ -339,6 +339,11 @@ function publicState() {
     map: roomMap,
     defSpawn,
     adminSpectating: [...spectators.values()].some((q) => q.admin),
+    // An admin who entered the code but has not joined yet (27/11/2026,
+    // post-v41 item 3): the lobby still counts as admin-run, so nobody
+    // else can start out from under them.
+    adminUnjoined: [...sockets].some((ws) => ws._pendingAdmin
+      && !players.has(ws._pid) && !spectators.has(ws._pid)),
     players: [...players.values()].map((p) => ({
       id: p.id,
       name: p.name,
@@ -1289,6 +1294,12 @@ function handleMessage(ws, msg) {
         break;
       case 'leaveSpectate': {
         spectators.delete(ws._pid);
+        // Fresh positive id (27/11/2026, post-v41 item 3): without this
+        // the socket keeps its negative spectator id, and a later join
+        // on the same connection would create a player with a negative
+        // id (the join case only mints a fresh id while the spectator
+        // record still exists). Negative ids belong to NPCs/spectators.
+        ws._pid = nextId++;
         send(ws, { t: 'spectateLeft' });
         broadcastState();
         break;
@@ -1314,6 +1325,139 @@ function handleMessage(ws, msg) {
       }
       default:
         break; // spectators cannot shoot, move, or throw
+    }
+    return;
+  }
+  // Unjoined admin (27/11/2026, post-v41 item 3): a socket that entered
+  // the admin code but has no player record yet runs the FULL admin
+  // panel — no callsign, no team pick. The same gates as the joined
+  // cases below apply (lobby-only where the joined case says so, admin
+  // only throughout); anything else is ignored, exactly like a
+  // non-admin message. The joined switch remains the source of truth
+  // for these actions — keep the two in sync when either changes.
+  if (!p && ws._pendingAdmin) {
+    switch (msg.t) {
+      case 'ping':
+        break;
+      case 'spectate': {
+        // Straight to bird's-eye: there is no player record to remove.
+        const id = nextSpectatorId--;
+        spectators.set(id, { id, ws, name: '', admin: true });
+        ws._pid = id;
+        send(ws, { t: 'spectateJoined', id });
+        broadcastState();
+        break;
+      }
+      case 'createInvite': {
+        for (const [c, r] of invites) if (Date.now() >= r.expiresAt) invites.delete(c);
+        const code = randomBytes(6).toString('base64url');
+        const expiresAt = Date.now() + INVITE_TTL_MS;
+        invites.set(code, { code, expiresAt, createdBy: null });
+        send(ws, { t: 'inviteCreated', code, expiresAt });
+        break;
+      }
+      case 'setGrenadesAllowed': {
+        grenadesAllowed = msg.allowed === true;
+        broadcastState();
+        break;
+      }
+      case 'setPrepEnabled': {
+        prepEnabled = msg.enabled === true;
+        broadcastState();
+        break;
+      }
+      case 'setRoundDuration': {
+        const mins = Number(msg.minutes);
+        if (!Number.isFinite(mins)) return;
+        roundDurationMs = Math.min(30, Math.max(1, Math.round(mins))) * 60 * 1000;
+        broadcastState();
+        break;
+      }
+      case 'setMap': {
+        if (phase !== 'lobby') return;
+        const map = msg.map === 'large' ? 'large' : msg.map === 'small' ? 'small' : null;
+        if (!map || map === roomMap) return;
+        if (map === 'large' && !hasMapApi) {
+          send(ws, { t: 'error', code: 'map_unavailable', message: 'The large map is not available yet.' });
+          return;
+        }
+        roomMap = map;
+        defSpawn = null;
+        deriveLayout();
+        broadcastState();
+        break;
+      }
+      case 'setDefSpawn': {
+        if (phase !== 'lobby') return;
+        if (roomMap !== 'large' || !hasMapApi) return;
+        const b = msg.building;
+        if (b !== null && b !== 8 && b !== 13) return;
+        if (b !== null) {
+          const L = activeLayout();
+          if (!L || !L.tallSpawns || !L.tallSpawns[b]) return;
+        }
+        defSpawn = b;
+        deriveLayout();
+        broadcastState();
+        break;
+      }
+      case 'rename': {
+        const target = players.get(Number(msg.playerId));
+        if (!target || target.solo) return;
+        const name = String(msg.name || '').trim().slice(0, 16);
+        if (!name) return;
+        target.name = name;
+        broadcastState();
+        break;
+      }
+      case 'setTeam': {
+        if (phase !== 'lobby') return;
+        const target = players.get(Number(msg.playerId));
+        if (!target || target.solo) return;
+        if (msg.team !== 'A' && msg.team !== 'B') return;
+        target.team = msg.team;
+        broadcastState();
+        break;
+      }
+      case 'setClass': {
+        if (!CLASSES[msg.cls]) return;
+        const target = players.get(Number(msg.playerId));
+        if (!target || target.solo) return;
+        const cls = msg.cls;
+        const tcs = classStats(cls);
+        target.cls = cls;
+        target.inMag = tcs.magSize;
+        target.mags = tcs.magCount - 1;
+        target.reloadingUntil = 0;
+        target.missiles = cls === 'missile' ? MISSILE_COUNT : 0;
+        target.missileCharging = false;
+        target.missileChargeAt = 0;
+        target.grenades = cls === 'missile' ? 0 : (grenadesAllowed ? GRENADE_COUNT : 0);
+        broadcastState();
+        break;
+      }
+      case 'start': {
+        if (phase !== 'lobby') return;
+        if (playersOf('A').length < 1 || playersOf('B').length < 1) {
+          send(ws, { t: 'error', message: 'Need at least 1 player on each team to start.' });
+          return;
+        }
+        startMatch();
+        break;
+      }
+      case 'continue': {
+        if (phase !== 'intermission') return;
+        startRound(round + 1);
+        break;
+      }
+      case 'rematch': {
+        if (phase !== 'ended') return;
+        if (msg.swap) attackersTeam = attackersTeam === 'A' ? 'B' : 'A';
+        startMatch();
+        break;
+      }
+      default:
+        break; // unjoined admins cannot shoot, move, join, or throw
     }
     return;
   }
@@ -1577,6 +1721,11 @@ function handleMessage(ws, msg) {
             target.health = 0;
             target.alive = false;
             target.reloadingUntil = 0;
+            // Death cancels a missile aim window (27/11/2026, post-v41
+            // item 5): otherwise the dead player's snapshot keeps
+            // missile:true and other clients keep showing the launcher.
+            target.missileCharging = false;
+            target.missileChargeAt = 0;
             killed = true;
             p.stats.kills += 1;
             if (target.team === p.team) p.stats.teamkills += 1;
@@ -1687,12 +1836,12 @@ function handleMessage(ws, msg) {
       break;
     }
     case 'missileCharge': {
-      // Shoulder-missile soldier (v41): hold to charge — the snapshot
-      // carries missile:true on this player so other clients render
-      // the RPG launcher model. The flag is relayed, not timed, on
-      // the server: the 3 s hold is enforced by the client, and the
-      // fire itself is validated on 'missile'. Releasing early just
-      // clears the flag.
+      // Shoulder-missile soldier (27/11/2026, post-v41 item 5): a single
+      // press opens a 3 s aim window — the snapshot carries missile:true
+      // on this player so other clients render the RPG launcher model.
+      // The flag is relayed, not timed, on the server: the 3 s window
+      // is enforced by the client, and the fire itself is validated on
+      // 'missile'. A second press (or death) just clears the flag.
       if (p.cls !== 'missile' || !p.alive) return;
       if (phase !== 'playing' && !p.solo) return;
       if (msg.on === true) {
@@ -1706,8 +1855,8 @@ function handleMessage(ws, msg) {
       break;
     }
     case 'missile': {
-      // Fire after the 3 s hold: the client sends the impact point
-      // (its raycast). Validated like a grenade throw — missile class,
+      // Fire at the end of the 3 s aim window: the client sends the
+      // impact point (its raycast). Validated like a grenade throw — missile class,
       // munitions left, alive, round active (or solo), no firing
       // during prep — then the munition is spent, the charge flag
       // clears, and the blast applies (no line of sight, see
