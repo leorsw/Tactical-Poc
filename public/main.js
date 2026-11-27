@@ -227,13 +227,17 @@ let currentObjective = null; // {x, z, r} — the defenders' spawn centre this r
 let currentAttackersSpawn = null; // {x, z} — the attackers' spawn centre this round
 // Dual maps (27/11/2026, items 23-24): the 3D world's current layout.
 // The room map comes from state.map ('small' default, 'large' on admin
-// choice); the client rebuilds the world in the lobby, never mid-match.
+// choice); the client rebuilds the world in the lobby, never mid-match —
+// except its first sync (item 24: a fresh spectator joining mid-match
+// has no world state yet and rebuilds to the room's map at once).
 let curLayout = getLayout('small');
 let currentMapName = 'small';
+let mapSynced = false; // item 24: true once this client has applied the room's map from a state
 let mapGroup = null; // THREE.Group holding the current map's meshes
 // Shared map materials — created once, reused across rebuilds (rebuilding
 // the map must not leak a new wall atlas / road texture each time).
 let wallMatShared = null;
+let plasterMatShared = null;
 let fenceMatShared = null;
 let stairMatShared = null;
 let groundMatShared = null;
@@ -436,6 +440,83 @@ function makeWallAtlasTexture() {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   return tex;
+}
+
+// Plain-plaster texture (27/11/2026, post-v41 item 12): the same
+// beige plaster base + grain + streaks as the wall atlas, but with NO
+// exposed-block patch — used for the interior lining only, so the
+// inside walls read as uniform plaster. The v7 atlas above is untouched.
+function makePlasterTexture() {
+  const S = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = S; cv.height = S;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#c8b490';
+  ctx.fillRect(0, 0, S, S);
+  // Speckle noise (concrete grain).
+  for (let i = 0; i < 5000; i++) {
+    const v = 120 + Math.floor(Math.random() * 60);
+    ctx.fillStyle = `rgba(${v},${v},${v},${0.04 + Math.random() * 0.05})`;
+    ctx.fillRect(Math.random() * S, Math.random() * S, 1 + Math.random() * 2, 1 + Math.random() * 2);
+  }
+  // Weathering: vertical streaks, full height (seamless).
+  for (let i = 0; i < 26; i++) {
+    const x = Math.random() * S;
+    const w = 6 + Math.random() * 22;
+    const grad = ctx.createLinearGradient(x, 0, x + w, 0);
+    grad.addColorStop(0, 'rgba(50,50,50,0)');
+    grad.addColorStop(0.5, `rgba(50,50,50,${0.05 + Math.random() * 0.09})`);
+    grad.addColorStop(1, 'rgba(50,50,50,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, 0, w, S);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return tex;
+}
+
+// Interior plaster lining (27/11/2026, post-v41 item 12): one merged
+// geometry of quads, one per wall box's inward face (map.js tags them),
+// offset 1 cm into the room so it never z-fights the wall. UVs tile
+// every WALL_TILE_M metres like the walls. One mesh = one extra draw
+// call for the whole map; it is NOT a shoot target (the wall box
+// behind it already is). DoubleSide on the material removes any
+// winding risk; rebuildMap disposes the geometry with the group.
+function buildInteriorLiningGeometry(boxes) {
+  const pos = [], norm = [], uv = [];
+  const quad = (ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, nx, ny, nz, uLen, vLen) => {
+    pos.push(ax, ay, az, bx, by, bz, cx, cy, cz, ax, ay, az, cx, cy, cz, dx, dy, dz);
+    for (let i = 0; i < 6; i++) norm.push(nx, ny, nz);
+    uv.push(0, 0, uLen / WALL_TILE_M, 0, uLen / WALL_TILE_M, vLen / WALL_TILE_M,
+      0, 0, uLen / WALL_TILE_M, vLen / WALL_TILE_M, 0, vLen / WALL_TILE_M);
+  };
+  const OFF = 0.01;
+  for (const b of boxes) {
+    if (!b.inward) continue;
+    const w = b.x1 - b.x0, h = b.y1 - b.y0, d = b.z1 - b.z0;
+    if (b.inward === 'px') {
+      const x = b.x1 + OFF;
+      quad(x, b.y0, b.z0, x, b.y0, b.z1, x, b.y1, b.z1, x, b.y1, b.z0, 1, 0, 0, d, h);
+    } else if (b.inward === 'nx') {
+      const x = b.x0 - OFF;
+      quad(x, b.y0, b.z1, x, b.y0, b.z0, x, b.y1, b.z0, x, b.y1, b.z1, -1, 0, 0, d, h);
+    } else if (b.inward === 'pz') {
+      const z = b.z1 + OFF;
+      quad(b.x0, b.y0, z, b.x1, b.y0, z, b.x1, b.y1, z, b.x0, b.y1, z, 0, 0, 1, w, h);
+    } else { // 'nz'
+      const z = b.z0 - OFF;
+      quad(b.x1, b.y0, z, b.x0, b.y0, z, b.x0, b.y1, z, b.x1, b.y1, z, 0, 0, -1, w, h);
+    }
+  }
+  if (!pos.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return geo;
 }
 
 // Boundary-fence texture (v7, Lior 27/11/2026): exposed blocks only,
@@ -647,8 +728,10 @@ function buildMapMeshes(layout) {
   // floors and roofs stay flat colours.
   if (!wallMatShared) wallMatShared = new THREE.MeshLambertMaterial({ map: makeWallAtlasTexture() });
   if (!fenceMatShared) fenceMatShared = new THREE.MeshLambertMaterial({ map: makeFenceTexture() });
+  if (!plasterMatShared) plasterMatShared = new THREE.MeshLambertMaterial({ map: makePlasterTexture(), side: THREE.DoubleSide });
   const materials = {};
-  for (const b of visualBoxes(layout)) {
+  const boxes = visualBoxes(layout);
+  for (const b of boxes) {
     const w = b.x1 - b.x0;
     const h = b.y1 - b.y0;
     const d = b.z1 - b.z0;
@@ -670,6 +753,17 @@ function buildMapMeshes(layout) {
     }
     mesh.position.set((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
     add(mesh);
+  }
+
+  // Interior plaster lining (27/11/2026, post-v41 item 12): one merged
+  // mesh over the inward faces — uniform plaster indoors, the v7 patch
+  // stays on the outside only. Tagged mapMesh so rebuilds remove it;
+  // NOT a shoot target (the wall box behind it already is).
+  const liningGeo = buildInteriorLiningGeometry(boxes);
+  if (liningGeo) {
+    const lining = new THREE.Mesh(liningGeo, plasterMatShared);
+    lining.userData.mapMesh = true;
+    group.add(lining);
   }
 
   // Stairs as real steps (27/11/2026, post-v41 item 9): each flight is
@@ -1033,11 +1127,35 @@ function updateViewmodel(dt, now) {
   if (!rifle) return;
   const inGame = (game.phase === 'playing' || solo) && myAlive;
   // While charging (or just after firing) the missile soldier holds the
-  // launcher, not the rifle (27/11/2026).
+  // launcher, not the rifle (27/11/2026). MUST be a real boolean
+  // (27/11/2026, post-v41 item 15): the old `&&`/`||` chain evaluated
+  // to the NUMBER 0 when idle (missileCharging null, missileFiredAt 0),
+  // and Three.js hides an object only on `visible === false` — so 0
+  // still rendered, and the launcher sat in hand from activation.
   const showLauncher = myClass === 'missile'
-    && (missileCharging || (missileFiredAt && now - missileFiredAt < 1000));
+    && (!!missileCharging || (missileFiredAt > 0 && now - missileFiredAt < 1000));
   rifle.visible = inGame && !showLauncher;
   if (launcherViewmodel) launcherViewmodel.visible = inGame && showLauncher;
+  // Shot-effect expiry runs on EVERY frame, alive or not (27/11/2026,
+  // post-v41 item 22): it used to sit below the !inGame early return,
+  // so in death-spectate (myAlive false) a spectated teammate's muzzle
+  // flash (90 ms) and the last shot's impact marker (180 ms) never
+  // expired — the flash stayed lit and the marker stayed on the wall
+  // permanently. These are world feedback, not viewmodel state, so
+  // they must age out even while the local player is dead.
+  if (flashMesh && flashMesh.visible && now > flashUntil) flashMesh.visible = false;
+  for (const g of playerMeshes.values()) {
+    const u = g.userData;
+    if (u.flash && u.flash.visible && now > (u.flashUntil || 0)) u.flash.visible = false;
+  }
+  if (impactMarker && impactMarker.visible) {
+    const age = now - (impactMarker.userData.bornAt || 0);
+    if (age > 180) {
+      impactMarker.visible = false;
+    } else {
+      impactMarker.material.opacity = 0.95 * (1 - age / 180);
+    }
+  }
   if (!inGame) {
     aimBlend = 0;
     if (Math.abs(camera.fov - 75) > 0.05) {
@@ -1086,19 +1204,7 @@ function updateViewmodel(dt, now) {
     camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-dt * 10));
     camera.updateProjectionMatrix();
   }
-  if (flashMesh && flashMesh.visible && now > flashUntil) flashMesh.visible = false;
-  for (const g of playerMeshes.values()) {
-    const u = g.userData;
-    if (u.flash && u.flash.visible && now > (u.flashUntil || 0)) u.flash.visible = false;
-  }
-  if (impactMarker && impactMarker.visible) {
-    const age = now - (impactMarker.userData.bornAt || 0);
-    if (age > 180) {
-      impactMarker.visible = false;
-    } else {
-      impactMarker.material.opacity = 0.95 * (1 - age / 180);
-    }
-  }
+  // (Shot-effect expiry moved above the !inGame return — item 22.)
 }
 
 // --- On-body name (Lior, 25/11/2026) --------------------------------------
@@ -1308,9 +1414,39 @@ const POSES = {
   // The shoulder Euler triples look large (shZ -2.25) — that is only the
   // XYZ decomposition of a deeply folded arm; the elbow/hand positions
   // are what the eye sees, and they are exact.
+  // Missile firing stance, KNEELING (IK-solved, ik-solve-missile.mjs,
+  // 27/11/2026): kneeling, black RPG on the right shoulder, both hands
+  // on the grips. Left (support) hand on the front grip
+  // (0.08,0.65,-0.41): miss 0.0 cm, elbow out at the side, dy -3.2 cm
+  // (slight downward bend — the ready-pose lesson). Right (trigger)
+  // hand on the rear grip (0.08,0.59,0.09): miss 0.0 cm, elbow hanging
+  // below the grip. The shoulder Euler triples look large (shZ -2.25)
+  // — that is only the XYZ decomposition of a deeply folded arm; the
+  // elbow/hand positions are what the eye sees, and they are exact.
+  // Used when the player is crouching when firing (27/11/2026,
+  // post-v41 item 17); standing fire uses missileFireStand.
   missileFire: {
     bodyDrop: -0.50, spine: -0.12, headX: -0.06,
     hipL: 1.67, hipR: -0.56, kneeL: -1.99, kneeR: -1.01, hipLz: 0, hipRz: 0,
+    shLx: 2.41, shLy: -1.16, shLz: 0.85, elLx: 0.89,
+    shRx: 2.14, shRy: 0.94, shRz: -2.25, elRx: 2.34,
+    rifleY: 0.78, rifleZ: -0.3, rifleRX: 0.12,
+    launcherY: 0.70, launcherZ: -0.05, launcherRX: 0.12,
+  },
+  // Shoulder-missile firing stance, STANDING (27/11/2026, post-v41
+  // item 17): Lior's drawing — the soldier stands, launcher on the
+  // shoulder, slight forward lean and a staggered stance (front foot
+  // forward, back foot back). Same IK-solved arms and launcher
+  // transform as missileFire (upper-local, so the grips still land
+  // exactly); only the legs change — solved by missile-stand-fk.mjs
+  // (hipL 0.38/kneeL -0.21, hipR -0.22/kneeR -0.21, both boots
+  // planted). The launcher sits at ~1.58 m, inside the ground-window
+  // band (1.0..2.2) — the kneel put it at 1.08 m, barely over the sill,
+  // which is why shooting from a window was hard. Used unless the
+  // player is crouching when firing (then missileFire, the kneel).
+  missileFireStand: {
+    bodyDrop: 0, spine: -0.12, headX: -0.06,
+    hipL: 0.38, hipR: -0.22, kneeL: -0.21, kneeR: -0.21, hipLz: 0, hipRz: 0,
     shLx: 2.41, shLy: -1.16, shLz: 0.85, elLx: 0.89,
     shRx: 2.14, shRy: 0.94, shRz: -2.25, elRx: 2.34,
     rifleY: 0.78, rifleZ: -0.3, rifleRX: 0.12,
@@ -2192,6 +2328,11 @@ function updateHUD() {
   // REC stays available in ghost mode —
   // it records the canvas stream, and the toggle never stops it.
   ghostToggleBtn.classList.toggle('hidden', !spectating);
+  // MAP is hidden while spectating (27/11/2026, post-v41 item 16):
+  // bird's-eye already shows the whole map, and the button used to sit
+  // under the REC button in the same column slot (top 79) — invisible
+  // and unclickable. The M key still opens the map overlay.
+  mapBtn.classList.toggle('hidden', spectating);
 }
 
 let damageFlashTimer = null;
@@ -2786,18 +2927,28 @@ let savedAdminCode = loadSavedAdminCode();
 // even before joining — an admin with no player record yet must still
 // see the panel. Set on adminOk, cleared on a wrong-code error.
 let amAdminLocal = !!savedAdminCode;
+// Entry gate (27/11/2026, post-v41 item 20): the join UI stays hidden
+// until this tab proves a valid invite (inviteStatus valid) or the
+// admin code (adminOk). Set on either, cleared on entryDenied.
+let entryAllowed = false;
 let lastRejoinRetry = 0; // throttle for the state-handler rejoin retry
 socket.onOpen = () => {
   connected = true;
   connectStatus.textContent = 'Connected.';
-  joinBox.classList.remove('hidden');
   connBanner.classList.add('hidden');
+  // Entry gate (27/11/2026, post-v41 item 20): the join UI stays
+  // hidden until the visitor proves an invite or the admin code —
+  // opening the plain address shows the invite message, not the join
+  // buttons. The proof is re-sent on every (re)connect, before the
+  // saved-join rejoin below, so the server holds it when the join
+  // lands (messages on one socket are processed in order).
   // Expiring invite link (Lior, 26/11/2026): a visitor who opened a
   // shared ?invite=<code> link asks the server whether it is still good.
   // (A returning player reconnects with savedJoin regardless — the link
   // gates new entry, not reconnection.)
   const inviteCode = new URLSearchParams(location.search).get('invite');
   if (inviteCode) socket.send({ t: 'checkInvite', code: inviteCode });
+  else if (!savedAdminCode) $('inviteNeeded').classList.remove('hidden');
   // Reconnect: the server dropped the old player entry when the socket
   // closed, so rejoin with the same callsign/team. The stored admin
   // code goes FIRST (27/11/2026): the server holds it as a pending
@@ -2962,6 +3113,15 @@ socket.on('spectateLeft', () => {
   showScreen('lobby');
 });
 
+// Entry gate (27/11/2026, post-v41 item 20): a valid invite or the
+// admin code opens the join UI. Both notices hide — the visitor is in.
+function openEntryGate() {
+  entryAllowed = true;
+  $('inviteNeeded').classList.add('hidden');
+  $('inviteExpired').classList.add('hidden');
+  if (!joined) joinBox.classList.remove('hidden');
+}
+
 socket.on('adminOk', () => {
   // The admin panel renders from the state that follows this message.
   // The code itself stays in savedAdminCode (re-sent on rejoin) and in
@@ -2972,6 +3132,8 @@ socket.on('adminOk', () => {
   storeSavedAdminCode(savedAdminCode);
   adminCodeInput.value = '';
   adminError.classList.add('hidden');
+  // The code is the master key (item 20): it opens the entry gate too.
+  openEntryGate();
   updateUnjoinedAdminUI();
 });
 
@@ -2985,6 +3147,9 @@ socket.on('error', (msg) => {
     savedAdminCode = null;
     amAdminLocal = false;
     storeSavedAdminCode(null);
+    // No working code and (unless an invite already opened the gate)
+    // no invite either: the visitor needs an invite link (item 20).
+    if (!entryAllowed) $('inviteNeeded').classList.remove('hidden');
     updateUnjoinedAdminUI();
     return;
   }
@@ -3117,7 +3282,18 @@ socket.on('state', (msg) => {
   // stranded the player outside the rendered street when the room map
   // was large (the large attackers spawn sits at z = -60, past the
   // small map's street end).
-  if (msg.phase === 'lobby' && msg.map && msg.map !== currentMapName) rebuildMap(msg.map);
+  // Map: rebuild in the lobby only (a map CHANGE mid-match must not
+  // rebuild the world under playing players) — EXCEPT the first state
+  // this client ever sees (item 24, 27/11/2026): a fresh spectator
+  // window joining mid-match has no world state yet, so its first
+  // sync rebuilds to the room's map regardless of phase; later
+  // changes still wait for the lobby. mapSynced is set on the first
+  // state carrying a map, whether or not a rebuild ran (the room's
+  // map may already be the default small).
+  if (msg.map) {
+    if (msg.map !== currentMapName && (msg.phase === 'lobby' || !mapSynced)) rebuildMap(msg.map);
+    mapSynced = true;
+  }
   updateRoleLabels(msg.attackersTeam);
   meta = new Map(msg.players.map((p) => [p.id, p]));
   const me = meta.get(myId);
@@ -3165,6 +3341,13 @@ socket.on('state', (msg) => {
     }
     return;
   }
+  // Map toggle always mirrors the server (27/11/2026, post-v41 item
+  // 13): the empty-room reset broadcasts map 'small' while a solo
+  // player still has solo=true locally, so the solo early-return below
+  // used to skip this update — the lobby then kept highlighting Large
+  // after leaving solo, and tapping Small sent a no-op setMap. The
+  // 3D world already rebuilt above; the toggle must follow it.
+  renderMapRows(msg);
   if (solo) return; // stay in the solo game view; the room may be in lobby phase
   renderLobby(msg);
   // Match-end backstop (27/11/2026): showMatchEndUI normally runs only
@@ -3568,6 +3751,12 @@ $('soloGrenadeBtn').addEventListener('click', () => {
 // click that follows it (same leave, sent once) via lastBackTouchAt.
 let lastBackTouchAt = 0;
 function goBack() {
+  // Map overlay open (27/11/2026, post-v41 item 19a): ONLY its ✕ (or
+  // the M key) closes it — the ↩ back button must do nothing here.
+  // Before this guard, tapping ↩ with the map open exited the game
+  // (killed the player from the match) while the player only meant to
+  // close the map.
+  if (mapOpen) return;
   if (spectating) socket.send({ t: 'leaveSpectate' });
   else if (solo) socket.send({ t: 'leaveSolo' });
   else socket.send({ t: 'leave' });
@@ -3845,16 +4034,45 @@ socket.on('inviteCreated', (msg) => {
 });
 
 socket.on('inviteStatus', (msg) => {
-  // An expired (or bogus) shared link: show the notice and hide the join
-  // UI, so a new visitor cannot enter through it. Direct entry without
-  // a link stays open (Lior is still deliberating about that).
-  if (msg.valid) return;
+  // A valid shared link opens the entry gate (27/11/2026, post-v41
+  // item 20) — the visitor enters the lobby normally. An expired (or
+  // bogus) shared link: show the notice and hide the join UI, so a new
+  // visitor cannot enter through it. Direct entry without a link stays
+  // closed behind the invite message (same item).
+  if (msg.valid) { openEntryGate(); return; }
+  entryAllowed = false;
   $('inviteExpired').classList.remove('hidden');
+  $('inviteNeeded').classList.add('hidden');
+  joinBox.classList.add('hidden');
+  teamsBox.classList.add('hidden');
+});
+
+// Entry denied (27/11/2026, post-v41 item 20): the server refused a
+// join/solo with no invite and no admin code on this socket. Clear the
+// saved join so the state handler does not retry it forever, and show
+// the invite message instead of the join buttons.
+socket.on('entryDenied', () => {
+  entryAllowed = false;
+  savedJoin = null;
+  $('inviteNeeded').classList.remove('hidden');
+  $('inviteExpired').classList.add('hidden');
   joinBox.classList.add('hidden');
   teamsBox.classList.add('hidden');
 });
 $('switchBtn').addEventListener('click', () => {
   socket.send({ t: 'switchTeam', team: myTeam === 'A' ? 'B' : 'A' });
+});
+// Leave team (27/11/2026, post-v41 item 18): a team player in the lobby
+// can unassign — the button was missing, so a player who picked a team
+// could never go back and press Solo. Sends the existing 'leave': the
+// server drops the player record (host migrates to the earliest-joined
+// remaining team player, or the room resets if alone) and the 'left'
+// handler shows the join screen again. The admin flag survives on the
+// socket (ws._pendingAdmin is never cleared), so rejoining restores it.
+// Lobby only in practice — teamsBox hides in-game, and mid-match the
+// back button already sends the same 'leave' (with the grace window).
+$('leaveTeamBtn').addEventListener('click', () => {
+  socket.send({ t: 'leave' });
 });
 $('atkA').addEventListener('click', () => socket.send({ t: 'setAttackers', team: 'A' }));
 $('atkB').addEventListener('click', () => socket.send({ t: 'setAttackers', team: 'B' }));
@@ -3939,6 +4157,27 @@ nameInput.addEventListener('keydown', (e) => {
 
 const clock = new THREE.Clock();
 let lastSizeSync = 0;
+
+// Bird's-eye height (27/11/2026, post-v41 item 25 — the framing rule):
+// the whole map must fit end to end, start and end points included
+// (both teams' spawn zones and the objective), so the height is
+// computed from the current layout's bounds, the screen aspect and
+// the spectating field of view — not the fixed 55 m, which showed
+// only a strip of a 124 m street. The spectating FOV is 75°
+// (updateViewmodel enforces it while spectating) and the camera
+// looks straight down, so the visible world height is 2·h·tan(37.5°)
+// and the visible width is that times the aspect; the height is the
+// larger of the two fits. The bounds are padded 4 m a side so the
+// fence sits inside the frame with room to spare. Landscape
+// 844×390: ~86 m on the small map, ~91 m on the large; portrait
+// needs more (the width fit binds), and the formula covers it.
+function birdEyeHeight() {
+  const b = curLayout.bounds;
+  const halfTan = Math.tan((75 / 2) * Math.PI / 180);
+  const hZ = (b.z1 - b.z0 + 8) / (2 * halfTan);
+  const hX = (b.x1 - b.x0 + 8) / (2 * halfTan * camera.aspect);
+  return Math.max(hZ, hX);
+}
 
 function loop() {
   requestAnimationFrame(loop);
@@ -4118,10 +4357,11 @@ function loop() {
       const moving = speed > 0.4;
       // Crouching reads as a one-knee kneel when still, a low crouch-walk
       // when moving; aiming raises the rifle; otherwise the ready stance.
-      // A charging missile soldier kneels with the launcher on the
-      // shoulder instead (27/11/2026).
+      // A charging missile soldier fires STANDING with the launcher on
+      // the shoulder (27/11/2026, post-v41 item 17 — Lior's drawing),
+      // and only kneels when crouching when the shot starts.
       let poseName = 'ready';
-      if (s.missile) poseName = 'missileFire';
+      if (s.missile) poseName = s.crouch ? 'missileFire' : 'missileFireStand';
       else if (s.crouch) poseName = moving ? 'crouchWalk' : 'kneel';
       else if (s.aiming) poseName = 'aim';
       // The launcher replaces the rifle in the hands while firing.
@@ -4160,9 +4400,11 @@ function loop() {
   }
 
   if (spectating) {
-    // Bird's-eye admin view: 55 m up (figures read as small dots, ~8 px),
-    // drag pans the view along the street. The look deltas are consumed
-    // here so they never leak into the yaw when spectating ends.
+    // Bird's-eye admin view: the height is computed from the current
+    // layout's bounds so the whole map fits end to end (item 25) —
+    // figures read as small dots. Drag pans the view along the
+    // street. The look deltas are consumed here so they never leak
+    // into the yaw when spectating ends.
     // Ghost mode (27/11/2026): the camera sits at a living player's eyes
     // and looks where they look, plus the admin's own look offset — the
     // ghost sees and is not seen. REC keeps recording either way: it
@@ -4189,21 +4431,23 @@ function loop() {
         if (ghostTarget == null) {
           specX = Math.max(curLayout.bounds.x0, Math.min(curLayout.bounds.x1, specX - look.dx * 0.05));
           specZ = Math.max(curLayout.bounds.z0, Math.min(curLayout.bounds.z1, specZ - look.dy * 0.05));
-          camera.position.set(specX, 55, specZ);
+          camera.position.set(specX, birdEyeHeight(), specZ);
           camera.rotation.set(-Math.PI / 2, 0, 0);
         }
       }
     } else {
       specX = Math.max(curLayout.bounds.x0, Math.min(curLayout.bounds.x1, specX - look.dx * 0.05));
       specZ = Math.max(curLayout.bounds.z0, Math.min(curLayout.bounds.z1, specZ - look.dy * 0.05));
-      camera.position.set(specX, 55, specZ);
+      camera.position.set(specX, birdEyeHeight(), specZ);
       camera.rotation.set(-Math.PI / 2, 0, 0);
     }
   } else if ((game.phase === 'playing' || solo) && myAlive) {
     // Crouch blends the eye height down smoothly (no snap on toggle).
-    // The missile firing stance is a kneel (27/11/2026): charging drops
-    // the eye to kneel height even without pressing CROUCH.
-    const wantCrouch = controls.crouch || !!missileCharging;
+    // The eye follows the real crouch state only: the missile firing
+    // stance is standing unless crouching (27/11/2026, item 17), so
+    // charging no longer drops the eye to kneel height on its own —
+    // the v41 kneel drop is gone with the kneel pose.
+    const wantCrouch = controls.crouch;
     crouchBlend += ((wantCrouch ? 1 : 0) - crouchBlend) * (1 - Math.exp(-dt * 10));
     // Look still works mid-climb (the camera crosses the wall with the
     // player); movement, fire and reload are frozen (see below, tryFire,
@@ -4349,6 +4593,15 @@ window.__tacticalFire = () => ({
 // Debug/test hook: the rendered map name (27/11/2026, corrected item 8 —
 // verifies solo renders the map the admin picked on the join screen).
 window.__tacticalMap = () => currentMapName;
+// Debug/test hook: the first-person viewmodel state (27/11/2026, item 15 —
+// the launcher must stay hidden until the first munition press).
+window.__tacticalViewmodel = () => ({
+  myClass,
+  launcherVisible: launcherViewmodel ? launcherViewmodel.visible : null,
+  rifleVisible: rifle ? rifle.visible : null,
+  missileCharging: !!missileCharging,
+  missileFiredAt,
+});
 window.__tacticalMeshes = playerMeshes; // debug/test hook: remote player meshes by id
 document.getElementById('boot')?.remove(); // inline splash done its job
 socket.connect();
