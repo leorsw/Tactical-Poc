@@ -532,21 +532,32 @@ function stairT(s, x, z) {
 // and disambiguates "standing on the second floor" from "standing under it"
 // inside a house: above 1.5 m you are on the upper floor, below it you are
 // on the ground floor (above 4.5 m: the third floor, tall houses only).
+// A stair flight only catches a player whose feet are on the flight's own
+// floors (28/11/2026, fix-list item 26): a player on the ground floor
+// walking under stair2 (3->6) must stay on the ground, and a player on
+// floor 3 (y=6) walking over stair1 (0->3) must stay on floor 3. The old
+// code returned the flight height from (x,z) alone, so both got snapped
+// to the flight. The span check keeps normal ascent/descent (feet track
+// the flight while on it) and survives frame hitches; 0.5 m is far below
+// the 3 m gap to a non-adjacent floor, so the guard is airtight.
 // On the stairs the height interpolates smoothly; the second flight
 // (stair2) interpolates from 3 to 6.
+const STAIR_SPAN_TOL = 0.5;
 export function floorHeightAt(x, z, currentY, layout) {
   const houses = resolveLayout(layout).houses;
   for (const h of houses) {
     if (x < h.ix0 || x > h.ix1 || z < h.iz0 || z > h.iz1) continue;
     if (h.stair2) {
       const s2 = h.stair2;
-      if (x >= s2.x0 && x <= s2.x1 && z >= s2.z0 && z <= s2.z1) {
+      if (x >= s2.x0 && x <= s2.x1 && z >= s2.z0 && z <= s2.z1
+          && currentY >= FLOOR2_Y - STAIR_SPAN_TOL && currentY <= FLOOR3_Y + STAIR_SPAN_TOL) {
         const t = Math.max(0, Math.min(1, stairT(s2, x, z)));
         return FLOOR2_Y + FLOOR2_Y * t;
       }
     }
     const s = h.stair;
-    if (x >= s.x0 && x <= s.x1 && z >= s.z0 && z <= s.z1) {
+    if (x >= s.x0 && x <= s.x1 && z >= s.z0 && z <= s.z1
+        && currentY >= -STAIR_SPAN_TOL && currentY <= FLOOR2_Y + STAIR_SPAN_TOL) {
       const t = Math.max(0, Math.min(1, stairT(s, x, z)));
       return FLOOR2_Y * t;
     }
