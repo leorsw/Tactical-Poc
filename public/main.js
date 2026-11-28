@@ -1314,6 +1314,28 @@ function rebuildBodyNamePatches(id, g) {
   u.patchRole = m.role;
 }
 
+// (Re)build a figure's bird's-eye disc name label (28/11/2026, fix-list
+// item 28): the name on a billboard sprite, in the team colour, using the
+// same texture maker as the on-body patches. NPCs and solo players get
+// none — nobody spectates them (same rule as the body patches). Called
+// from getPlayerMesh and from refreshMeshColors on name/team change.
+function rebuildDiscLabel(id, g) {
+  const u = g.userData;
+  const m = meta.get(id) || npcMeta.get(id) || {};
+  if (u.discLabel) {
+    if (u.discLabel.material.map) u.discLabel.material.map.dispose();
+    u.discLabel.material.map = null;
+  }
+  u.discLabelName = null;
+  u.discLabelRole = null;
+  if (!u.discLabel || npcMeta.has(id) || m.solo || !m.name) return;
+  const color = TEAM_CSS[m.role] || '#ffffff';
+  u.discLabel.material.map = makeBodyNameTexture(m.name, color, 512, 128);
+  u.discLabel.material.needsUpdate = true;
+  u.discLabelName = m.name;
+  u.discLabelRole = m.role;
+}
+
 // --- Tactical poses ---------------------------------------------------------
 // The soldier is a small joint hierarchy: hips -> thigh -> knee -> shin,
 // waist -> torso -> shoulder -> elbow -> forearm, plus a neck pivot and a
@@ -1732,6 +1754,22 @@ function getPlayerMesh(id) {
   group.add(disc);
   group.userData.disc = disc;
   group.userData.discRole = m.role;
+  // Spectator disc name label (28/11/2026, fix-list item 28): the name on
+  // a billboard sprite just north of (above, on screen) the disc, visible
+  // only to a bird's-eye spectator. Added to the scene, not the group —
+  // the group yaws and pitches when falling, and the label must stay put.
+  // X-ray like the disc, so it reads through a roof too.
+  const discLabel = new THREE.Sprite(new THREE.SpriteMaterial({
+    transparent: true, depthTest: false, depthWrite: false,
+  }));
+  discLabel.scale.set(16, 4, 1);
+  discLabel.renderOrder = 5;
+  discLabel.visible = false;
+  scene.add(discLabel);
+  group.userData.discLabel = discLabel;
+  group.userData.discLabelName = null;
+  group.userData.discLabelRole = null;
+  rebuildDiscLabel(id, group);
   // Floor rings (27/11/2026): one extra concentric ring per floor above
   // ground, for the bird's-eye X-ray of an indoor player.
   const ringMat = new THREE.MeshBasicMaterial({ color: TEAM_CSS[m.role] || '#ffffff', transparent: true, opacity: 0.75, depthWrite: false, depthTest: false, side: THREE.DoubleSide });
@@ -1912,6 +1950,13 @@ function removePlayerMesh(id) {
   // too, or it would lie on the ground forever.
   const rifle = g.userData.rifle;
   if (rifle && rifle.parent === scene) scene.remove(rifle);
+  // The disc name label lives in the scene, not the group — remove it too.
+  const discLabel = g.userData.discLabel;
+  if (discLabel) {
+    scene.remove(discLabel);
+    if (discLabel.material.map) discLabel.material.map.dispose();
+    discLabel.material.dispose();
+  }
   scene.remove(g);
   playerMeshes.delete(id);
   for (let i = shootTargets.length - 1; i >= 0; i--) {
@@ -1933,6 +1978,10 @@ function refreshMeshColors() {
       g.userData.discRole = m.role;
       if (g.userData.floorRing1) g.userData.floorRing1.material.color.set(TEAM_CSS[m.role] || '#ffffff');
       if (g.userData.floorRing2) g.userData.floorRing2.material.color.set(TEAM_CSS[m.role] || '#ffffff');
+    }
+    // The spectator disc name label follows the name/role too.
+    if (g.userData.discLabel && (g.userData.discLabelName !== (m.name || null) || g.userData.discLabelRole !== m.role)) {
+      rebuildDiscLabel(id, g);
     }
     // The rifle follows the class: a gunner carries an LMG.
     if (g.userData.rifleCls !== (m.cls || 'rifleman')) {
@@ -2111,6 +2160,10 @@ function renderLobby(state) {
 function showScreen(name) {
   lobbyEl.classList.toggle('hidden', name !== 'lobby');
   gameEl.classList.toggle('hidden', name !== 'game');
+  // Lobby help (28/11/2026, fix-list item 27): the "?" lives on the
+  // lobby screen only; the panel closes when leaving the lobby.
+  $('lobbyHelpBtn').classList.toggle('hidden', name !== 'lobby');
+  if (name !== 'lobby') $('lobbyHelp').classList.add('hidden');
   if (name === 'game') initThree();
   if (name === 'lobby') {
     hideHelpUI();
@@ -2191,6 +2244,15 @@ function hideHelpUI() {
 $('helpCloseBtn').addEventListener('click', closeHelpSlide);
 $('helpCloseBtnDesktop').addEventListener('click', closeHelpSlide);
 $('helpBtn').addEventListener('click', showHelpSlide);
+
+// Lobby help (28/11/2026, fix-list item 27): the lobby's explanatory
+// text (teams, solo, classes, grenades) lives in this panel, opened
+// from the "?" top-right of the lobby screen. Backdrop click closes.
+$('lobbyHelpBtn').addEventListener('click', () => $('lobbyHelp').classList.remove('hidden'));
+$('lobbyHelpClose').addEventListener('click', () => $('lobbyHelp').classList.add('hidden'));
+$('lobbyHelp').addEventListener('click', (ev) => {
+  if (ev.target === $('lobbyHelp')) $('lobbyHelp').classList.add('hidden');
+});
 
 // ---------------------------------------------------------------------------
 // HUD
@@ -4250,6 +4312,8 @@ function loop() {
             if (u.elimX) u.elimX.visible = false;
           }
         }
+        // A fallen body shows no name (28/11/2026, fix-list item 28).
+        if (u.discLabel) u.discLabel.visible = false;
         setMeshFade(g, 1); // a body that died mid-climb-fade is fully opaque
         if (u.fallTo !== 1) {
           u.fallFrom = u.fallT ?? 0;
@@ -4301,10 +4365,13 @@ function loop() {
     }
     // The on-body name is teammates-only: the enemy team sees no name at all.
     // (Solo players have no team, so they neither show nor see names.)
+    // (28/11/2026, fix-list item 28): a spectator is neutral — in
+    // spectator mode every player's name shows, not just teammates'.
     const m = meta.get(id) || npcMeta.get(id);
     const isTeammate = !solo && myTeam != null && !!m && !m.solo && m.team === myTeam;
-    if (g.userData.headPatch) g.userData.headPatch.visible = isTeammate;
-    if (g.userData.backPatch) g.userData.backPatch.visible = isTeammate;
+    const showPatch = spectating || isTeammate;
+    if (g.userData.headPatch) g.userData.headPatch.visible = showPatch;
+    if (g.userData.backPatch) g.userData.backPatch.visible = showPatch;
     // Bird's-eye spectator: a team-coloured disc under each living figure
     // (26/11/2026) — dark figures on the black street are nearly invisible
     // from above without it. Only the spectator's client shows it.
@@ -4327,6 +4394,14 @@ function loop() {
       } else {
         if (u.floorRing1) u.floorRing1.visible = false;
         if (u.floorRing2) u.floorRing2.visible = false;
+      }
+      // Bird's-eye disc name label (28/11/2026, fix-list item 28): the
+      // sprite sits just north of the disc (above it on screen) and
+      // follows the figure. Same visibility as the disc itself.
+      if (g.userData.discLabel) {
+        const dl = g.userData.discLabel;
+        dl.visible = showDisc && !!g.userData.discLabelName;
+        if (dl.visible) dl.position.set(g.position.x, 0.8, g.position.z - 2.5);
       }
     }
     const k = 1 - Math.exp(-dt * 12);
