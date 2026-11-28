@@ -547,4 +547,22 @@ check('large layout: E-W house doors, floors, stairs, line of sight', () => {
   assert.equal(hasLineOfSight(30, 1.6, -11.3, 45, 1.2, -11.3, L), false, 'large: E-W house blocks');
 });
 
+check('NPC window-spot inventory covers the per-map count (fix-list item 32)', () => {
+  // Same spot formula as the server's drawNpcSet: per house, two z
+  // offsets x two floors.
+  for (const [name, count] of [['small', 10], ['large', 20]]) {
+    const L = getLayout(name);
+    const spots = L.houses.length * 2 * 2;
+    assert.ok(spots >= count, `${name}: ${spots} spots must cover ${count} NPCs`);
+  }
+  assert.equal(getLayout('small').houses.length, 10);
+  assert.equal(getLayout('large').houses.length, 20);
+});
+
+check('spawnLayout on the large layout uses the large ends (fix-list item 31)', () => {
+  const layout = spawnLayout(-1, 1, getLayout('large'));
+  assert.ok(layout.attackers.every((s) => s.z === -60), 'large attackers spawn at z = -60');
+  assert.ok(layout.defenders.every((s) => s.z === 60), 'large defenders spawn at z = 60');
+});
+
 console.log(`map tests passed (${n} checks)`);
