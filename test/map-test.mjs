@@ -395,6 +395,22 @@ check('tall houses #8/#13: 3 floors, second stair flight, 9 m walls', () => {
   assert.equal(covered(-6, 6.5, -19.5), true, 'wall below the floor-3 window stays solid');
 });
 
+check('stairs catch only players on the flight\'s own floors (item 26)', () => {
+  // 28/11/2026, fix-list item 26: the old floorHeightAt returned the
+  // flight height from (x,z) alone, so a player on the ground floor
+  // walking under stair2 (3->6) got lifted to floor 3, and a player on
+  // floor 3 walking over stair1 (0->3) got dropped to the ground.
+  // House #8 (west, cx=-11, cz=-16, large map): stair1 x -15.5..-13.5,
+  // stair2 x -8.5..-6.5, both z -18.5..-15.
+  const L = LAYOUTS.large;
+  assert.equal(floorHeightAt(-7.5, -16.75, 0, L), 0, 'ground under stair2 stays on the ground');
+  assert.equal(floorHeightAt(-14.5, -16.75, 6, L), 6, 'floor 3 over stair1 stays on floor 3');
+  assert.equal(floorHeightAt(-14.5, -16.75, 3, L), 1.5, 'floor 2 over stair1 descends onto the flight');
+  assert.equal(floorHeightAt(-7.5, -16.75, 6, L), 4.5, 'floor 3 over stair2 descends onto the flight');
+  assert.equal(floorHeightAt(-7.5, -18.5, 3, L), 3, 'floor 2 at the stair2 base starts the climb');
+  assert.equal(floorHeightAt(-14.5, -18.5, 0, L), 0, 'ground at the stair1 base starts the climb');
+});
+
 check('back windows: visual-box count grows by 8 per house', () => {
   // Small: 10 houses x 44 boxes + 4 fence = 444 (was 354 with a solid
   // back wall: 10 x 35 + 4). Large: 12 ns x 44 + 8 ew x 43 + 2 tall
