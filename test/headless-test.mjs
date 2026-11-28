@@ -166,11 +166,10 @@
 //     a valid invite admits; the admin code admits; an expired invite
 //     does not; a mid-match grace rejoin passes without an invite (a
 //     re-entry, not a new entry).
-//   Scenario 44 (an invite grants no admin, post-v41 item 21): a
-//     fresh visitor who enters with a valid invite joins as an
-//     ordinary player — the state shows admin false, they are not the
-//     host, and admin-only actions (setMap, createInvite) are ignored
-//     for them while an admin is present.
+//   Scenario 46 (spectator name labels, fix-list item 28): the
+//     spectator's state carries every player's name, so the bird's-eye
+//     disc labels can correlate snapshot positions (which carry no
+//     names) to names by id — for both teams.
 //
 // Run: node test/headless-test.mjs  (or: npm test)
 
@@ -1930,8 +1929,19 @@ async function main() {
     await sp2.waitFor('roundStart', (m) => m.round === 1, 5000);
     console.log('ok - spectating admin starts the match');
     // The spectator receives snapshots (bird's-eye view data).
-    await sp1.waitFor('snapshot', (m) => m.players.length === 2, 5000);
+    const specSnap = await sp1.waitFor('snapshot', (m) => m.players.length === 2, 5000);
     console.log('ok - spectator receives snapshots');
+    // Scenario 46 (spectator name labels, fix-list item 28): the
+    // spectator's state carries every player's name, so the bird's-eye
+    // disc labels can correlate snapshot positions (which carry no
+    // names) to names by id — for both teams.
+    const namesById = new Map(specState.players.map((p) => [p.id, p.name]));
+    assert.equal(namesById.get(sp2.id), 'SpecMate', 'snapshot id of team A resolves to its name');
+    assert.equal(namesById.get(sp3.id), 'SpecFoe', 'snapshot id of team B resolves to its name');
+    for (const p of specSnap.players) {
+      assert.ok(namesById.get(p.id), `snapshot player ${p.id} resolves to a name`);
+    }
+    console.log('ok - spectator state carries names for snapshot ids (disc labels)');
     // The spectator cannot shoot.
     sp2.inbox.length = 0;
     sp1.send({ t: 'shot', targetId: sp3.id });
@@ -2843,6 +2853,20 @@ async function main() {
     console.log('ok - a valid invite grants no admin (state admin false, not host, setMap + createInvite ignored)');
     for (const c of [ivA, ivB]) c.close();
     await sleep(600);
+
+    // ------------------------------------------------ scenario 45: stairs
+    // catch only players on the flight's own floors (item 26).
+    // floorHeightAt must not snap a player to a flight from another
+    // floor: ground under stair2 stays ground, floor 3 over stair1
+    // stays floor 3; normal ascent/descent on both flights still works.
+    const L45 = mapMod.LAYOUTS.large;
+    assert.equal(mapMod.floorHeightAt(-7.5, -16.75, 0, L45), 0, 'ground under stair2 stays on the ground');
+    assert.equal(mapMod.floorHeightAt(-14.5, -16.75, 6, L45), 6, 'floor 3 over stair1 stays on floor 3');
+    assert.equal(mapMod.floorHeightAt(-14.5, -16.75, 3, L45), 1.5, 'floor 2 over stair1 descends onto the flight');
+    assert.equal(mapMod.floorHeightAt(-7.5, -16.75, 6, L45), 4.5, 'floor 3 over stair2 descends onto the flight');
+    assert.equal(mapMod.floorHeightAt(-7.5, -18.5, 3, L45), 3, 'floor 2 at the stair2 base starts the climb');
+    assert.equal(mapMod.floorHeightAt(-14.5, -18.5, 0, L45), 0, 'ground at the stair1 base starts the climb');
+    console.log('ok - stairs catch only players on the flight\'s own floors (ground under stair2 stays ground, floor 3 over stair1 stays floor 3)');
 
     if (inviter) inviter.close();
     console.log('HEADLESS TEST PASSED');
