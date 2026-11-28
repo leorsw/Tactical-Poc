@@ -399,8 +399,8 @@ function snapshotPlayerList(now) {
   // The NPCs ride the snapshot (never the state): clients render them
   // like any other player, but they never appear in the lobby or the
   // counts. An NPC's alive flag is its up/down state: a solo kill puts
-  // it down for 2 seconds, then it is replaced at a free window spot
-  // (Lior, 26/11/2026).
+  // it down for the rest of the round — it never comes back (fix-list
+  // item 32, Lior 28/11/2026: the respawn is cancelled).
   for (const n of npcs) {
     list.push({
       id: n.id,
@@ -590,7 +590,6 @@ function explodeMissile(shooter, impact) {
         n.health = 0;
         n.aiming = false;
         n.burstLeft = 0;
-        n.downAt = Date.now(); // respawn clock starts now, like a shot-down NPC
       }
       victims.push({ id: n.id, damage, killed: n.health <= 0 });
     }
@@ -708,18 +707,23 @@ function checkElimination() {
 }
 
 // ---------------------------------------------------------------------------
-// Solo NPCs: 10 target figures scattered along the street — some in
+// Solo NPCs: target figures scattered along the street — some in
 // ground-floor windows, some on the second floor (visible through the
 // upper windows) — so a solo player can see muzzle flashes from the
 // outside and hear remote shots, and has targets to shoot at. They are
 // NOT players: they live outside the players map and never join a match,
 // and their shots never damage anyone. Solo players CAN shoot them: same
 // distance damage as a player, and enough hits put one down — it lies
-// still for 2 seconds, then vanishes and a fresh NPC appears at a free
-// window spot (Lior, 26/11/2026). They exist only while the room is in
-// the lobby phase and at least one solo player is present; the set is
-// drawn when the first solo player arrives and re-drawn when the next
-// solo player arrives after the room emptied of solo players.
+// still for the rest of the round and never comes back (fix-list item
+// 32, Lior 28/11/2026: the 2 s respawn is cancelled — respawned NPCs
+// came back floating in the air at unrelated spots, because the client
+// lerps remote meshes towards snapshots with no teleport snap, so a
+// revived figure glided from its fall spot to the new window). Count
+// follows the map: 10 on the small map, 20 on the large map (Lior,
+// 28/11/2026). They exist only while the room is in the lobby phase
+// and at least one solo player is present; the set is drawn when the
+// first solo player arrives and re-drawn when the next solo player
+// arrives after the room emptied of solo players.
 //
 // An NPC only opens fire when it can SEE its target: within 30 m AND a
 // clear line of sight from its eye to the target's torso (map.js
@@ -734,18 +738,20 @@ function checkElimination() {
 // window centre (x = side * 6.8, z = house centre +/- 3.5), ground floor
 // (y = 0) or second floor (y = 3). The draw takes from all four buckets
 // (west/east x ground/upper) so the set always spans both sides of the
-// street and both floors. NPC_SEED pins the draw (screenshot runs);
-// otherwise it is random on every solo session.
+// street and both floors: 3/3/2/2 on the small map (10 NPCs), 5/5/5/5
+// on the large map (20 NPCs, fix-list item 32). NPC_SEED pins the draw
+// (screenshot runs); otherwise it is random on every solo session.
 // ---------------------------------------------------------------------------
-const NPC_COUNT = 10;
-const NPC_IDS = Array.from({ length: NPC_COUNT }, (_, i) => -(i + 1)); // -1..-10; player ids start at 1 (nextId), so these can never collide
+const NPC_COUNT_SMALL = 10; // small map (fix-list item 32, Lior 28/11/2026)
+const NPC_COUNT_LARGE = 20; // large map — 20 houses, 80 window spots
+const NPC_MAX_COUNT = Math.max(NPC_COUNT_SMALL, NPC_COUNT_LARGE);
+const NPC_IDS = Array.from({ length: NPC_MAX_COUNT }, (_, i) => -(i + 1)); // -1..-20; player ids start at 1 (nextId), so these can never collide
 const NPC_RANGE = 30; // opens fire within 30 m
 const NPC_TARGET_HEIGHT = 1.2; // torso height above the target's feet — the point an NPC must see
 const NPC_BURST = 3; // shots per burst
 const NPC_BURST_INTERVAL_MS = 120; // inside a burst
 const NPC_BURST_PAUSE_MS = 1200; // between bursts
-const NPC_RESPAWN_MS = 2000; // a downed NPC vanishes and is replaced after 2 s (Lior, 26/11/2026)
-let npcs = []; // [{ id, name, x, y, z, yaw, aiming, burstLeft, nextShotAt, health, downAt }] or []
+let npcs = []; // [{ id, name, x, y, z, yaw, aiming, burstLeft, nextShotAt, health }] or []
 
 // The yaw an NPC faces when it is not engaging: out of its window,
 // towards the street. Forward = (-sin(yaw), 0, -cos(yaw)).
@@ -788,9 +794,12 @@ function drawNpcSet() {
     }
     return arr;
   };
-  // Round-robin across the four buckets (3, 3, 2, 2): the set always
-  // spans both sides of the street and both floors.
-  const takes = { westGround: 3, westUpper: 3, eastGround: 2, eastUpper: 2 };
+  // Round-robin across the four buckets — 3/3/2/2 on the small map (10),
+  // 5/5/5/5 on the large map (20): the set always spans both sides of
+  // the street and both floors. (Fix-list item 32, Lior 28/11/2026.)
+  const takes = roomMap === 'large'
+    ? { westGround: 5, westUpper: 5, eastGround: 5, eastUpper: 5 }
+    : { westGround: 3, westUpper: 3, eastGround: 2, eastUpper: 2 };
   const spots = [];
   for (const [bucket, take] of Object.entries(takes)) {
     spots.push(...shuffle(buckets[bucket]).slice(0, take));
@@ -808,48 +817,7 @@ function drawNpcSet() {
     burstsFired: 0, // counts started bursts; every 3rd lands a hit (below)
     nextShotAt: 0,
     health: 100,
-    downAt: 0, // ms timestamp of the kill; 0 while alive
   }));
-}
-
-// A free window spot for a respawning NPC (Lior, 26/11/2026): any of the
-// 40 window spots (both sides, both floors) with no NPC on it right now
-// — the downed one still counts as occupying its spot until it moves,
-// so the replacement always lands somewhere else. With 10 NPCs and 40
-// spots there is always room; null only if every spot were taken.
-function freeNpcSpot() {
-  const occupied = new Set(npcs.map((o) => `${o.x},${o.y},${o.z}`));
-  const spots = [];
-  for (const h of npcHouses()) {
-    for (const wz of [h.cz - 3.5, h.cz + 3.5]) {
-      for (const y of [0, 3]) {
-        const s = { x: h.side * 6.8, z: wz, y };
-        if (!occupied.has(`${s.x},${s.y},${s.z}`)) spots.push(s);
-      }
-    }
-  }
-  if (spots.length === 0) return null;
-  return spots[Math.floor(Math.random() * spots.length)];
-}
-
-// Replace a downed NPC with a fresh one at a free window spot: same id
-// and name (the client just sees the body vanish and a standing NPC
-// appear elsewhere), full health, burst counters reset.
-function respawnNpc(n) {
-  const spot = freeNpcSpot();
-  if (!spot) return false; // no free spot — stays down, retried next tick
-  n.x = spot.x;
-  n.y = spot.y;
-  n.z = spot.z;
-  n.yaw = streetYaw(n);
-  n.health = 100;
-  n.aiming = false;
-  n.burstLeft = 0;
-  n.burstsFired = 0;
-  n.hitBurst = false;
-  n.nextShotAt = 0;
-  n.downAt = 0;
-  return true;
 }
 
 function updateNpcs(now) {
@@ -861,11 +829,10 @@ function updateNpcs(now) {
   if (npcs.length === 0) npcs = drawNpcSet();
   for (const n of npcs) {
     // Down: shot by a solo player. It lies still — no aiming, no fire —
-    // for 2 seconds, then vanishes and a fresh NPC appears at a free
-    // window spot (Lior, 26/11/2026; see respawnNpc above).
+    // for the rest of the round (fix-list item 32, Lior 28/11/2026:
+    // the respawn is cancelled — a downed NPC never comes back).
     if (n.health <= 0) {
       n.aiming = false;
-      if (now - (n.downAt || now) >= NPC_RESPAWN_MS) respawnNpc(n);
       continue;
     }
     let target = null;
@@ -1781,10 +1748,11 @@ function handleMessage(ws, msg) {
         }
       }
       // Solo players can shoot the NPCs: same distance damage as a
-      // player. Enough hits put one down for 2 seconds, then it is
-      // replaced at a free window spot (Lior, 26/11/2026). Not a
-      // match kill: no state broadcast, no elimination check, no kill
-      // credit. An NPC hit reports its own (negative) id.
+      // player. Enough hits put one down for the rest of the round —
+      // it never comes back (fix-list item 32, Lior 28/11/2026: the
+      // respawn is cancelled). Not a match kill: no state broadcast,
+      // no elimination check, no kill credit. An NPC hit reports its
+      // own (negative) id.
       const npcHit = p.solo ? npcs.find((n) => n.id === Number(msg.targetId)) : null;
       if (npcHit && npcHit.health > 0) {
         const dx = npcHit.x - p.pos.x;
@@ -1805,7 +1773,6 @@ function handleMessage(ws, msg) {
             npcHit.health = 0;
             npcHit.aiming = false;
             npcHit.burstLeft = 0;
-            npcHit.downAt = Date.now(); // respawn clock starts now (Lior, 26/11/2026)
             killed = true;
           }
           targetHealth = npcHit.health;
@@ -2055,6 +2022,11 @@ function removePlayer(p) {
   if (![...players.values()].some((q) => q.solo)) npcs = [];
   if (players.size === 0) {
     // Room is empty: reset to a fresh lobby for the next group.
+    // (Fix-list item 31, Lior 28/11/2026: the map choice PERSISTS —
+    // roomMap is NOT reset to 'small', so the next group starts on
+    // the last-chosen map. The spawn layout is re-derived from that
+    // persisted map, or join/solo spawns would land on the small
+    // map's ends (z = -/+45) while the room is large (z = -/+60).)
     hostId = null;
     attackersTeam = 'A';
     phase = 'lobby';
@@ -2064,10 +2036,9 @@ function removePlayer(p) {
     roundReason = '';
     matchWinner = null;
     captureMs = 0;
-    roomMap = 'small';
     defSpawn = null;
     spectatedOut.clear();
-    layout = spawnLayout(-1, 1);
+    layout = spawnLayout(-1, 1, activeLayout());
     // No match left to rejoin: drop stale grace entries so they cannot
     // admit anyone into a later match.
     recentDisconnects.length = 0;
