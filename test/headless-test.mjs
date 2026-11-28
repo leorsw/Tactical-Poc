@@ -42,11 +42,12 @@
 //     clears the relay, and non-boolean junk is ignored. (The poses
 //     themselves are client-side; this covers the wire only.)
 //   Scenario 10 (solo NPCs): while a solo player is in the lobby, 10
-//     NPC targets appear in snapshots (never in state) — ids -1..-10,
-//     spread over both sides of the street and both floors, in windows.
-//     They fire 3-shot bursts at a solo player within 30 m (shots never
-//     hit, aim pose on), stop when they leave range, and vanish when the
-//     last solo player leaves.
+//     NPC targets appear in snapshots on the small map (20 on the
+//     large map, fix-list item 32) — ids -1..-10 (small) / -1..-20
+//     (large), spread over both sides of the street and both floors,
+//     in windows. They fire 3-shot bursts at a solo player within
+//     30 m (shots never hit, aim pose on), stop when they leave
+//     range, and vanish when the last solo player leaves.
 //   Scenario 11 (solo same-name takeover): two solo players with the
 //     same callsign are the same person in two tabs — the second join
 //     kick-takeovers the first (the kicked tab gets 'kicked' and its
@@ -54,9 +55,9 @@
 //     with different names coexist untouched.
 //   Scenario 12 (solo NPC shoot-down): a solo shot at another player
 //     still never hits; distance damage on NPCs (1 hit <= 15 m, 2 hits
-//     15-50 m, 3 hits > 50 m); a downed NPC lies still for 2 s and stops
-//     firing, then is replaced at a free window spot (Lior, 26/11/2026);
-//     shots at it while down do not hit.
+//     15-50 m, 3 hits > 50 m); a downed NPC lies still and stops
+//     firing and never comes back (fix-list item 32, Lior 28/11/2026
+//     — the respawn is cancelled); shots at it while down do not hit.
 //   Scenario 13 (deliberate team leave): a 1v1 match, one player sends
 //     'leave' mid-match — the leaver gets 'left', the other team wins
 //     the round by elimination, the leaver is gone from the state, and
@@ -119,10 +120,9 @@
 //     minutes from the lobby (state.roundDurationMin); a non-admin set
 //     is ignored; the next round runs the new clock (2 min here, the
 //     test env runs ROUND_MS=60000).
-//   Scenario 26 (solo NPC respawn): a downed NPC is replaced after
-//     2 s at a free window spot (Lior, 26/11/2026) — same id, full
-//     health, different spot, still 10 NPCs — and the replacement can
-//     itself be shot down again.
+//   Scenario 26 (solo NPC stays down, fix-list item 32): a downed NPC
+//     never comes back — past the old 2 s respawn window it is still
+//     down at health 0, silent, and the set still holds 10 NPCs.
 //   Scenario 35 (missile reload, post-v41): the Rocketeer empties the
 //     29-round mag, reloads, and the mag refills (29 rounds, 4 spares
 //     left) after the 3.5 s reload.
@@ -142,15 +142,22 @@
 //     still reports map large, and the solo player has no team. The
 //     old reading (a solo button that stays visible after joining a
 //     team) was wrong and is gone: solo never required a team pick.
-//   Scenario 39 (map toggle after leaving solo, post-v41 item 13):
-//     admin picks Large, enters Solo, leaves — the empty-room reset
-//     broadcasts map 'small', and a setMap small afterwards is a
-//     silent no-op (the client highlight bug was the solo
-//     early-return skipping renderMapRows — fixed in main.js).
+//     Control (fix-list item 31): the room keeps the large map once
+//     empty now, so the control resets it to small explicitly first —
+//     then a solo join with no further map change spawns at z = -45.
+//   Scenario 39 (the map persists when the room empties, fix-list
+//     item 31): admin picks Large, enters Solo, leaves — the
+//     empty-room reset now broadcasts map 'large' (it used to reset
+//     to 'small', post-v41 item 13). A setMap small afterwards is a
+//     real change, and leaving solo again on small broadcasts 'small'.
+//     (The item-13 client highlight is covered by the puppeteer
+//     probe, not by this headless suite — no DOM here.)
 //   Scenario 40 (NPCs re-derived on a map change, post-v41 item 14):
 //     solo on the small map, host switches to Large — every NPC must
 //     sit at a valid large-map window spot and the set must have
-//     changed (stale small spots, e.g. z = +/-3.5, float mid-air).
+//     changed (stale small spots, e.g. z = +/-3.5, float mid-air) —
+//     and the count follows the map: 10 small, 20 large (fix-list
+//     item 32).
 //   Scenario 41 (missile + crouch flags, post-v41 item 17): a
 //     charging Rocketeer relays missile:true with crouch:false
 //     standing, and missile:true with crouch:true while crouched —
@@ -371,6 +378,12 @@ async function main() {
     b2.send({ t: 'join', name: 'B2', team: 'B' });
     await a1.waitFor('state', (m) => m.players.length === 4);
     console.log('ok - 4 clients joined 2v2');
+    // Fresh server default (fix-list item 31): a newly started server
+    // opens on the small map — the map choice only persists across an
+    // empty room within one server run, never across a restart.
+    assert.equal(a1.findLast('state', () => true).map, 'small',
+      'a fresh server starts on the small map');
+    console.log('ok - fresh server starts on the small map');
 
     // Host (first joiner = A1) picks attackers and starts.
     a1.send({ t: 'setAttackers', team: 'A' });
@@ -1036,9 +1049,9 @@ async function main() {
 
     // Scenario 12 — solo players can shoot the NPCs down: distance
     // damage (1 hit <= 15 m, 2 hits 15-50 m, 3 hits > 50 m). A downed
-    // NPC lies still for 2 s and stops firing, then is replaced at a
-    // free window spot (Lior, 26/11/2026); shots at it while down do
-    // not hit. Solo shots at players still never hit.
+    // NPC lies still and stops firing and never comes back (fix-list
+    // item 32, Lior 28/11/2026 — the respawn is cancelled); shots at
+    // it while down do not hit. Solo shots at players still never hit.
     const shooter = new Client('NpcShooter');
     await shooter.ready();
     shooter.send({ t: 'solo', name: 'NpcShooter' });
@@ -1072,7 +1085,6 @@ async function main() {
     shooter.inbox.length = 0;
     shooter.send({ t: 'shot', targetId: close.id });
     const down = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id && m.targetId === close.id, 5000);
-    const killAt = Date.now(); // the kill event just arrived; the server stamped downAt a few ms earlier
     assert.equal(down.hit, true);
     assert.equal(down.killed, true);
     assert.equal(down.damage, 100);
@@ -1090,38 +1102,24 @@ async function main() {
     const downShot = await shooter.waitFor('shot', (m) => m.shooterId === shooter.id, 5000);
     assert.equal(downShot.hit, false);
     console.log('ok - shots at the downed NPC do not hit');
-    // Respawn (Lior, 26/11/2026): the downed NPC lies still for 2 s —
-    // still down and silent at ~1.2 s — then vanishes and a fresh NPC
-    // appears at a free window spot: same id, full health, a different
-    // spot, still 10 NPCs in total.
+    // No respawn (fix-list item 32, Lior 28/11/2026): the downed NPC
+    // lies still past the old 2 s respawn window — still down and
+    // silent at ~2.7 s, still 10 NPCs in total, and it never fires
+    // again. (The respawn used to glide the figure through the air to
+    // a new window spot — the client lerps remote meshes with no
+    // teleport snap — so it is cancelled, not repaired.)
     const closeShotsBefore = shooter.inbox.filter((m) => m.t === 'shot' && m.shooterId === close.id).length;
-    await sleep(900);
+    await sleep(2500);
     const stillDown = shooter.findLast('snapshot', (m) =>
       m.players.some((p) => p.id === close.id));
     assert.ok(stillDown && stillDown.players.find((p) => p.id === close.id).alive === false
       && stillDown.players.find((p) => p.id === close.id).health === 0,
-      'downed NPC must still be down before the 2 s respawn');
+      'downed NPC must still be down past the old 2 s respawn window');
     assert.equal(shooter.inbox.filter((m) => m.t === 'shot' && m.shooterId === close.id).length,
       closeShotsBefore, 'downed NPC must not fire while down');
-    console.log('ok - downed NPC still down and silent at ~1.2 s');
-    shooter.inbox.length = 0;
-    const respawnSnap = await shooter.waitFor('snapshot', (m) => {
-      const n = m.players.find((p) => p.npc === true && p.id === close.id);
-      return n && n.alive === true && n.health === 100
-        && (n.x !== close.x || n.y !== close.y || n.z !== close.z);
-    }, 5000);
-    const respawned = respawnSnap.players.find((p) => p.id === close.id);
-    const respawnMs = Date.now() - killAt;
-    assert.ok(respawnMs >= 1700 && respawnMs <= 5000,
-      `respawn must land ~2 s after the kill, took ${respawnMs} ms`);
-    const respawnSet = respawnSnap.players.filter((p) => p.npc === true);
-    assert.equal(respawnSet.length, 10, 'still 10 NPCs after the respawn');
-    assert.ok(!respawnSet.some((p) => p.id !== close.id
-      && p.x === respawned.x && p.y === respawned.y && p.z === respawned.z),
-      'no other NPC shares the respawn spot');
-    assert.ok(Math.abs(Math.abs(respawned.x) - 6.8) < 0.01 && (respawned.y === 0 || respawned.y === 3),
-      `respawn spot must be a window spot, got ${respawned.x},${respawned.y},${respawned.z}`);
-    console.log(`ok - NPC respawns after ~2 s at a new free window spot (${respawnMs} ms)`);
+    assert.equal(stillDown.players.filter((p) => p.npc === true).length, 10,
+      'still 10 NPCs with one down and no replacement');
+    console.log('ok - downed NPC stays down past the old 2 s respawn window (no respawn, still 10 NPCs)');
     // Medium range (15-50 m): 20 m along the street — 50 damage, 2 hits.
     const medium = set.find((p) => p.id !== close.id);
     const medZ = medium.z + 20 <= 60 ? medium.z + 20 : medium.z - 20;
@@ -2038,10 +2036,14 @@ async function main() {
     for (const c of [rd1, rd2]) c.close();
     await sleep(300);
 
-    // Scenario 26 — solo NPC respawn: the replacement is a live target.
-    const resp = new Client('RespawnShooter');
+    // Scenario 26 — solo NPC stays down (fix-list item 32, Lior
+    // 28/11/2026): the respawn is cancelled — a downed NPC never
+    // comes back. Shoot one down, wait past the old 2 s window, and
+    // it is still down at health 0, silent, with the set still
+    // holding 10 NPCs.
+    const resp = new Client('NoRespawnShooter');
     await resp.ready();
-    resp.send({ t: 'solo', name: 'RespawnShooter' });
+    resp.send({ t: 'solo', name: 'NoRespawnShooter' });
     await resp.waitFor('soloJoined');
     const rSetSnap = await resp.waitFor('snapshot', (m) =>
       m.players.filter((p) => p.npc === true).length === 10);
@@ -2053,27 +2055,18 @@ async function main() {
     resp.send({ t: 'shot', targetId: victim.id });
     const rKill = await resp.waitFor('shot', (m) => m.shooterId === resp.id && m.targetId === victim.id, 5000);
     assert.equal(rKill.killed, true);
-    const rKillAt = Date.now();
-    // Wait for the replacement (same id, alive, new spot).
-    resp.inbox.length = 0;
-    const rRespawnSnap = await resp.waitFor('snapshot', (m) => {
-      const n = m.players.find((p) => p.npc === true && p.id === victim.id);
-      return n && n.alive === true && n.health === 100
-        && (n.x !== victim.x || n.y !== victim.y || n.z !== victim.z);
-    }, 5000);
-    const rMs = Date.now() - rKillAt;
-    assert.ok(rMs >= 1700 && rMs <= 5000, `replacement must arrive ~2 s after the kill, took ${rMs} ms`);
-    const replacement = rRespawnSnap.players.find((p) => p.id === victim.id);
-    // The replacement is itself a live target: walk to its window and
-    // shoot it down again.
-    resp.send({ t: 'move', x: 0, y: 0, z: replacement.z, yaw: 0, pitch: 0 });
-    await sleep(300);
-    resp.inbox.length = 0;
-    resp.send({ t: 'shot', targetId: replacement.id });
-    const rKill2 = await resp.waitFor('shot', (m) => m.shooterId === resp.id && m.targetId === replacement.id, 5000);
-    assert.equal(rKill2.killed, true);
-    assert.equal(rKill2.targetHealth, 0);
-    console.log(`ok - respawned NPC is a live target and goes down again (${rMs} ms)`);
+    const rShotsBefore = resp.inbox.filter((m) => m.t === 'shot' && m.shooterId === victim.id).length;
+    await sleep(3000); // past the old 2 s respawn window
+    const rStill = resp.findLast('snapshot', (m) =>
+      m.players.some((p) => p.npc === true && p.id === victim.id));
+    const rVictim = rStill.players.find((p) => p.id === victim.id);
+    assert.equal(rVictim.alive, false, 'downed NPC must still be down after 3 s');
+    assert.equal(rVictim.health, 0, 'downed NPC stays at health 0');
+    assert.equal(rStill.players.filter((p) => p.npc === true).length, 10,
+      'still 10 NPCs — no replacement arrived');
+    assert.equal(resp.inbox.filter((m) => m.t === 'shot' && m.shooterId === victim.id).length,
+      rShotsBefore, 'downed NPC must not fire while down');
+    console.log('ok - downed NPC stays down after 3 s (no respawn, still 10 NPCs)');
     resp.close();
     await sleep(300);
 
@@ -2164,9 +2157,14 @@ async function main() {
       return me && me.missile !== true;
     }, 5000);
     assert.ok(miSnapAfter, 'the charge flag clears after firing');
-    // Second fire: another NPC goes down, munitions hit 0.
+    // Second fire: another NPC goes down, munitions hit 0. (The first
+    // blast may also have caught the upper-floor NPC in the same
+    // window — 3 m above the impact, inside the 4 m blast — so the
+    // live count here is 8 or 9, not 10: no respawn replenishes the
+    // set anymore, fix-list item 32. Pick any live ground-floor NPC
+    // other than the first victim.)
     const miSnap1 = await mi.waitFor('snapshot', (m) =>
-      m.players.filter((p) => p.npc === true && p.alive === true).length >= 9);
+      m.players.some((p) => p.npc === true && p.alive === true && p.y === 0 && p.id !== miVictim.id));
     const miVictim2 = miSnap1.players.filter((p) => p.npc === true && p.alive === true && p.id !== miVictim.id)
       .find((p) => p.y === 0);
     const miImpact2 = {
@@ -2593,25 +2591,30 @@ async function main() {
     await sm.waitFor('soloLeft', () => true, 5000);
     console.log('ok - admin picks large on the join screen, presses Solo, solo starts on the large map (spawn z = -60, no team)');
     sm.close();
-    await sleep(600); // the room resets to the small map once empty
+    await sleep(600); // the room empties — the map stays large now (fix-list item 31)
+    // Control: reset the map to small explicitly (the empty-room reset
+    // no longer does it), then a solo join with no further map change
+    // spawns at z = -45 on the small map.
     const sm2 = new Client('SoloMapperSmall');
     await sm2.ready();
+    await sm2.becomeAdmin();
+    sm2.send({ t: 'setMap', map: 'small' });
+    await sm2.waitFor('state', (m) => m.map === 'small', 5000);
     sm2.send({ t: 'solo', name: 'SoloMapperSmall', cls: 'rifleman' });
     const sm2Joined = await sm2.waitFor('soloJoined', () => true, 5000);
-    assert.equal(sm2Joined.spawn.z, -45, 'solo with no map change spawns at z = -45 on the small map');
-    console.log('ok - solo control: no map change spawns at z = -45 on the small map');
+    assert.equal(sm2Joined.spawn.z, -45, 'solo after resetting to small spawns at z = -45 on the small map');
+    console.log('ok - solo control: map reset to small, solo spawns at z = -45 on the small map');
     sm2.close();
     await sleep(300);
 
     // ------------------------------------------------ scenario 39: the map
-    // toggle follows the server after leaving solo (post-v41 item 13).
-    // Admin picks Large, enters Solo, leaves — the empty-room reset
-    // broadcasts map 'small' while the client still thinks solo=true,
-    // and the old state handler skipped the toggle update (the solo
-    // early-return ran before renderMapRows). Server side pinned here:
-    // after leaveSolo the state reports map 'small', and a setMap
-    // small is a silent no-op. (The client highlight is covered by
-    // the puppeteer probe, not by this headless suite — no DOM here.)
+    // persists when the room empties (fix-list item 31, Lior
+    // 28/11/2026). Admin picks Large, enters Solo, leaves — the
+    // empty-room reset broadcasts map 'large' (it used to reset to
+    // 'small', post-v41 item 13). A setMap small afterwards is a
+    // real change now, and leaving solo again on small broadcasts
+    // map 'small'. (The client highlight is covered by the
+    // puppeteer probe, not by this headless suite — no DOM here.)
     const m13 = new Client('MapToggle');
     await m13.ready();
     m13.send({ t: 'admin', code: 'test-code' });
@@ -2623,13 +2626,24 @@ async function main() {
     m13.inbox.length = 0; // a stale small state from before the switch must not satisfy the wait
     m13.send({ t: 'leaveSolo' });
     await m13.waitFor('soloLeft', () => true, 5000);
-    const m13Reset = await m13.waitFor('state', (m) => m.map === 'small', 5000);
-    assert.ok(m13Reset, 'the empty-room reset broadcasts map small after leaveSolo');
+    const m13Reset = await m13.waitFor('state', (m) => m.map === 'large', 5000);
+    assert.ok(m13Reset, 'the empty-room reset keeps map large after leaveSolo (fix-list item 31)');
+    console.log('ok - leaving solo keeps the room map large (persisted, not reset to small)');
+    // setMap small is a real change now, not a no-op.
     m13.send({ t: 'setMap', map: 'small' });
-    await sleep(400);
-    const m13Last = m13.findLast('state', () => true);
-    assert.equal(m13Last.map, 'small', 'setMap small after the reset is a no-op, map stays small');
-    console.log('ok - leaving solo resets the room map to small (broadcast) and setMap small is a no-op');
+    const m13Small = await m13.waitFor('state', (m) => m.map === 'small', 5000);
+    assert.ok(m13Small, 'setMap small after the persisted reset changes the map');
+    console.log('ok - setMap small after the persisted reset is a real change');
+    // Leaving solo again on small persists small.
+    m13.inbox.length = 0;
+    m13.send({ t: 'solo', name: 'MapToggle', cls: 'rifleman' });
+    await m13.waitFor('soloJoined', () => true, 5000);
+    m13.inbox.length = 0;
+    m13.send({ t: 'leaveSolo' });
+    await m13.waitFor('soloLeft', () => true, 5000);
+    const m13ResetSmall = await m13.waitFor('state', (m) => m.map === 'small', 5000);
+    assert.ok(m13ResetSmall, 'the empty-room reset keeps map small after leaveSolo on small');
+    console.log('ok - leaving solo on small keeps the room map small');
     m13.close();
     await sleep(300);
 
@@ -2673,14 +2687,18 @@ async function main() {
     await w40.waitFor('state', (m) => m.map === 'large', 5000);
     const npcLarge = await w40.waitFor('snapshot', (m) => {
       const list = m.players.filter((p) => p.npc === true);
-      if (list.length !== 10) return false;
+      if (list.length !== 20) return false;
       if (!list.every((p) => largeSpots.has(npcKey(p)))) return false;
       return list.some((p) => !beforeKeys.has(npcKey(p)));
     }, 5000);
-    assert.ok(npcLarge, 'after the map switch every NPC sits at a large-map window spot and the set changed');
-    console.log('ok - NPCs are re-derived from the new layout on a map change (no stale spots)');
+    assert.ok(npcLarge, 'after the map switch every NPC sits at a large-map window spot and the set changed (20 NPCs)');
+    console.log('ok - NPCs are re-derived from the new layout on a map change (no stale spots, 20 on large)');
+    // Leave the room on the small map for the scenarios after this one:
+    // the map persists once empty now (fix-list item 31).
+    w40.send({ t: 'setMap', map: 'small' });
+    await w40.waitFor('state', (m) => m.map === 'small', 5000);
     for (const c of [w40, n40]) c.close();
-    await sleep(600); // the room resets to the small map once empty
+    await sleep(600); // the room empties (map stays small — set back above)
 
     // ------------------------------------------------ scenario 41: the
     // missile + crouch flags relay together (post-v41 item 17). The

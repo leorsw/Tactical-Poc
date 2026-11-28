@@ -4339,12 +4339,14 @@ function loop() {
       u.fallFrom = u.fallT ?? 0;
       u.fallTo = 0;
       u.fallStartAt = now;
-      // Respawn teleport (27/11/2026): an NPC that respawns (or a player
-      // reviving at round start) teleports to a new spot — the snapshot
-      // position is metres from the mesh, which still stands at the old
-      // spot. The rifle would lie alone at the old spot for the 0.6 s
-      // stand-up while the figure stands rifle-less. Hand it back at
-      // once; a normal stand-up (same spot) keeps the old timing.
+      // Revive teleport (27/11/2026): a player reviving at round start
+      // teleports to a new spot — the snapshot position is metres from
+      // the mesh, which still stands at the old spot. The rifle would
+      // lie alone at the old spot for the 0.6 s stand-up while the
+      // figure stands rifle-less. Hand it back at once; a normal
+      // stand-up (same spot) keeps the old timing. (NPCs no longer
+      // respawn — fix-list item 32, Lior 28/11/2026 — so the NPC case
+      // of this teleport is gone; downed NPCs stay down.)
       if (Math.hypot(s.x - g.position.x, s.z - g.position.z) > 3) pickUpRifle(g);
       // Revived (round-end): the bird's-eye elimination mark clears and
       // the team colour returns (27/11/2026).
