@@ -3090,6 +3090,15 @@ socket.on('soloLeft', () => {
   myHealth = 100;
   myInMag = 29;
   myMags = 5;
+  // Fix-list item 33 (28/11/2026): drop the NPC meshes and their
+  // snapshot entries — otherwise the stale set survives the lobby (the
+  // loop recreates meshes from the stale snapPlayers) and the fresh set
+  // reuses the same ids, so the old meshes (with their fall poses) would
+  // glide back from the old spots on re-entry instead of appearing fresh
+  // in the windows.
+  for (const id of [...playerMeshes.keys()]) if (id < 0) removePlayerMesh(id);
+  for (const id of [...snapPlayers.keys()]) if (id < 0) snapPlayers.delete(id);
+  npcMeta.clear();
   teamsBox.classList.add('hidden');
   joinBox.classList.remove('hidden');
   showScreen('lobby');
@@ -4407,6 +4416,17 @@ function loop() {
       }
     }
     const k = 1 - Math.exp(-dt * 12);
+    // Teleport snap (28/11/2026, fix-list item 33): a mesh metres from
+    // its snapshot position did not walk there — it teleported (an NPC
+    // re-draw after a solo re-entry reuses the same ids at new window
+    // spots; a fresh mesh starts at the origin; a round-start revive
+    // moves the figure). Lerping would glide it through the air — the
+    // floating NPCs Lior saw after re-entering solo. Normal walking lag
+    // stays well under 3 m (same threshold as the revive branch above).
+    if (Math.hypot(s.x - g.position.x, s.z - g.position.z) > 3) {
+      g.position.set(s.x, s.y, s.z);
+      g.rotation.y = s.yaw;
+    }
     g.position.x += (s.x - g.position.x) * k;
     g.position.y += (s.y - g.position.y) * k;
     g.position.z += (s.z - g.position.z) * k;
